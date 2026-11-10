@@ -1,0 +1,18 @@
+[package]
+name = "ssh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+russh = "0.64.1"
+thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util"] }
+zeroize = "1.9.1"
+
+[dev-dependencies]
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "time", "io-util"] }

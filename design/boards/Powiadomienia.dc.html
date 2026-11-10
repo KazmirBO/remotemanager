@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Powiadomienia</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+button:hover{filter:brightness(1.15)}
+</style>
+</helmet>
+<div style="width: 520px; height: 640px; box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; padding: 40px; background: #0F0F0F; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px">
+  <sc-for list="{{toasts}}" as="t" hint-placeholder-count="5">
+    <div role="status" style="display: flex; align-items: flex-start; gap: 12px; box-sizing: border-box; padding: 12px; background: #262626; border: 1px solid {{t.border}}; border-radius: 8px">
+      <sc-if value="{{ t.isOk }}" hint-placeholder-val="{{ true }}">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#EDEDED" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 1px"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>
+      </sc-if>
+      <sc-if value="{{ t.isInfo }}" hint-placeholder-val="{{ false }}">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 1px"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.5"/></svg>
+      </sc-if>
+      <sc-if value="{{ t.isErr }}" hint-placeholder-val="{{ false }}">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#EDEDED" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex: none; margin-top: 1px"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg>
+      </sc-if>
+      <div style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px">
+        <div style="font-weight: 600">{{t.title}}</div>
+        <sc-if value="{{ t.hasText }}" hint-placeholder-val="{{ true }}">
+          <div style="font-size: 13px; color: #A0A0A0">{{t.text}}</div>
+        </sc-if>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px">
+          <sc-for list="{{t.actions}}" as="a" hint-placeholder-count="1">
+            <button type="button" style="min-height: 28px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 12px; font-weight: 600; cursor: pointer">{{a.label}}</button>
+          </sc-for>
+        </div>
+      </div>
+      <button type="button" aria-label="Zamknij powiadomienie" style="flex: none; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; background: transparent; cursor: pointer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+  </sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":520,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const t = (kind, title, text, actions) => ({
+      isOk: kind === 'ok', isInfo: kind === 'info', isErr: kind === 'err',
+      border: kind === 'err' ? '#EDEDED' : '#3A3A3A',
+      title, text, hasText: !!text, actions: actions.map((label) => ({ label }))
+    });
+    return {
+      accent: this.props.accent ?? '#EDEDED',
+      toasts: [
+        t('ok', 'Synchronizacja zakończona', 'Zaktualizowano plik z hostami: 2 zmiany z innego komputera.', ['Pokaż zmiany']),
+        t('info', 'Sesja zabbix została rozłączona', '', ['Połącz ponownie']),
+        t('err', 'Nie udało się zapisać pliku z hostami', 'Brak uprawnień do zapisu w folderze synchronizacji.', ['Spróbuj ponownie', 'Szczegóły']),
+        t('ok', 'Dziennik sesji zapisany', 'zabbix_2026-10-11_14-32.log', ['Otwórz folder']),
+        t('info', 'Usunięto host veeam', '', ['Cofnij'])
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

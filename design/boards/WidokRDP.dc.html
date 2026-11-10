@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Widok sesji RDP</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+button:hover{filter:brightness(1.15)}
+</style>
+</helmet>
+<div style="width: 1280px; height: 800px; box-sizing: border-box; display: flex; background: #0F0F0F; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; overflow: hidden">
+
+  <div style="flex: none; width: 260px; display: flex; flex-direction: column; background: #161616; border-right: 1px solid #2C2C2C">
+    <div style="flex: none; padding: 10px; border-bottom: 1px solid #2C2C2C; color: #A0A0A0; font-size: 13px">Szukaj hostów</div>
+    <div style="flex: 1 1 auto; padding: 8px 0">
+      <sc-for list="{{tree}}" as="r" hint-placeholder-count="8">
+        <div style="display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 12px 0 {{r.pad}}px; background: {{r.bg}}">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{r.icon}}"/></svg>
+          <span style="font-size: 13px">{{r.name}}</span>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column">
+    <div role="tablist" style="flex: none; display: flex; align-items: stretch; min-height: 38px; background: #161616; border-bottom: 1px solid #2C2C2C">
+      <sc-for list="{{tabs}}" as="t" hint-placeholder-count="3">
+        <div role="tab" aria-selected="{{t.sel}}" style="display: flex; align-items: center; gap: 8px; padding: 0 12px; border-right: 1px solid #2C2C2C; background: {{t.bg}}; border-bottom: 2px solid {{t.line}}">
+          <span style="box-sizing: border-box; min-width: 34px; padding: 1px 4px; border: 1px solid {{t.bBorder}}; border-radius: 3px; background: {{t.bBg}}; color: {{t.bFg}}; font-size: 10px; font-weight: 600; text-align: center">{{t.proto}}</span>
+          <span style="font-size: 13px">{{t.name}}</span>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="flex: none; display: flex; align-items: center; gap: 6px; padding: 0 10px; min-height: 40px; background: #1C1C1C; border-bottom: 1px solid #2C2C2C">
+      <sc-for list="{{tools}}" as="b" hint-placeholder-count="6">
+        <button type="button" style="display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px; border: 1px solid {{b.border}}; border-radius: 6px; background: {{b.bg}}; color: #EDEDED; font-size: 12px; cursor: pointer">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{b.icon}}"/></svg>
+          <span>{{b.label}}</span>
+        </button>
+      </sc-for>
+      <span style="flex: 1 1 auto"></span>
+      <span style="font-size: 12px; color: #A0A0A0">1920x1080, 32 bity, NLA</span>
+    </div>
+
+    <div style="flex: 1 1 auto; min-height: 0; position: relative; background: #3A3A3A; overflow: hidden">
+      <div style="position: absolute; left: 90px; top: 50px; width: 620px; height: 380px; background: #E8E8E8; border: 1px solid #1A1A1A; box-shadow: 0 8px 24px rgba(0,0,0,0.5); color: #1A1A1A">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0 12px; min-height: 30px; background: #CFCFCF; font-size: 12px; font-weight: 600"><span>Menedżer serwera - Panel</span><span>_ &#9633; x</span></div>
+        <div style="display: grid; grid-template-columns: 160px 1fr; height: 349px">
+          <div style="padding: 10px; background: #D9D9D9; font-size: 12px; display: flex; flex-direction: column; gap: 8px"><span style="font-weight: 600">Panel</span><span>Serwer lokalny</span><span>Wszystkie serwery</span><span>AD DS</span><span>DNS</span></div>
+          <div style="padding: 16px; display: flex; flex-direction: column; gap: 10px; font-size: 12px">
+            <span style="font-size: 16px; font-weight: 600">Witamy w Menedżerze serwera</span>
+            <span>Nazwa komputera: DC01</span><span>Domena: firma.local</span><span>Zapora: domena, włączona</span>
+          </div>
+        </div>
+      </div>
+      <div style="position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; min-height: 40px; background: #1A1A1A; color: #EDEDED; font-size: 12px"><span>&#9638;&nbsp;&nbsp;Menedżer serwera</span><span>14:32&nbsp;&nbsp;2026-10-12</span></div>
+    </div>
+
+    <div style="flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; min-height: 28px; background: #161616; border-top: 1px solid #2C2C2C; font-size: 12px; color: #A0A0A0">
+      <span>dc01 - połączono, 38 ms</span>
+      <span>Skala: dopasuj do okna | Schowek: włączony | Monitory: 1</span>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? '#EDEDED';
+    const F = 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z';
+    const H = 'M4 5h16v10H4zM9 19h6M12 15v4';
+    const tree = [
+      { name: 'FIRMA', pad: 12, icon: F },
+      { name: 'Serwery Windows', pad: 28, icon: F },
+      { name: 'dc01', pad: 44, icon: H, sel: true },
+      { name: 'fs02', pad: 44, icon: H },
+      { name: 'Monitoring', pad: 28, icon: F },
+      { name: 'zabbix', pad: 44, icon: H },
+      { name: 'Prywatne', pad: 12, icon: F },
+      { name: 'gentoo', pad: 28, icon: H }
+    ].map((r) => ({ ...r, bg: r.sel ? '#262626' : 'transparent' }));
+    const tabsRaw = [
+      { proto: 'SSH', name: 'zabbix' },
+      { proto: 'RDP', name: 'dc01', sel: true },
+      { proto: 'RDP', name: 'veeam' }
+    ];
+    const tabs = tabsRaw.map((t) => {
+      const ssh = t.proto === 'SSH';
+      return { ...t, sel: !!t.sel, bg: t.sel ? '#0F0F0F' : 'transparent', line: t.sel ? accent : 'transparent',
+        bBorder: ssh ? accent : '#A0A0A0', bBg: ssh ? accent : 'transparent', bFg: ssh ? '#0F0F0F' : '#EDEDED' };
+    });
+    const tools = [
+      { label: 'Pełny ekran', icon: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5' },
+      { label: 'Ctrl+Alt+Del', icon: 'M3 6h18a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1zM7 14h10' },
+      { label: 'Schowek', icon: 'M9 4h6v3H9zM7 5H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-1', on: true },
+      { label: 'Monitory', icon: 'M2 6h12v9H2zM6 19h4M8 15v4M16 9h6v9h-6z' },
+      { label: 'Skala', icon: 'M4 9V4h5M20 15v5h-5M4 4l6 6M20 20l-6-6' },
+      { label: 'Rozłącz', icon: 'M9 7H7a4 4 0 0 0 0 8h2M15 7h2a4 4 0 0 1 0 8h-2M3 3l18 18' }
+    ].map((b) => ({ ...b, bg: b.on ? '#262626' : 'transparent', border: b.on ? '#3A3A3A' : 'transparent' }));
+    return { accent, tree, tabs, tools };
+  }
+}
+</script>
+</body>
+</html>

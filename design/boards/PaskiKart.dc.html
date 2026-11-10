@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Pasek kart</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+.mi:hover{background:#262626}
+</style>
+</helmet>
+<div style="width: 1100px; height: 560px; box-sizing: border-box; display: flex; flex-direction: column; gap: 28px; padding: 40px; background: #0F0F0F; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px">
+
+  <div style="display: flex; flex-direction: column; gap: 10px">
+    <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Przeciąganie karty (znacznik miejsca wstawienia)</div>
+    <div style="display: flex; align-items: stretch; min-height: 38px; background: #161616; border: 1px solid #2C2C2C; position: relative">
+      <sc-for list="{{dragTabs}}" as="t" hint-placeholder-count="5">
+        <div style="display: flex; align-items: center; gap: 8px; padding: 0 14px; border-right: 1px solid #2C2C2C; background: {{t.bg}}; opacity: {{t.op}}; border-left: {{t.marker}}">
+          <span style="box-sizing: border-box; min-width: 34px; padding: 1px 4px; border: 1px solid {{t.bBorder}}; border-radius: 3px; background: {{t.bBg}}; color: {{t.bFg}}; font-size: 10px; font-weight: 600; text-align: center">{{t.proto}}</span>
+          <span style="font-size: 13px">{{t.name}}</span>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 40px; flex: 1 1 auto; min-height: 0">
+
+    <div style="display: flex; flex-direction: column; gap: 10px; min-width: 0">
+      <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Przepełnienie: strzałki i lista wszystkich kart</div>
+      <div style="display: flex; align-items: stretch; min-height: 38px; background: #161616; border: 1px solid #2C2C2C">
+        <button type="button" aria-label="Przewiń w lewo" style="flex: none; width: 30px; border: 0; border-right: 1px solid #2C2C2C; background: transparent; color: #A0A0A0; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <div style="flex: 1 1 auto; min-width: 0; display: flex; overflow: hidden">
+          <sc-for list="{{strip}}" as="t" hint-placeholder-count="3">
+            <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-right: 1px solid #2C2C2C; background: {{t.bg}}">
+              <span style="font-size: 13px; white-space: nowrap">{{t.name}}</span>
+            </div>
+          </sc-for>
+        </div>
+        <button type="button" aria-label="Przewiń w prawo" style="flex: none; width: 30px; border: 0; border-left: 1px solid #2C2C2C; background: transparent; color: #A0A0A0; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button>
+        <button type="button" aria-label="Wszystkie karty" aria-expanded="true" style="flex: none; display: flex; align-items: center; gap: 6px; padding: 0 10px; border: 0; border-left: 1px solid #2C2C2C; background: #262626; color: #EDEDED; font-size: 12px; cursor: pointer">9<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
+      </div>
+      <div role="listbox" aria-label="Wszystkie karty" style="align-self: flex-end; width: 240px; padding: 4px; background: #1C1C1C; border: 1px solid #3A3A3A; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5)">
+        <sc-for list="{{all}}" as="t" hint-placeholder-count="7">
+          <div class="mi" role="option" style="display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 10px; border-radius: 4px; background: {{t.bg}}">
+            <span style="box-sizing: border-box; min-width: 34px; padding: 1px 4px; border: 1px solid {{t.bBorder}}; border-radius: 3px; background: {{t.bBg}}; color: {{t.bFg}}; font-size: 10px; font-weight: 600; text-align: center">{{t.proto}}</span>
+            <span style="flex: 1 1 auto; font-size: 13px">{{t.name}}</span>
+            <span style="font-size: 11px; color: #A0A0A0">{{t.num}}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 10px; min-width: 0">
+      <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Menu kontekstowe karty</div>
+      <div role="menu" aria-label="Menu karty" style="width: 280px; padding: 4px; background: #1C1C1C; border: 1px solid #3A3A3A; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5)">
+        <sc-for list="{{menu}}" as="m" hint-placeholder-count="8">
+          <div class="mi" role="menuitem" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 30px; padding: 0 10px; border-radius: 4px; margin-top: {{m.gap}}px; border-top: {{m.sep}}">
+            <span style="font-size: 13px">{{m.label}}</span>
+            <span style="font-size: 11px; color: #A0A0A0">{{m.key}}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":1100,"height":560}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? '#EDEDED';
+    const badge = (proto) => {
+      const ssh = proto === 'SSH';
+      return { bBorder: ssh ? accent : '#A0A0A0', bBg: ssh ? accent : 'transparent', bFg: ssh ? '#0F0F0F' : '#EDEDED' };
+    };
+    const dragRaw = [
+      { proto: 'SSH', name: 'zabbix' },
+      { proto: 'RDP', name: 'dc01', marker: true },
+      { proto: 'SSH', name: 'bastion', drag: true },
+      { proto: 'RDP', name: 'veeam' },
+      { proto: 'SSH', name: 'gentoo' }
+    ];
+    const dragTabs = dragRaw.map((t) => ({ ...t, ...badge(t.proto), bg: t.drag ? '#262626' : 'transparent', op: t.drag ? 0.6 : 1,
+      marker: t.marker ? '3px solid ' + accent : '0 solid transparent' }));
+    const names = [['SSH','zabbix'],['RDP','dc01'],['RDP','veeam'],['SSH','bastion'],['SSH','gentoo'],['RDP','fs02'],['SSH','test-lab'],['RDP','dc02'],['SSH','nas']];
+    const strip = names.slice(2, 6).map((n, i) => ({ name: n[1], bg: i === 1 ? '#0F0F0F' : 'transparent' }));
+    const all = names.map((n, i) => ({ proto: n[0], name: n[1], num: 'Ctrl+' + (i + 1 < 10 ? (i + 1) : '9'), ...badge(n[0]), bg: i === 3 ? '#262626' : 'transparent' }));
+    const menu = [
+      { label: 'Duplikuj kartę', key: 'Ctrl+Shift+D' },
+      { label: 'Połącz ponownie', key: 'Ctrl+R' },
+      { label: 'Zmień nazwę karty', key: 'F2' },
+      { label: 'Przypnij kartę', key: '' },
+      { label: 'Zapisz dziennik sesji...', key: '', sep: true },
+      { label: 'Zamknij kartę', key: 'Ctrl+W', sep: true },
+      { label: 'Zamknij pozostałe', key: '' },
+      { label: 'Zamknij karty po prawej', key: '' }
+    ].map((m) => ({ ...m, sep: m.sep ? '1px solid #2C2C2C' : '0 solid transparent', gap: m.sep ? 4 : 0 }));
+    return { accent, dragTabs, strip, all, menu };
+  }
+}
+</script>
+</body>
+</html>

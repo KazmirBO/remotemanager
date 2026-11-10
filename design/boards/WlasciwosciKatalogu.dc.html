@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Właściwości katalogu</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+button:hover{filter:brightness(1.15)}
+input{font-family:inherit}
+</style>
+</helmet>
+<div style="width: 680px; height: 760px; box-sizing: border-box; display: flex; flex-direction: column; background: #161616; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; border: 1px solid #3A3A3A; border-radius: 10px; overflow: hidden">
+
+  <div style="flex: none; padding: 14px 24px; border-bottom: 1px solid #2C2C2C">
+    <div style="font-size: 16px; font-weight: 600">Właściwości katalogu</div>
+    <div style="margin-top: 2px; font-size: 12px; color: #A0A0A0">FIRMA / Monitoring</div>
+  </div>
+
+  <div style="flex: 1 1 auto; min-height: 0; overflow-y: auto; box-sizing: border-box; padding: 4px 24px 16px">
+
+    <div style="display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 6px 20px; padding: 14px 0; border-bottom: 1px solid #2C2C2C">
+      <label for="nazwa-kat" style="padding-top: 8px">Nazwa</label>
+      <input id="nazwa-kat" type="text" value="Monitoring" readOnly="{{ true }}" style="box-sizing: border-box; width: 100%; max-width: 340px; min-height: 36px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: #0F0F0F; color: #EDEDED; font-size: 14px">
+    </div>
+    <div style="display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 6px 20px; padding: 14px 0; border-bottom: 1px solid #2C2C2C">
+      <span style="padding-top: 8px">Katalog nadrzędny</span>
+      <button type="button" aria-haspopup="listbox" aria-label="Katalog nadrzędny" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; max-width: 340px; min-height: 36px; box-sizing: border-box; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: #1C1C1C; color: #EDEDED; font-size: 14px; cursor: pointer">
+        <span>FIRMA</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+    </div>
+
+    <div style="margin-top: 20px; font-size: 14px; font-weight: 600">Ustawienia przekazywane hostom</div>
+    <div style="margin-top: 4px; font-size: 13px; color: #A0A0A0">Wartości ustawione tutaj dziedziczą wszystkie hosty i podkatalogi, o ile ich nie nadpiszą.</div>
+
+    <sc-for list="{{fields}}" as="f" hint-placeholder-count="6">
+      <div style="display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 8px 20px; padding: 14px 0; border-bottom: 1px solid #2C2C2C">
+        <span style="padding-top: 4px">{{f.label}}</span>
+        <div style="display: flex; flex-direction: column; gap: 8px; min-width: 0">
+          <label style="display: flex; align-items: center; gap: 10px; min-height: 28px; font-size: 13px">
+            <input type="checkbox" checked="{{f.set}}" onChange="{{ f.flip }}" style="width: 16px; height: 16px; accent-color: {{accent}}">
+            <span>{{f.setLabel}}</span>
+          </label>
+          <div style="opacity: {{f.opacity}}">
+            <input type="text" value="{{f.value}}" readOnly="{{ true }}" aria-label="{{f.label}}" style="box-sizing: border-box; width: 100%; max-width: 340px; min-height: 36px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: #0F0F0F; color: #EDEDED; font-size: 14px">
+          </div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+
+  <div style="flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 14px 24px; border-top: 1px solid #2C2C2C">
+    <span style="font-size: 12px; color: #A0A0A0">Zawiera: 2 hosty, 0 podkatalogów</span>
+    <div style="display: flex; gap: 8px">
+      <button type="button" style="min-height: 36px; padding: 0 16px; border: 1px solid #3A3A3A; border-radius: 6px; background: #1C1C1C; color: #EDEDED; font-size: 13px; font-weight: 500; cursor: pointer">Anuluj</button>
+      <button type="button" style="min-height: 36px; padding: 0 18px; border: 0; border-radius: 6px; background: {{accent}}; color: #0F0F0F; font-size: 13px; font-weight: 600; cursor: pointer">Zapisz</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":680,"height":760}}'>
+class Component extends DCLogic {
+  state = { set: { user: false, domain: true, key: true, via: true, nla: false, mon: false } };
+
+  renderVals() {
+    const accent = this.props.accent ?? '#EDEDED';
+    const st = this.state;
+    const defs = [
+      { id: 'user', label: 'Użytkownik', value: 'sebastian', from: 'FIRMA' },
+      { id: 'domain', label: 'Domena', value: 'brak', from: 'FIRMA' },
+      { id: 'key', label: 'Klucz SSH', value: '~/.ssh/id_ed25519', from: 'ustawienia domyślne' },
+      { id: 'via', label: 'Przez (bastion)', value: 'bastion', from: 'ustawienia domyślne' },
+      { id: 'nla', label: 'Metoda NLA', value: 'Negotiate (Kerberos, NTLM)', from: 'ustawienia domyślne' },
+      { id: 'mon', label: 'Monitory RDP', value: 'Wszystkie', from: 'ustawienia domyślne' }
+    ];
+    const fields = defs.map((d) => {
+      const on = !!st.set[d.id];
+      return {
+        label: d.label,
+        value: d.value,
+        set: on,
+        setLabel: on ? 'Ustawione w tym katalogu' : 'Dziedziczone z: ' + d.from,
+        opacity: on ? 1 : 0.55,
+        flip: () => this.setState({ set: { ...st.set, [d.id]: !on } })
+      };
+    });
+    return { accent, fields };
+  }
+}
+</script>
+</body>
+</html>

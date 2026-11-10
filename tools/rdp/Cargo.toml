@@ -1,0 +1,5 @@
+# Osobny workspace: IronRDP (sspi 0.21) przypina curve25519-dalek =5.0.0-rc.1, co koliduje z russh
+# w głównym workspace. Patrz PROJECT.md.
+[workspace]
+resolver = "3"
+members = ["rdp-probe", "rdp-worker"]

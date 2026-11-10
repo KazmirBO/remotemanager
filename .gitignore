@@ -1,0 +1,8 @@
+/target
+node_modules/
+dist/
+*.png
+!crates/app/icons/*.png
+.env
+tools/rdp/target/
+crates/app/binaries/

@@ -1,0 +1,18 @@
+[package]
+name = "rdp-worker"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+description = "Proces pomocniczy z klientem RDP (IronRDP) komunikujący się z aplikacją przez stdio"
+
+[dependencies]
+anyhow = "1.0.104"
+ironrdp = { version = "0.17", features = ["connector", "session", "graphics", "pdu", "input", "dvc", "displaycontrol", "svc", "cliprdr"] }
+ironrdp-blocking = "0.10"
+ironrdp-graphics = "0.9"
+rdp-proto = { path = "../../../crates/rdp-proto" }
+sha2 = "0.11.1"
+sspi = { version = "0.21", features = ["network_client"] }
+tokio-rustls = "0.26"
+x509-cert = { version = "0.2", default-features = false, features = ["std"] }

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Stany agenta SSH</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+button:hover{filter:brightness(1.15)}
+</style>
+</helmet>
+<div style="width: 1200px; height: 520px; box-sizing: border-box; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; padding: 40px; background: #0F0F0F; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px">
+  <sc-for list="{{panels}}" as="p" hint-placeholder-count="3">
+    <div style="display: flex; flex-direction: column; gap: 10px; min-width: 0">
+      <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">{{p.caption}}</div>
+      <div style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 12px; padding: 20px; background: #161616; border: 1px solid #3A3A3A; border-radius: 10px">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#EDEDED" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{p.icon}}"/></svg>
+        <div style="font-size: 16px; font-weight: 600">{{p.title}}</div>
+        <div style="font-size: 13px; color: #A0A0A0">{{p.text}}</div>
+        <div style="padding: 8px 10px; border: 1px solid #2C2C2C; border-radius: 6px; background: #0A0A0A; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #A0A0A0; overflow-wrap: anywhere; white-space: pre-wrap">{{p.code}}</div>
+        <span style="flex: 1 1 auto"></span>
+        <button type="button" style="min-height: 38px; border: 0; border-radius: 6px; background: {{accent}}; color: #0F0F0F; font-size: 13px; font-weight: 600; cursor: pointer">{{p.primary}}</button>
+        <button type="button" style="min-height: 34px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 13px; cursor: pointer">{{p.secondary}}</button>
+      </div>
+    </div>
+  </sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":1200,"height":520}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { accent: this.props.accent ?? '#EDEDED', panels: [
+      { caption: 'Agent niedostępny', icon: 'M12 3l10 18H2zM12 10v5M12 18v.01', title: 'Nie znaleziono agenta SSH',
+        text: 'Zmienna SSH_AUTH_SOCK nie wskazuje działającego gniazda. Połączenia kluczem wymagają uruchomionego agenta.',
+        code: 'SSH_AUTH_SOCK: (nie ustawiono)', primary: 'Spróbuj ponownie', secondary: 'Użyj hasła dla tego hosta' },
+      { caption: 'Agent bez kluczy', icon: 'M7 11a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM10 14l9-9M16 8l3 3M14 10l2 2', title: 'Agent nie ma żadnych kluczy',
+        text: 'Agent działa, ale lista kluczy jest pusta. Dodaj klucz poleceniem ssh-add i spróbuj ponownie.',
+        code: 'ssh-add ~/.ssh/id_ed25519', primary: 'Odśwież listę kluczy', secondary: 'Edytuj host' },
+      { caption: 'Klucz odrzucony', icon: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM9 9l6 6M15 9l-6 6', title: 'Serwer odrzucił klucze z agenta',
+        text: 'Żaden z 2 kluczy w agencie nie został zaakceptowany przez zabbix jako użytkownik sebastian.',
+        code: 'ED25519 SHA256:Hq7Lw2Vn...\nRSA     SHA256:Pb3Jt8Wm...', primary: 'Wybierz inny klucz', secondary: 'Użyj hasła dla tego hosta' }
+    ] };
+  }
+}
+</script>
+</body>
+</html>

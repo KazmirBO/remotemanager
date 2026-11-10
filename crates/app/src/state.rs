@@ -1,0 +1,262 @@
+use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use model::Document;
+use tokio::sync::oneshot;
+use uuid::Uuid;
+use vault::Vault;
+
+use crate::config::Config;
+
+pub struct Unlocked {
+    pub vault: Vault,
+    pub doc: Document,
+}
+
+pub struct Live {
+    pub session: ssh::Session,
+    pub shell: ssh::ShellHandle,
+}
+
+pub struct TrustAnswer {
+    pub accept: bool,
+    pub remember: bool,
+}
+
+const DIAG_LIMIT: usize = 500;
+
+pub struct AppState {
+    pub path: PathBuf,
+    pub data_dir: PathBuf,
+    pub config: Mutex<Config>,
+    /// Dziennik diagnostyczny w pamięci. Nigdy nie trafiają tu hasła ani klucze.
+    pub diag: Mutex<VecDeque<String>>,
+    pub pending_link: Mutex<Option<String>>,
+    pub inner: tokio::sync::Mutex<Option<Unlocked>>,
+    pub sessions: Mutex<HashMap<Uuid, Arc<Live>>>,
+    pub trust: Mutex<HashMap<Uuid, oneshot::Sender<TrustAnswer>>>,
+    pub rdp: Mutex<HashMap<Uuid, rdp::RdpClient>>,
+    pub rdp_clip: Mutex<HashMap<Uuid, Arc<crate::clipboard::ClipSync>>>,
+}
+
+impl AppState {
+    pub fn new(path: PathBuf) -> Self {
+        let data_dir = path.parent().map(PathBuf::from).unwrap_or_default();
+        let config = Config::load(&data_dir.join("config.json"));
+        Self {
+            path,
+            data_dir,
+            config: Mutex::new(config),
+            diag: Mutex::new(VecDeque::new()),
+            pending_link: Mutex::new(None),
+            inner: tokio::sync::Mutex::new(None),
+            sessions: Mutex::new(HashMap::new()),
+            trust: Mutex::new(HashMap::new()),
+            rdp: Mutex::new(HashMap::new()),
+            rdp_clip: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Dopisuje wpis do dziennika diagnostycznego (czas to sekundy epoki UNIX).
+    pub fn log(&self, msg: impl AsRef<str>) {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut d = self.diag.lock().expect("diag");
+        if d.len() >= DIAG_LIMIT {
+            d.pop_front();
+        }
+        d.push_back(format!("{secs} {}", msg.as_ref()));
+    }
+
+    pub fn save_config(&self) {
+        let cfg = self.config.lock().expect("config").clone();
+        if let Err(e) = cfg.save(&self.data_dir.join("config.json")) {
+            self.log(format!("nie udało się zapisać konfiguracji: {e}"));
+        }
+    }
+
+    /// Przed zapisem: czy plik jest zsynchronizowany, więc po zapisie można go wysłać automatycznie.
+    pub fn sync_pre(&self) -> Option<PathBuf> {
+        let (folder, base) = {
+            let c = self.config.lock().expect("config");
+            (c.sync_folder.clone()?, c.sync_base.clone())
+        };
+        matches!(
+            sync::status(&self.path, &folder, base.as_deref()),
+            Ok(sync::Status::InSync)
+        )
+        .then_some(folder)
+    }
+
+    /// Po zapisie: wysyła plik, jeśli przed zapisem był zsynchronizowany. Błąd trafia tylko do dziennika.
+    pub fn sync_post(&self, pre: Option<PathBuf>) {
+        let Some(folder) = pre else { return };
+        match sync::push(&self.path, &folder) {
+            Ok(hash) => {
+                self.config.lock().expect("config").sync_base = Some(hash);
+                self.save_config();
+                self.log("synchronizacja: plik wysłany automatycznie");
+            }
+            Err(e) => self.log(format!(
+                "synchronizacja: automatyczna wysyłka nie powiodła się: {e}"
+            )),
+        }
+    }
+
+    /// Wykonuje mutację na kopii dokumentu, zapisuje plik i dopiero potem podmienia stan.
+    pub async fn mutate<R>(
+        &self,
+        f: impl FnOnce(&mut Document) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let mut guard = self.inner.lock().await;
+        let u = guard.as_mut().ok_or("Plik z hostami jest zablokowany")?;
+        let mut next = u.doc.clone();
+        let out = f(&mut next)?;
+        let pre = self.sync_pre();
+        u.vault.save(&next).map_err(|e| e.to_string())?;
+        u.doc = next;
+        self.sync_post(pre);
+        Ok(out)
+    }
+
+    pub async fn read<R>(
+        &self,
+        f: impl FnOnce(&Document) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let guard = self.inner.lock().await;
+        let u = guard.as_ref().ok_or("Plik z hostami jest zablokowany")?;
+        f(&u.doc)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vault::KdfParams;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("mrm-app-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.join("hosts.mrm")
+    }
+
+    async fn unlocked(name: &str) -> AppState {
+        let path = tmp(name);
+        let doc = Document::default();
+        let vault = Vault::create(&path, "tajne-haslo", KdfParams::FAST_FOR_TESTS, &doc).unwrap();
+        let state = AppState::new(path);
+        *state.inner.lock().await = Some(Unlocked { vault, doc });
+        state
+    }
+
+    #[tokio::test]
+    async fn mutation_is_persisted_and_readable_after_reopen() {
+        let state = unlocked("persist").await;
+        state
+            .mutate(|d| {
+                d.tree
+                    .add_folder("Firma", None)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap();
+        let (_, doc) = Vault::open::<Document>(&state.path, "tajne-haslo").unwrap();
+        assert_eq!(doc.tree.folders.len(), 1);
+        assert_eq!(doc.tree.folders[0].name, "Firma");
+    }
+
+    #[tokio::test]
+    async fn failed_mutation_changes_neither_memory_nor_file() {
+        let state = unlocked("fail").await;
+        let res: Result<(), String> = state
+            .mutate(|d| {
+                d.tree
+                    .add_folder("Tymczasowy", None)
+                    .map_err(|e| e.to_string())?;
+                Err("błąd w trakcie".into())
+            })
+            .await;
+        assert!(res.is_err());
+        assert_eq!(state.read(|d| Ok(d.tree.folders.len())).await.unwrap(), 0);
+        let (_, doc) = Vault::open::<Document>(&state.path, "tajne-haslo").unwrap();
+        assert!(doc.tree.folders.is_empty());
+    }
+
+    #[tokio::test]
+    async fn autosync_pushes_only_when_previously_in_sync() {
+        let state = unlocked("autosync").await;
+        let remote = state.data_dir.join("remote");
+        std::fs::create_dir_all(&remote).unwrap();
+        let (_, base) = sync::sync(&state.path, &remote, None, None).unwrap();
+        {
+            let mut c = state.config.lock().unwrap();
+            c.sync_folder = Some(remote.clone());
+            c.sync_base = base;
+        }
+        // Zsynchronizowany plik: zmiana jest wysyłana automatycznie.
+        state
+            .mutate(|d| {
+                d.tree
+                    .add_folder("A", None)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&state.path).unwrap(),
+            std::fs::read(sync::remote_path(&remote)).unwrap()
+        );
+        assert_eq!(
+            state.config.lock().unwrap().sync_base,
+            sync::file_hash(&state.path).unwrap()
+        );
+
+        // Ktoś zmienił zdalny plik: kolejny zapis nie może go nadpisać.
+        std::fs::write(sync::remote_path(&remote), b"zmiana z innej maszyny").unwrap();
+        state
+            .mutate(|d| {
+                d.tree
+                    .add_folder("B", None)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(sync::remote_path(&remote)).unwrap(),
+            b"zmiana z innej maszyny"
+        );
+        assert!(
+            state
+                .diag
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|l| !l.contains("zmiana z innej maszyny"))
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_are_bounded() {
+        let state = AppState::new(tmp("diag"));
+        for i in 0..700 {
+            state.log(format!("wpis {i}"));
+        }
+        let d = state.diag.lock().unwrap();
+        assert_eq!(d.len(), 500);
+        assert!(d.back().unwrap().ends_with("wpis 699"));
+    }
+
+    #[tokio::test]
+    async fn locked_state_rejects_access() {
+        let state = AppState::new(tmp("locked"));
+        assert!(state.read(|_| Ok(())).await.is_err());
+        assert!(state.mutate(|_| Ok(())).await.is_err());
+    }
+}

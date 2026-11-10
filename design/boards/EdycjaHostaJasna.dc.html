@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Edycja hosta, jasny motyw</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+button:hover{filter:brightness(1.15)}
+input{font-family:inherit}
+</style>
+</helmet>
+<div style="width: 720px; height: 760px; box-sizing: border-box; display: flex; flex-direction: column; background: #FAFAFA; color: #1A1A1A; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; border: 1px solid #C2C2C2; border-radius: 10px; overflow: hidden">
+
+  <div style="flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 14px 24px; border-bottom: 1px solid #DCDCDC">
+    <div style="display: flex; flex-direction: column; gap: 2px">
+      <div style="font-size: 16px; font-weight: 600">Edycja hosta</div>
+      <div style="font-size: 12px; color: #5E5E5E">{{path}}</div>
+    </div>
+    <div role="group" aria-label="Protokół" style="display: flex; border: 1px solid #C2C2C2; border-radius: 6px; overflow: hidden">
+      <sc-for list="{{protos}}" as="p" hint-placeholder-count="2">
+        <button type="button" onClick="{{ p.pick }}" style="min-height: 34px; min-width: 64px; padding: 0 14px; border: 0; background: {{p.bg}}; color: {{p.fg}}; font-size: 13px; font-weight: 600; cursor: pointer">{{p.label}}</button>
+      </sc-for>
+    </div>
+  </div>
+
+  <div role="tablist" aria-label="Sekcje edycji" style="flex: none; display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 16px; border-bottom: 1px solid #DCDCDC; background: #121212">
+    <sc-for list="{{tabs}}" as="t" hint-placeholder-count="4">
+      <button type="button" role="tab" onClick="{{ t.pick }}" style="min-height: 36px; padding: 0 14px; border: 0; border-radius: 6px; background: {{t.bg}}; color: #1A1A1A; font-size: 14px; font-weight: {{t.fw}}; cursor: pointer">{{t.label}}</button>
+    </sc-for>
+  </div>
+
+  <div style="flex: 1 1 auto; min-height: 0; overflow-y: auto; box-sizing: border-box; padding: 4px 24px">
+    <sc-for list="{{fields}}" as="f" hint-placeholder-count="5">
+      <div style="display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 6px 20px; padding: 14px 0; border-bottom: 1px solid #DCDCDC">
+        <div style="padding-top: 6px">
+          <div>{{f.label}}</div>
+          <sc-if value="{{ f.hasHint }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top: 2px; font-size: 12px; color: #5E5E5E">{{f.hint}}</div>
+          </sc-if>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px; min-width: 0">
+
+          <div style="opacity: {{f.opacity}}">
+            <sc-if value="{{ f.isText }}" hint-placeholder-val="{{ true }}">
+              <div style="display: flex; align-items: center; gap: 8px">
+                <input type="{{f.inputType}}" value="{{f.value}}" placeholder="{{f.placeholder}}" readOnly="{{ true }}" aria-label="{{f.label}}" style="box-sizing: border-box; width: 100%; max-width: {{f.width}}px; min-height: 36px; padding: 0 10px; border: 1px solid #C2C2C2; border-radius: 6px; background: #F3F3F3; color: #1A1A1A; font-size: 14px">
+                <sc-if value="{{ f.hasUnit }}" hint-placeholder-val="{{ false }}">
+                  <span style="color: #5E5E5E; font-size: 13px">{{f.unit}}</span>
+                </sc-if>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ f.isSelect }}" hint-placeholder-val="{{ false }}">
+              <button type="button" aria-haspopup="listbox" aria-label="{{f.label}}" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; max-width: 340px; min-height: 36px; box-sizing: border-box; padding: 0 10px; border: 1px solid #C2C2C2; border-radius: 6px; background: #EFEFEF; color: #1A1A1A; font-size: 14px; cursor: pointer">
+                <span>{{f.value}}</span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5E5E5E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+            </sc-if>
+
+            <sc-if value="{{ f.isToggle }}" hint-placeholder-val="{{ false }}">
+              <button type="button" role="switch" aria-checked="{{f.checked}}" aria-label="{{f.label}}" onClick="{{ f.flip }}" style="position: relative; width: 44px; height: 24px; box-sizing: border-box; padding: 0; border: 1px solid #C2C2C2; border-radius: 12px; background: {{f.track}}; cursor: pointer">
+                <span style="position: absolute; top: 2px; left: {{f.knobLeft}}px; width: 18px; height: 18px; border-radius: 50%; background: {{f.knob}}"></span>
+              </button>
+            </sc-if>
+
+            <sc-if value="{{ f.isMonitors }}" hint-placeholder-val="{{ false }}">
+              <div role="group" aria-label="Wybór monitorów" style="display: flex; flex-wrap: wrap; gap: 8px">
+                <sc-for list="{{f.screens}}" as="s" hint-placeholder-count="3">
+                  <button type="button" aria-pressed="{{s.on}}" onClick="{{ s.flip }}" style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 104px; height: 64px; box-sizing: border-box; border: 1px solid {{s.bd}}; border-radius: 6px; background: {{s.bg}}; color: {{s.fg}}; font-size: 13px; font-weight: 600; cursor: pointer">
+                    <span>{{s.num}}</span>
+                    <span style="font-size: 11px; font-weight: 400">{{s.res}}</span>
+                  </button>
+                </sc-for>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ f.isSeg }}" hint-placeholder-val="{{ false }}">
+              <div role="group" aria-label="{{f.label}}" style="display: inline-flex; flex-wrap: wrap; border: 1px solid #C2C2C2; border-radius: 6px; overflow: hidden">
+                <sc-for list="{{f.options}}" as="o" hint-placeholder-count="3">
+                  <button type="button" onClick="{{ o.pick }}" style="min-height: 34px; padding: 0 12px; border: 0; background: {{o.bg}}; color: {{o.fg}}; font-size: 13px; cursor: pointer">{{o.label}}</button>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+
+          <sc-if value="{{ f.inheritable }}" hint-placeholder-val="{{ true }}">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 12px; color: #5E5E5E">
+              <span>{{f.status}}</span>
+              <button type="button" onClick="{{ f.toggleOwn }}" style="min-height: 28px; padding: 0 10px; border: 1px solid #C2C2C2; border-radius: 5px; background: transparent; color: #1A1A1A; font-size: 12px; cursor: pointer">{{f.actionLabel}}</button>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+
+  <div style="flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 14px 24px; border-top: 1px solid #DCDCDC">
+    <button type="button" style="min-height: 36px; padding: 0 14px; border: 1px solid #C2C2C2; border-radius: 6px; background: transparent; color: #1A1A1A; font-size: 13px; cursor: pointer">Testuj połączenie</button>
+    <div style="display: flex; gap: 8px">
+      <button type="button" style="min-height: 36px; padding: 0 16px; border: 1px solid #C2C2C2; border-radius: 6px; background: #EFEFEF; color: #1A1A1A; font-size: 13px; font-weight: 500; cursor: pointer">Anuluj</button>
+      <button type="button" style="min-height: 36px; padding: 0 18px; border: 0; border-radius: 6px; background: {{accent}}; color: #FFFFFF; font-size: 13px; font-weight: 600; cursor: pointer">Zapisz</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#1A1A1A"},"$preview":{"width":720,"height":760}}'>
+class Component extends DCLogic {
+  state = { proto: 'rdp', tab: 'ogolne', own: {}, v: {}, mon: { 1: true, 2: true, 3: false } };
+
+  renderVals() {
+    const accent = this.props.accent ?? '#1A1A1A';
+    const st = this.state;
+    const rdp = st.proto === 'rdp';
+    const folder = rdp ? 'FIRMA' : 'Dom';
+    const dflt = 'Ustawienia domyślne';
+
+    const txt = (id, label, hint, def, o) => ({ kind: 'text', id, label, hint, def, ...(o || {}) });
+    const sel = (id, label, hint, def, o) => ({ kind: 'select', id, label, hint, def, ...(o || {}) });
+    const tog = (id, label, hint, def, o) => ({ kind: 'toggle', id, label, hint, def, ...(o || {}) });
+    const seg = (id, label, hint, options, def, o) => ({ kind: 'seg', id, label, hint, options, def, ...(o || {}) });
+    const mons = (id, label, hint) => ({ kind: 'monitors', id, label, hint });
+
+    const TABS = [
+      ['ogolne', 'Ogólne'],
+      ['auth', 'Uwierzytelnianie'],
+      ['disp', rdp ? 'Obraz i urządzenia' : 'Terminal'],
+      ['adv', 'Zaawansowane']
+    ];
+
+    const monMode = st.v['rdp.mon'] !== undefined ? st.v['rdp.mon'] : 'Wybrane';
+    let list = [];
+    if (st.tab === 'ogolne') {
+      list = [
+        txt('name', 'Nazwa', 'Widoczna w drzewie i na karcie.', rdp ? 'dc01' : 'gentoo', { width: 340 }),
+        txt('addr', 'Adres', 'Nazwa DNS lub adres IP.', rdp ? 'dc01' : 'gentoo', { width: 340 }),
+        sel('folder', 'Katalog', '', rdp ? 'FIRMA / Kontrolery domeny' : 'Dom'),
+        txt('port', 'Port', '', rdp ? '3389' : '22', { width: 120, from: dflt }),
+        sel('via', 'Połącz przez', rdp ? 'Tunel SSH do portu RDP.' : 'Host pośredni (bastion).', 'Brak', { from: rdp ? dflt : folder }),
+        tog('fav', 'Ulubiony', 'Widoczny w grupie Ulubione.', true),
+        txt('note', 'Opis', '', '', { width: 340, placeholder: 'Opcjonalny opis hosta' })
+      ];
+    } else if (st.tab === 'auth') {
+      if (rdp) {
+        list = [
+          txt('user', 'Użytkownik', '', 'sebastian', { width: 340, from: folder }),
+          txt('domain', 'Domena', '', 'FIRMA', { width: 220, from: folder }),
+          txt('pass', 'Hasło', 'Zapisane w zaszyfrowanym pliku.', '••••••••', { width: 340, type: 'password' }),
+          tog('ask', 'Pytaj o hasło przy każdym połączeniu', '', false),
+          seg('nla', 'Metoda NLA', '', ['Negotiate (Kerberos, NTLM)', 'Tylko NTLM'], 'Negotiate (Kerberos, NTLM)', { from: dflt })
+        ];
+      } else {
+        list = [
+          txt('user', 'Użytkownik', '', 'sebastian', { width: 340, from: folder }),
+          seg('method', 'Metoda', '', ['Klucz z agenta', 'Plik klucza', 'Hasło'], 'Klucz z agenta', { from: folder }),
+          txt('key', 'Plik klucza', 'Używany przy metodzie Plik klucza.', '~/.ssh/id_ed25519', { width: 340, from: folder }),
+          txt('pass', 'Hasło lub fraza klucza', 'Zapisane w zaszyfrowanym pliku.', '••••••••', { width: 340, type: 'password' }),
+          tog('ask', 'Pytaj o hasło przy każdym połączeniu', '', false)
+        ];
+      }
+    } else if (st.tab === 'disp') {
+      if (rdp) {
+        list = [
+          sel('res', 'Rozdzielczość pulpitu', '', 'Dopasuj do okna', { from: dflt }),
+          sel('depth', 'Głębia kolorów', '', '32 bity', { from: dflt }),
+          seg('mon', 'Monitory', 'Ile monitorów zajmie pulpit zdalny.', ['Jeden', 'Wszystkie', 'Wybrane'], 'Wybrane'),
+          ...(monMode === 'Wybrane' ? [mons('screens', 'Wybór monitorów', 'Kliknij, aby włączyć lub wyłączyć.')] : []),
+          sel('dpi', 'Skalowanie DPI', '', 'Automatyczne', { from: dflt }),
+          tog('clip', 'Udostępniaj schowek', '', true, { from: dflt }),
+          tog('drives', 'Przekierowanie dysków lokalnych', '', false, { from: dflt }),
+          sel('audio', 'Dźwięk z pulpitu zdalnego', '', 'Nie odtwarzaj', { from: dflt })
+        ];
+      } else {
+        list = [
+          sel('tfont', 'Czcionka terminala', '', 'JetBrains Mono', { from: dflt }),
+          txt('tsize', 'Rozmiar czcionki', '', '14', { width: 100, unit: 'px', from: dflt }),
+          sel('tscheme', 'Schemat kolorów', '', 'Monochromatyczny', { from: dflt }),
+          sel('enc', 'Kodowanie znaków', '', 'UTF-8', { from: dflt }),
+          tog('log', 'Zapisuj dziennik sesji', 'Plik w katalogu dzienników z ustawień.', true, { from: dflt }),
+          txt('cmd', 'Polecenie po zalogowaniu', 'Wykonywane od razu po połączeniu.', '', { width: 340, placeholder: 'Opcjonalne' })
+        ];
+      }
+    } else {
+      if (rdp) {
+        list = [
+          txt('timeout', 'Limit czasu połączenia', '', '15', { width: 100, unit: 's', from: dflt }),
+          tog('retry', 'Ponów po zerwaniu połączenia', '', false, { from: dflt }),
+          sel('cert', 'Certyfikat serwera', '', 'Zapytaj przy pierwszym połączeniu', { from: dflt }),
+          txt('kdc', 'Adres KDC', 'Pusty: wykrywany automatycznie.', '', { width: 340, placeholder: 'Opcjonalny', from: dflt })
+        ];
+      } else {
+        list = [
+          txt('timeout', 'Limit czasu połączenia', '', '15', { width: 100, unit: 's', from: dflt }),
+          tog('retry', 'Ponów po zerwaniu połączenia', '', false, { from: dflt }),
+          txt('keepalive', 'Podtrzymanie połączenia', 'Odstęp między pakietami keep-alive.', '30', { width: 100, unit: 's', from: dflt }),
+          sel('hostkey', 'Weryfikacja klucza hosta', '', 'Zapytaj przy pierwszym połączeniu', { from: dflt })
+        ];
+      }
+    }
+
+    const fields = list.map((f) => {
+      const key = st.proto + '.' + f.id;
+      const inheritable = !!f.from;
+      const isOwn = inheritable ? !!st.own[key] : true;
+      const locked = inheritable && !isOwn;
+      const cur = st.v[key] !== undefined ? st.v[key] : f.def;
+      const out = {
+        label: f.label,
+        hint: f.hint || '',
+        hasHint: !!f.hint,
+        opacity: locked ? 0.55 : 1,
+        inheritable,
+        status: isOwn ? 'Własna wartość' : 'Dziedziczone z: ' + f.from,
+        actionLabel: isOwn ? 'Przywróć dziedziczone' : 'Nadpisz',
+        toggleOwn: () => this.setState({ own: { ...st.own, [key]: !isOwn } }),
+        isText: f.kind === 'text',
+        isSelect: f.kind === 'select',
+        isToggle: f.kind === 'toggle',
+        isSeg: f.kind === 'seg',
+        isMonitors: f.kind === 'monitors'
+      };
+      if (f.kind === 'monitors') {
+        const resList = ['1920 x 1080', '1920 x 1080', '1280 x 1024'];
+        return { ...out, screens: [1, 2, 3].map((n) => {
+          const on = !!st.mon[n];
+          return {
+            num: 'Monitor ' + n,
+            res: resList[n - 1],
+            on,
+            bg: on ? accent : '#EFEFEF',
+            fg: on ? '#F3F3F3' : '#5E5E5E',
+            bd: on ? accent : '#C2C2C2',
+            flip: () => this.setState({ mon: { ...st.mon, [n]: !on } })
+          };
+        }) };
+      }
+      if (f.kind === 'text') {
+        return { ...out, value: f.def, placeholder: f.placeholder || '', inputType: f.type || 'text',
+          width: f.width || 340, unit: f.unit || '', hasUnit: !!f.unit };
+      }
+      if (f.kind === 'select') { return { ...out, value: cur }; }
+      if (f.kind === 'toggle') {
+        const on = !!cur;
+        return { ...out, checked: on, track: on ? accent : '#E4E4E4', knob: on ? '#F3F3F3' : '#5E5E5E',
+          knobLeft: on ? 22 : 2, flip: () => { if (!locked) { this.setState({ v: { ...st.v, [key]: !on } }); } } };
+      }
+      return { ...out, options: f.options.map((o) => ({
+        label: o,
+        bg: o === cur ? accent : 'transparent',
+        fg: o === cur ? '#F3F3F3' : '#1A1A1A',
+        pick: () => { if (!locked) { this.setState({ v: { ...st.v, [key]: o } }); } }
+      })) };
+    });
+
+    return {
+      accent,
+      path: rdp ? 'FIRMA / Kontrolery domeny / dc01' : 'Dom / gentoo',
+      protos: [['ssh', 'SSH'], ['rdp', 'RDP']].map(([id, label]) => ({
+        label,
+        bg: st.proto === id ? accent : 'transparent',
+        fg: st.proto === id ? '#F3F3F3' : '#1A1A1A',
+        pick: () => this.setState({ proto: id })
+      })),
+      tabs: TABS.map(([id, label]) => ({
+        label,
+        bg: st.tab === id ? '#E4E4E4' : 'transparent',
+        fw: st.tab === id ? 600 : 400,
+        pick: () => this.setState({ tab: id })
+      })),
+      fields
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Monit o hasło</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+button:hover{filter:brightness(1.15)}
+input{font-family:inherit}
+</style>
+</helmet>
+<div style="width: 480px; height: 440px; box-sizing: border-box; display: flex; flex-direction: column; background: #161616; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; border: 1px solid #3A3A3A; border-radius: 10px; overflow: hidden">
+
+  <div style="flex: none; padding: 16px 24px; border-bottom: 1px solid #2C2C2C">
+    <div style="font-size: 16px; font-weight: 600">Hasło do dc01</div>
+    <div style="margin-top: 4px; color: #A0A0A0">Ten host jest ustawiony na pytanie o hasło przy każdym połączeniu.</div>
+  </div>
+
+  <form style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 14px; padding: 20px 24px" onSubmit="{{ submit }}">
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <label for="uzytkownik" style="font-size: 13px; font-weight: 500">Użytkownik</label>
+      <input id="uzytkownik" type="text" value="FIRMA\sebastian" readOnly="{{ true }}" style="box-sizing: border-box; width: 100%; min-height: 40px; padding: 0 12px; border: 1px solid #2C2C2C; border-radius: 6px; background: #1C1C1C; color: #A0A0A0; font-size: 14px">
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <label for="haslo-hosta" style="font-size: 13px; font-weight: 500">Hasło</label>
+      <div style="display: flex; align-items: stretch">
+        <input id="haslo-hosta" type="{{inputType}}" autocomplete="current-password" style="flex: 1 1 auto; min-width: 0; box-sizing: border-box; min-height: 40px; padding: 0 12px; border: 1px solid #3A3A3A; border-right: 0; border-radius: 6px 0 0 6px; background: #0F0F0F; color: #EDEDED; font-size: 14px">
+        <button type="button" aria-label="{{eyeLabel}}" onClick="{{ toggleShow }}" style="display: flex; align-items: center; justify-content: center; width: 44px; border: 1px solid #3A3A3A; border-radius: 0 6px 6px 0; background: #1C1C1C; cursor: pointer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+    </div>
+    <label style="display: flex; align-items: center; gap: 10px; min-height: 32px">
+      <input type="checkbox" defaultChecked="{{ true }}" style="width: 16px; height: 16px; accent-color: {{accent}}">
+      <span>Zapamiętaj do zamknięcia aplikacji</span>
+    </label>
+    <label style="display: flex; align-items: center; gap: 10px; min-height: 32px">
+      <input type="checkbox" style="width: 16px; height: 16px; accent-color: {{accent}}">
+      <span>Zapisz w zaszyfrowanym pliku z hostami</span>
+    </label>
+  </form>
+
+  <div style="flex: none; display: flex; justify-content: flex-end; gap: 8px; padding: 14px 24px; border-top: 1px solid #2C2C2C">
+    <button type="button" style="min-height: 36px; padding: 0 16px; border: 1px solid #3A3A3A; border-radius: 6px; background: #1C1C1C; color: #EDEDED; font-size: 13px; font-weight: 500; cursor: pointer">Anuluj</button>
+    <button type="button" style="min-height: 36px; padding: 0 18px; border: 0; border-radius: 6px; background: {{accent}}; color: #0F0F0F; font-size: 13px; font-weight: 600; cursor: pointer">Połącz</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":480,"height":440}}'>
+class Component extends DCLogic {
+  state = { show: false };
+
+  renderVals() {
+    const st = this.state;
+    return {
+      accent: this.props.accent ?? '#EDEDED',
+      inputType: st.show ? 'text' : 'password',
+      eyeLabel: st.show ? 'Ukryj hasło' : 'Pokaż hasło',
+      toggleShow: () => this.setState({ show: !st.show }),
+      submit: (e) => { if (e && e.preventDefault) { e.preventDefault(); } }
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,327 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "Main.dc.html": {
+      "expand": "fill",
+      "h": 800,
+      "is_interactive": true,
+      "title": "Okno główne",
+      "w": 1280,
+      "x": 0,
+      "y": 0
+    },
+    "Ustawienia.dc.html": {
+      "h": 720,
+      "is_interactive": true,
+      "title": "Ustawienia aplikacji",
+      "w": 1080,
+      "x": 0,
+      "y": 920
+    },
+    "EdycjaHosta.dc.html": {
+      "h": 760,
+      "is_interactive": true,
+      "title": "Edycja hosta",
+      "w": 720,
+      "x": 1160,
+      "y": 920
+    },
+    "Odblokowanie.dc.html": {
+      "h": 560,
+      "is_interactive": true,
+      "title": "Odblokowanie hasłem głównym",
+      "w": 520,
+      "x": 0,
+      "y": 1800
+    },
+    "MenuKontekstowe.dc.html": {
+      "h": 560,
+      "title": "Menu kontekstowe",
+      "w": 880,
+      "x": 600,
+      "y": 1800
+    },
+    "KonfliktSynchronizacji.dc.html": {
+      "h": 600,
+      "title": "Konflikt synchronizacji",
+      "w": 640,
+      "x": 0,
+      "y": 2480
+    },
+    "PolaczenieZLinku.dc.html": {
+      "h": 480,
+      "title": "Połączenie z linku",
+      "w": 520,
+      "x": 720,
+      "y": 2480
+    },
+    "ZaufanieDoHosta.dc.html": {
+      "h": 620,
+      "title": "Zaufanie do hosta",
+      "w": 1720,
+      "x": 0,
+      "y": 3200
+    },
+    "StanySesji.dc.html": {
+      "h": 740,
+      "title": "Stany sesji",
+      "w": 1160,
+      "x": 0,
+      "y": 3880
+    },
+    "MonitHasla.dc.html": {
+      "h": 440,
+      "title": "Monit o hasło",
+      "w": 480,
+      "x": 1240,
+      "y": 3880
+    },
+    "WlasciwosciKatalogu.dc.html": {
+      "h": 760,
+      "title": "Właściwości katalogu",
+      "w": 680,
+      "x": 0,
+      "y": 4740,
+      "is_interactive": true
+    },
+    "EdycjaSkrotu.dc.html": {
+      "h": 420,
+      "title": "Edycja skrótu",
+      "w": 480,
+      "x": 760,
+      "y": 4740,
+      "is_interactive": true
+    },
+    "Powiadomienia.dc.html": {
+      "h": 640,
+      "title": "Powiadomienia",
+      "w": 520,
+      "x": 1320,
+      "y": 4740
+    },
+    "PierwszeUruchomienie.dc.html": {
+      "h": 680,
+      "title": "Pierwsze uruchomienie",
+      "w": 560,
+      "x": 0,
+      "y": 5620
+    },
+    "SzybkieLaczenie.dc.html": {
+      "h": 480,
+      "title": "Szybkie łączenie",
+      "w": 640,
+      "x": 640,
+      "y": 5620
+    },
+    "ZaufaneKlucze.dc.html": {
+      "h": 560,
+      "title": "Zaufane klucze",
+      "w": 800,
+      "x": 1360,
+      "y": 5620
+    },
+    "DrzewoStany.dc.html": {
+      "h": 640,
+      "title": "Stany drzewa hostów",
+      "w": 1400,
+      "x": 0,
+      "y": 6420
+    },
+    "MainJasny.dc.html": {
+      "h": 800,
+      "title": "Okno główne, jasny motyw",
+      "w": 1280,
+      "x": 0,
+      "y": 7180,
+      "is_interactive": true,
+      "expand": "fill"
+    },
+    "WidokRDP.dc.html": {
+      "h": 800,
+      "title": "Widok sesji RDP",
+      "w": 1280,
+      "x": 0,
+      "y": 8100,
+      "is_interactive": true
+    },
+    "PelnyEkranRDP.dc.html": {
+      "h": 720,
+      "title": "RDP pełny ekran",
+      "w": 1280,
+      "x": 0,
+      "y": 9020
+    },
+    "PaskiKart.dc.html": {
+      "h": 560,
+      "title": "Pasek kart i menu karty",
+      "w": 1100,
+      "x": 0,
+      "y": 9860
+    },
+    "MainWaskie.dc.html": {
+      "h": 560,
+      "title": "Okno wąskie",
+      "w": 760,
+      "x": 1180,
+      "y": 9860
+    },
+    "BledyPliku.dc.html": {
+      "h": 520,
+      "title": "Błędy pliku z hostami",
+      "w": 1400,
+      "x": 0,
+      "y": 10540
+    },
+    "ZmianaHasla.dc.html": {
+      "h": 580,
+      "title": "Zmiana hasła głównego",
+      "w": 520,
+      "x": 0,
+      "y": 11180
+    },
+    "KopiaZapasowa.dc.html": {
+      "h": 560,
+      "title": "Kopie zapasowe",
+      "w": 600,
+      "x": 600,
+      "y": 11180
+    },
+    "OProgramie.dc.html": {
+      "h": 460,
+      "title": "O programie",
+      "w": 480,
+      "x": 1280,
+      "y": 11180
+    },
+    "DziennikDiagnostyczny.dc.html": {
+      "h": 560,
+      "title": "Dziennik diagnostyczny",
+      "w": 880,
+      "x": 0,
+      "y": 11880
+    },
+    "SchematyTerminala.dc.html": {
+      "h": 700,
+      "title": "Schematy terminala",
+      "w": 1120,
+      "x": 960,
+      "y": 11880
+    },
+    "BibliotekaIkon.dc.html": {
+      "h": 780,
+      "title": "Biblioteka ikon",
+      "w": 1120,
+      "x": 0,
+      "y": 12700
+    },
+    "IkonaAplikacji.dc.html": {
+      "h": 860,
+      "title": "Ikona i elementy systemowe",
+      "w": 1120,
+      "x": 1200,
+      "y": 12700
+    },
+    "StanyKomponentow.dc.html": {
+      "h": 980,
+      "title": "Stany komponentów",
+      "w": 1200,
+      "x": 0,
+      "y": 13700
+    },
+    "SkrotyKlawiszowe.dc.html": {
+      "h": 600,
+      "title": "Skróty klawiszowe",
+      "w": 760,
+      "x": 0,
+      "y": 14800
+    },
+    "KreatorSynchronizacji.dc.html": {
+      "h": 560,
+      "title": "Kreator synchronizacji",
+      "w": 600,
+      "x": 840,
+      "y": 14800
+    },
+    "StartIAktualizacja.dc.html": {
+      "h": 520,
+      "title": "Start i aktualizacja",
+      "w": 1100,
+      "x": 0,
+      "y": 15500
+    },
+    "AgentSSH.dc.html": {
+      "h": 520,
+      "title": "Stany agenta SSH",
+      "w": 1200,
+      "x": 0,
+      "y": 16140
+    },
+    "UstawieniaJasne.dc.html": {
+      "h": 720,
+      "title": "Ustawienia, jasny motyw",
+      "w": 1080,
+      "x": 0,
+      "y": 16780,
+      "is_interactive": true
+    },
+    "EdycjaHostaJasna.dc.html": {
+      "h": 760,
+      "title": "Edycja hosta, jasny motyw",
+      "w": 720,
+      "x": 1160,
+      "y": 16780,
+      "is_interactive": true
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-10-09T12:00:00Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "notes": {},
+  "order": [
+    "Main.dc.html",
+    "Ustawienia.dc.html",
+    "EdycjaHosta.dc.html",
+    "Odblokowanie.dc.html",
+    "MenuKontekstowe.dc.html",
+    "KonfliktSynchronizacji.dc.html",
+    "PolaczenieZLinku.dc.html",
+    "ZaufanieDoHosta.dc.html",
+    "StanySesji.dc.html",
+    "MonitHasla.dc.html",
+    "WlasciwosciKatalogu.dc.html",
+    "EdycjaSkrotu.dc.html",
+    "Powiadomienia.dc.html",
+    "PierwszeUruchomienie.dc.html",
+    "SzybkieLaczenie.dc.html",
+    "ZaufaneKlucze.dc.html",
+    "DrzewoStany.dc.html",
+    "MainJasny.dc.html",
+    "WidokRDP.dc.html",
+    "PelnyEkranRDP.dc.html",
+    "PaskiKart.dc.html",
+    "MainWaskie.dc.html",
+    "BledyPliku.dc.html",
+    "ZmianaHasla.dc.html",
+    "KopiaZapasowa.dc.html",
+    "OProgramie.dc.html",
+    "DziennikDiagnostyczny.dc.html",
+    "SchematyTerminala.dc.html",
+    "BibliotekaIkon.dc.html",
+    "IkonaAplikacji.dc.html",
+    "StanyKomponentow.dc.html",
+    "SkrotyKlawiszowe.dc.html",
+    "KreatorSynchronizacji.dc.html",
+    "StartIAktualizacja.dc.html",
+    "AgentSSH.dc.html",
+    "UstawieniaJasne.dc.html",
+    "EdycjaHostaJasna.dc.html"
+  ],
+  "pages": [],
+  "title": "Menedżer sesji SSH i RDP"
+}

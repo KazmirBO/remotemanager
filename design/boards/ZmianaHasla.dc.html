@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Zmiana hasła głównego</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+button:hover{filter:brightness(1.15)}
+input{font-family:inherit}
+</style>
+</helmet>
+<div style="width: 520px; height: 580px; box-sizing: border-box; display: flex; flex-direction: column; background: #161616; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; border: 1px solid #3A3A3A; border-radius: 10px; overflow: hidden">
+
+  <div style="flex: none; padding: 16px 24px; border-bottom: 1px solid #2C2C2C">
+    <div style="font-size: 16px; font-weight: 600">Zmień hasło główne</div>
+    <div style="margin-top: 4px; color: #A0A0A0">Cały plik z hostami zostanie zaszyfrowany ponownie nowym hasłem.</div>
+  </div>
+
+  <div style="flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding: 20px 24px">
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <label for="stare" style="font-size: 13px; font-weight: 500">Obecne hasło</label>
+      <input id="stare" type="password" value="obecnehaslo" readOnly="{{ true }}" style="box-sizing: border-box; width: 100%; min-height: 40px; padding: 0 12px; border: 1px solid #3A3A3A; border-radius: 6px; background: #0F0F0F; color: #EDEDED; font-size: 14px">
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <label for="nowe" style="font-size: 13px; font-weight: 500">Nowe hasło</label>
+      <input id="nowe" type="password" value="noweprzykladowe" readOnly="{{ true }}" style="box-sizing: border-box; width: 100%; min-height: 40px; padding: 0 12px; border: 1px solid #3A3A3A; border-radius: 6px; background: #0F0F0F; color: #EDEDED; font-size: 14px">
+      <div style="display: flex; align-items: center; gap: 10px">
+        <div role="meter" aria-label="Siła hasła" aria-valuemin="0" aria-valuemax="4" aria-valuenow="2" style="flex: 1 1 auto; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px">
+          <sc-for list="{{meter}}" as="m" hint-placeholder-count="4"><div style="height: 6px; border-radius: 3px; background: {{m.color}}"></div></sc-for>
+        </div>
+        <span style="flex: none; font-size: 12px; color: #A0A0A0">Średnie</span>
+      </div>
+      <span style="font-size: 12px; color: #A0A0A0">Dłuższa fraza z kilku słów jest silniejsza niż krótkie hasło ze znakami specjalnymi.</span>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <label for="powtorz" style="font-size: 13px; font-weight: 500">Powtórz nowe hasło</label>
+      <input id="powtorz" type="password" value="noweprzykladowe" readOnly="{{ true }}" style="box-sizing: border-box; width: 100%; min-height: 40px; padding: 0 12px; border: 1px solid #3A3A3A; border-radius: 6px; background: #0F0F0F; color: #EDEDED; font-size: 14px">
+    </div>
+    <label style="display: flex; align-items: flex-start; gap: 10px">
+      <input type="checkbox" defaultChecked="{{ true }}" style="flex: none; width: 16px; height: 16px; margin-top: 2px; accent-color: {{accent}}">
+      <span style="display: flex; flex-direction: column; gap: 2px"><span>Zachowaj kopię pliku sprzed zmiany</span><span style="font-size: 12px; color: #A0A0A0">Kopia pozostanie zaszyfrowana starym hasłem.</span></span>
+    </label>
+    <div style="display: flex; gap: 10px; padding: 10px 12px; border: 1px solid #2C2C2C; border-radius: 6px; background: #1C1C1C; font-size: 13px; color: #A0A0A0">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="1.8" stroke-linecap="round" style="flex: none; margin-top: 1px"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 11v5M12 8v.01"/></svg>
+      <span>Jeśli plik jest synchronizowany przez folder, inne komputery poproszą o nowe hasło przy następnym odblokowaniu.</span>
+    </div>
+  </div>
+
+  <div style="flex: none; display: flex; justify-content: flex-end; gap: 8px; padding: 14px 24px; border-top: 1px solid #2C2C2C">
+    <button type="button" style="min-height: 36px; padding: 0 16px; border: 1px solid #3A3A3A; border-radius: 6px; background: #1C1C1C; color: #EDEDED; font-size: 13px; font-weight: 500; cursor: pointer">Anuluj</button>
+    <button type="button" style="min-height: 36px; padding: 0 18px; border: 0; border-radius: 6px; background: {{accent}}; color: #0F0F0F; font-size: 13px; font-weight: 600; cursor: pointer">Zmień hasło</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":520,"height":580}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? '#EDEDED';
+    return { accent, meter: [0, 1, 2, 3].map((i) => ({ color: i < 2 ? accent : '#2C2C2C' })) };
+  }
+}
+</script>
+</body>
+</html>

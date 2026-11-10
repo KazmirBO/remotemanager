@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Ikona i elementy systemowe</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+.mi:hover{background:#262626}
+</style>
+</helmet>
+<div style="width: 1120px; height: 860px; box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto auto 1fr; gap: 32px 40px; padding: 40px; background: #0F0F0F; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px">
+
+  <div style="grid-column: 1 / span 2; display: flex; flex-direction: column; gap: 10px">
+    <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Ikona programu: monitor z znakiem zachęty. Łączy terminal (SSH) i zdalny pulpit (RDP). Pliki: app-icon.svg, app-icon-light.svg</div>
+    <div style="display: flex; align-items: flex-end; gap: 28px; padding: 20px 24px; background: #161616; border: 1px solid #2C2C2C; border-radius: 8px">
+      <sc-for list="{{appIcons}}" as="a" hint-placeholder-count="10">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px; background: {{a.tile}}; border-radius: 6px">
+          <svg width="{{a.s}}" height="{{a.s}}" viewBox="0 0 128 128" role="img" aria-label="Ikona programu {{a.s}} px">
+            <rect x="4" y="4" width="120" height="120" rx="28" fill="{{a.bg}}"/>
+            <rect x="28" y="32" width="72" height="50" rx="6" fill="none" stroke="{{a.fg}}" stroke-width="8"/>
+            <path d="M64 82v16M46 98h36" fill="none" stroke="{{a.fg}}" stroke-width="8" stroke-linecap="round"/>
+            <path d="M44 48l12 9-12 9M62 66h14" fill="none" stroke="{{a.fg}}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span style="font-size: 11px; color: {{a.cap}}">{{a.s}} px</span>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px">
+    <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Ikona w zasobniku: trzy stany (24 px, na ciemnym i jasnym panelu)</div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px">
+      <sc-for list="{{panels}}" as="p" hint-placeholder-count="2">
+        <div style="display: flex; flex-direction: column; gap: 14px; padding: 14px 16px; background: {{p.bg}}; border: 1px solid #3A3A3A; border-radius: 8px; color: {{p.fg}}">
+          <sc-for list="{{p.states}}" as="s" hint-placeholder-count="3">
+            <div style="display: flex; align-items: center; gap: 12px">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H4zM9 20h6M12 16v4M8 8.5l2.5 2L8 12.5M13 12.5h3"/><path d="{{s.extra}}" fill="{{s.fill}}"/></svg>
+              <span style="font-size: 12px; opacity: 0.8">{{s.label}}</span>
+            </div>
+          </sc-for>
+        </div>
+      </sc-for>
+    </div>
+    <div style="font-size: 12px; color: #A0A0A0">Pliki: tray-idle.svg, tray-active.svg, tray-locked.svg. Ikony są monochromatyczne i bez tła, więc system może je kolorować (na Linuksie wymaga to ikony typu symbolic).</div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px">
+    <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Menu zasobnika</div>
+    <div role="menu" aria-label="Menu zasobnika" style="width: 260px; padding: 4px; background: #1C1C1C; border: 1px solid #3A3A3A; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5)">
+      <sc-for list="{{menu}}" as="m" hint-placeholder-count="8">
+        <div class="mi" role="menuitem" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 30px; padding: 0 10px; border-radius: 4px; border-top: {{m.sep}}; margin-top: {{m.gap}}px">
+          <span style="font-size: 13px">{{m.label}}</span><span style="font-size: 11px; color: #A0A0A0">{{m.key}}</span>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px">
+    <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Powiadomienie systemowe (rozłączona sesja w tle)</div>
+    <div style="display: flex; gap: 12px; padding: 14px; background: #1C1C1C; border: 1px solid #3A3A3A; border-radius: 8px">
+      <svg width="40" height="40" viewBox="0 0 128 128" aria-hidden="true" style="flex: none"><rect x="4" y="4" width="120" height="120" rx="28" fill="#EDEDED"/><rect x="28" y="32" width="72" height="50" rx="6" fill="none" stroke="#0F0F0F" stroke-width="8"/><path d="M64 82v16M46 98h36" fill="none" stroke="#0F0F0F" stroke-width="8" stroke-linecap="round"/><path d="M44 48l12 9-12 9M62 66h14" fill="none" stroke="#0F0F0F" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+        <span style="font-size: 13px; font-weight: 600">Menedżer sesji</span>
+        <span style="font-size: 13px">Sesja veeam została rozłączona</span>
+        <span style="font-size: 12px; color: #A0A0A0">Połączenie zerwane (timeout). Ponawianie: próba 2 z 5.</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px">
+    <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Ramka okna: decyzja</div>
+    <div style="display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; background: #161616; border: 1px solid #2C2C2C; border-radius: 8px; font-size: 13px">
+      <div style="font-weight: 600">Natywna ramka systemu na obu platformach</div>
+      <div style="color: #A0A0A0">Program nie rysuje własnego paska tytułu. Na Waylandzie (KDE) własna ramka w Tauri bywa zawodna: przeciąganie, zmiana rozmiaru i przyciąganie okien zależą od kompozytora. Natywna ramka gwarantuje zachowanie zgodne z resztą pulpitu.</div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px">
+        <div style="border: 1px solid #3A3A3A; border-radius: 6px; overflow: hidden"><div style="display: flex; justify-content: space-between; padding: 0 8px; min-height: 22px; align-items: center; background: #262626; font-size: 11px"><span>Menedżer sesji</span><span>_ &#9633; x</span></div><div style="height: 34px; background: #0F0F0F"></div></div>
+        <div style="border: 1px solid #3A3A3A; border-radius: 6px; overflow: hidden"><div style="display: flex; justify-content: space-between; padding: 0 8px; min-height: 22px; align-items: center; background: #262626; font-size: 11px"><span>Menedżer sesji</span><span>- &#9633; x</span></div><div style="height: 34px; background: #0F0F0F"></div></div>
+      </div>
+      <div style="color: #A0A0A0">Minimalny rozmiar okna: 640 x 480. Poniżej 900 px szerokości pasek boczny zwija się do ikon (patrz plansza „Okno wąskie”). Zamknięcie okna zwija program do zasobnika, jeśli ta opcja jest włączona w ustawieniach.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":1120,"height":860}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const sizes = [256, 128, 64, 32, 16];
+    const appIcons = [];
+    sizes.slice(2).forEach((s) => appIcons.push({ s, tile: '#0F0F0F', bg: '#EDEDED', fg: '#0F0F0F', cap: '#A0A0A0' }));
+    sizes.slice(2).forEach((s) => appIcons.push({ s, tile: '#EDEDED', bg: '#0F0F0F', fg: '#EDEDED', cap: '#5E5E5E' }));
+    const mk = (bg, fg) => ({ bg, fg, states: [
+      { label: 'Bezczynny', extra: '', fill: 'none' },
+      { label: 'Aktywne sesje', extra: 'M19 2.5a3 3 0 1 0 0 6 3 3 0 0 0 0-6z', fill: 'currentColor' },
+      { label: 'Zablokowany', extra: 'M10 10.5h4v3h-4zM11 10.5V9.5a1 1 0 0 1 2 0v1', fill: 'none' }
+    ] });
+    const panels = [mk('#0F0F0F', '#EDEDED'), mk('#EDEDED', '#1A1A1A')];
+    const menu = [
+      { label: 'Pokaż okno', key: '' },
+      { label: 'Szybkie łączenie...', key: 'Ctrl+K' },
+      { label: 'Ostatnie: zabbix', key: '', sep: true },
+      { label: 'Ostatnie: dc01', key: '' },
+      { label: 'Zablokuj hosty', key: 'Ctrl+L', sep: true },
+      { label: 'Ustawienia', key: 'Ctrl+,' },
+      { label: 'Zakończ', key: 'Ctrl+Q', sep: true }
+    ].map((m) => ({ ...m, sep: m.sep ? '1px solid #2C2C2C' : '0 solid transparent', gap: m.sep ? 4 : 0 }));
+    return { appIcons, panels, menu };
+  }
+}
+</script>
+</body>
+</html>

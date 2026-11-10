@@ -1,0 +1,20 @@
+[package]
+name = "rdp-probe"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+description = "Konsolowy prototyp sprawdzający NLA przez IronRDP"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+ironrdp = { version = "0.17", features = ["connector", "session", "graphics", "pdu"] }
+ironrdp-blocking = "0.10"
+ironrdp-graphics = "0.9.0"
+ironrdp-pdu = "0.9"
+png = "0.18"
+rpassword = "7.5.4"
+sspi = { version = "0.21", features = ["network_client"] }
+tokio-rustls = "0.26"
+x509-cert = { version = "0.2", default-features = false, features = ["std"] }

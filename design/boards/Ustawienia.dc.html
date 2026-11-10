@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Ustawienia</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+button:hover{filter:brightness(1.15)}
+input{font-family:inherit}
+</style>
+</helmet>
+<div style="width: 1080px; height: 720px; box-sizing: border-box; display: flex; flex-direction: column; background: #161616; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; border: 1px solid #3A3A3A; border-radius: 10px; overflow: hidden">
+
+  <div style="flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 24px; min-height: 52px; border-bottom: 1px solid #2C2C2C">
+    <div style="font-size: 15px; font-weight: 600">Ustawienia</div>
+    <button type="button" aria-label="Zamknij ustawienia" style="display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 0; border-radius: 6px; background: transparent; cursor: pointer">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+
+  <div style="flex: 1 1 auto; min-height: 0; display: flex">
+
+    <nav aria-label="Sekcje ustawień" style="flex: none; width: 220px; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; padding: 12px; background: #121212; border-right: 1px solid #2C2C2C">
+      <sc-for list="{{nav}}" as="n" hint-placeholder-count="7">
+        <button type="button" onClick="{{ n.pick }}" style="min-height: 40px; padding: 0 12px; border: 0; border-radius: 6px; background: {{n.bg}}; color: #EDEDED; font-size: 14px; font-weight: {{n.fw}}; text-align: left; cursor: pointer">{{n.label}}</button>
+      </sc-for>
+    </nav>
+
+    <section style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column">
+      <div style="flex: 1 1 auto; min-height: 0; overflow-y: auto; box-sizing: border-box; padding: 24px 32px">
+        <h2 style="margin: 0 0 8px; font-size: 20px; font-weight: 600">{{title}}</h2>
+
+        <sc-for list="{{rows}}" as="r" hint-placeholder-count="6">
+
+          <sc-if value="{{ r.isGroup }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top: 24px; padding-bottom: 6px; border-bottom: 1px solid #2C2C2C; font-size: 12px; font-weight: 600; color: #A0A0A0">{{r.label}}</div>
+          </sc-if>
+
+          <sc-if value="{{ r.isPreview }}" hint-placeholder-val="{{ false }}">
+            <div style="padding: 16px 0 4px">
+              <div style="box-sizing: border-box; padding: 16px; background: #0A0A0A; border: 1px solid #2C2C2C; border-radius: 8px; font-family: 'JetBrains Mono', monospace; font-size: 14px; line-height: 1.6">
+                <div style="color: #A0A0A0">Podgląd terminala</div>
+                <div>sebastian@gentoo ~ $ <span style="{{r.cursorStyle}}"></span></div>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ r.isControl }}" hint-placeholder-val="{{ true }}">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 0; border-bottom: 1px solid #2C2C2C">
+              <div style="min-width: 0; flex: 1 1 auto">
+                <div>{{r.label}}</div>
+                <sc-if value="{{ r.hasHint }}" hint-placeholder-val="{{ true }}">
+                  <div style="margin-top: 2px; font-size: 12px; color: #A0A0A0">{{r.hint}}</div>
+                </sc-if>
+              </div>
+              <div style="flex: none">
+
+                <sc-if value="{{ r.isToggle }}" hint-placeholder-val="{{ false }}">
+                  <button type="button" role="switch" aria-checked="{{r.checked}}" aria-label="{{r.label}}" onClick="{{ r.flip }}" style="position: relative; width: 44px; height: 24px; box-sizing: border-box; padding: 0; border: 1px solid #3A3A3A; border-radius: 12px; background: {{r.track}}; cursor: pointer">
+                    <span style="position: absolute; top: 2px; left: {{r.knobLeft}}px; width: 18px; height: 18px; border-radius: 50%; background: {{r.knob}}"></span>
+                  </button>
+                </sc-if>
+
+                <sc-if value="{{ r.isSeg }}" hint-placeholder-val="{{ false }}">
+                  <div role="group" aria-label="{{r.label}}" style="display: flex; border: 1px solid #3A3A3A; border-radius: 6px; overflow: hidden">
+                    <sc-for list="{{r.options}}" as="o" hint-placeholder-count="3">
+                      <button type="button" onClick="{{ o.pick }}" style="min-height: 32px; padding: 0 12px; border: 0; background: {{o.bg}}; color: {{o.fg}}; font-size: 13px; cursor: pointer">{{o.label}}</button>
+                    </sc-for>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ r.isSelect }}" hint-placeholder-val="{{ false }}">
+                  <button type="button" aria-haspopup="listbox" aria-label="{{r.label}}" onClick="{{ r.cycle }}" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 220px; min-height: 34px; box-sizing: border-box; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: #1C1C1C; color: #EDEDED; font-size: 14px; cursor: pointer">
+                    <span>{{r.value}}</span>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+                  </button>
+                </sc-if>
+
+                <sc-if value="{{ r.isField }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; align-items: center; gap: 8px">
+                    <input type="text" value="{{r.value}}" readOnly="{{ true }}" aria-label="{{r.label}}" style="box-sizing: border-box; width: {{r.width}}px; min-height: 34px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: #0F0F0F; color: #EDEDED; font-size: 14px">
+                    <sc-if value="{{ r.hasUnit }}" hint-placeholder-val="{{ false }}">
+                      <span style="color: #A0A0A0; font-size: 13px">{{r.unit}}</span>
+                    </sc-if>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ r.isSlider }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; align-items: center; gap: 12px">
+                    <input type="range" min="{{r.min}}" max="{{r.max}}" value="{{r.value}}" aria-label="{{r.label}}" style="width: 180px; accent-color: {{accent}}">
+                    <span style="min-width: 64px; text-align: right; color: #A0A0A0; font-size: 13px">{{r.valueText}}</span>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ r.isShortcut }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; align-items: center; gap: 6px">
+                    <sc-for list="{{r.keys}}" as="k" hint-placeholder-count="2">
+                      <kbd style="display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 26px; box-sizing: border-box; padding: 0 8px; border: 1px solid #3A3A3A; border-bottom-width: 2px; border-radius: 5px; background: #1C1C1C; font-family: inherit; font-size: 12px">{{k.label}}</kbd>
+                    </sc-for>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ r.isInfo }}" hint-placeholder-val="{{ false }}">
+                  <span style="display: inline-block; max-width: 320px; color: #A0A0A0; font-size: 13px; text-align: right">{{r.value}}</span>
+                </sc-if>
+
+                <sc-if value="{{ r.isCode }}" hint-placeholder-val="{{ false }}">
+                  <code style="display: inline-block; box-sizing: border-box; max-width: 360px; padding: 8px 10px; border: 1px solid #2C2C2C; border-radius: 6px; background: #0A0A0A; color: #EDEDED; font-family: 'JetBrains Mono', monospace; font-size: 12px; overflow-wrap: anywhere">{{r.value}}</code>
+                </sc-if>
+
+                <sc-if value="{{ r.isAction }}" hint-placeholder-val="{{ false }}">
+                  <button type="button" style="min-height: 34px; padding: 0 14px; border: 1px solid #3A3A3A; border-radius: 6px; background: #1C1C1C; color: #EDEDED; font-size: 13px; font-weight: 500; cursor: pointer">{{r.value}}</button>
+                </sc-if>
+
+              </div>
+            </div>
+          </sc-if>
+
+        </sc-for>
+      </div>
+
+      <div style="flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 12px 32px; border-top: 1px solid #2C2C2C">
+        <span style="font-size: 12px; color: #A0A0A0">Zmiany zapisują się od razu.</span>
+        <button type="button" style="min-height: 34px; padding: 0 14px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 13px; cursor: pointer">Przywróć domyślne dla tej sekcji</button>
+      </div>
+    </section>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":1080,"height":720}}'>
+class Component extends DCLogic {
+  state = { section: 'wyglad', v: {} };
+
+  setVal(id, value) {
+    this.setState({ v: { ...this.state.v, [id]: value } });
+  }
+
+  renderVals() {
+    const accent = this.props.accent ?? '#EDEDED';
+    const st = this.state;
+
+    const g = (label) => ({ kind: 'group', label });
+    const prev = () => ({ kind: 'preview' });
+    const tog = (id, label, hint, def) => ({ kind: 'toggle', id, label, hint, def });
+    const seg = (id, label, hint, options, def) => ({ kind: 'seg', id, label, hint, options, def });
+    const sel = (id, label, hint, options, def) => ({ kind: 'select', id, label, hint, options, def });
+    const fld = (id, label, hint, def, width, unit) => ({ kind: 'field', id, label, hint, def, width, unit });
+    const sli = (id, label, hint, min, max, def, unit) => ({ kind: 'slider', id, label, hint, min, max, def, unit });
+    const keys = (label, list) => ({ kind: 'keys', label, list });
+    const act = (label, hint, def) => ({ kind: 'action', label, hint, def });
+    const inf = (label, hint, def) => ({ kind: 'info', label, hint, def });
+    const cmd = (label, hint, def) => ({ kind: 'code', label, hint, def });
+
+    const SECTIONS = [
+      ['wyglad', 'Wygląd'],
+      ['terminal', 'Terminal SSH'],
+      ['rdp', 'Sesje RDP'],
+      ['bezp', 'Bezpieczeństwo'],
+      ['sesje', 'Karty i sesje'],
+      ['sync', 'Synchronizacja'],
+      ['linki', 'Linki i wiersz poleceń'],
+      ['skroty', 'Skróty klawiszowe'],
+      ['zaaw', 'Zaawansowane']
+    ];
+
+    const DATA = {
+      wyglad: [
+        g('Interfejs'),
+        seg('theme', 'Motyw', 'Schemat kolorów całej aplikacji.', ['Ciemny', 'Jasny', 'Systemowy'], 'Ciemny'),
+        seg('density', 'Gęstość listy hostów', 'Wysokość wierszy w drzewie.', ['Zwarta', 'Standardowa', 'Przestronna'], 'Standardowa'),
+        fld('fontui', 'Rozmiar czcionki interfejsu', '', '14', 72, 'px'),
+        sel('lang', 'Język', '', ['Polski', 'English'], 'Polski'),
+        g('Panel hostów'),
+        seg('side', 'Położenie panelu', '', ['Lewo', 'Prawo'], 'Lewo'),
+        sli('panelw', 'Szerokość panelu', 'Można też przeciągnąć krawędź panelu.', 240, 480, 300, 'px'),
+        tog('badges', 'Plakietki SSH i RDP przy hostach', '', true),
+        tog('status', 'Pasek stanu pod sesją', 'Protokół i tryb uwierzytelniania.', true),
+        tog('tray', 'Ikona w zasobniku systemowym', 'Zamknięcie okna zostawia aplikację w zasobniku.', false),
+        g('Ulubione i ostatnie'),
+        tog('showfav', 'Pokaż grupę Ulubione', 'Na górze drzewa, nad katalogami.', true),
+        tog('showrec', 'Pokaż grupę Ostatnie', '', true),
+        fld('recentn', 'Liczba ostatnich hostów', '', '5', 72, 'hostów'),
+        sel('recents', 'Kolejność ostatnich', '', ['Od najnowszego', 'Najczęściej używane'], 'Od najnowszego')
+      ],
+      terminal: [
+        prev(),
+        g('Czcionka'),
+        sel('tfont', 'Czcionka terminala', '', ['JetBrains Mono', 'IBM Plex Mono', 'DejaVu Sans Mono'], 'JetBrains Mono'),
+        fld('tsize', 'Rozmiar czcionki', '', '14', 72, 'px'),
+        sel('tscheme', 'Schemat kolorów', 'Kolory ANSI w terminalu.', ['Monochromatyczny', 'Klasyczny ciemny', 'Klasyczny jasny'], 'Monochromatyczny'),
+        g('Kursor'),
+        seg('cursor', 'Kształt kursora', '', ['Blok', 'Pasek', 'Podkreślenie'], 'Blok'),
+        tog('blink', 'Miganie kursora', '', true),
+        g('Zachowanie'),
+        fld('scroll', 'Bufor przewijania', 'Liczba linii pamiętanych w karcie.', '10000', 96, 'linii'),
+        tog('copysel', 'Kopiuj zaznaczenie do schowka', 'Zaznaczenie myszą kopiuje tekst automatycznie.', true),
+        tog('rclick', 'Wklejanie prawym przyciskiem myszy', '', false),
+        sel('bell', 'Dzwonek terminala', '', ['Wyłączony', 'Sygnał wizualny', 'Dźwięk'], 'Sygnał wizualny'),
+        fld('keepalive', 'Podtrzymanie połączenia', 'Odstęp między pakietami keep-alive.', '30', 72, 's'),
+        g('Dziennik sesji'),
+        tog('logon', 'Zapisuj sesje do pliku', 'Cały ruch terminala trafia do pliku tekstowego.', true),
+        fld('logdir', 'Katalog dzienników', '', '~/Dzienniki sesji', 260, ''),
+        sel('logname', 'Nazwa pliku', '', ['host_data_godzina', 'data_host'], 'host_data_godzina'),
+        tog('logts', 'Znacznik czasu w każdej linii', '', false),
+        fld('logkeep', 'Usuwaj dzienniki starsze niż', 'Puste: nigdy.', '90', 72, 'dni'),
+        g('Połączenie przez bastion'),
+        sel('jump', 'Domyślny host pośredni', 'Można nadpisać w katalogu lub w hoście.', ['Brak', 'bastion'], 'Brak'),
+        fld('jumpt', 'Limit czasu połączenia przez bastion', '', '15', 72, 's')
+      ],
+      rdp: [
+        g('Obraz'),
+        sel('res', 'Rozdzielczość pulpitu', '', ['Dopasuj do okna', '1920 x 1080', '1280 x 1024'], 'Dopasuj do okna'),
+        tog('dyn', 'Zmieniaj rozdzielczość razem z oknem', 'Pulpit zdalny dopasowuje się do rozmiaru karty.', true),
+        sel('depth', 'Głębia kolorów', '', ['32 bity', '24 bity', '16 bitów'], '32 bity'),
+        tog('comp', 'Kompresja danych', 'Mniej danych w sieci kosztem procesora.', true),
+        g('Urządzenia'),
+        tog('clip', 'Udostępniaj schowek', 'Kopiowanie tekstu między komputerami.', true),
+        sel('audio', 'Dźwięk z pulpitu zdalnego', '', ['Odtwarzaj na tym komputerze', 'Nie odtwarzaj'], 'Nie odtwarzaj'),
+        tog('drives', 'Przekierowanie dysków lokalnych', 'Wyłączone jest bezpieczniejsze.', false),
+        g('Uwierzytelnianie i certyfikaty'),
+        seg('nla', 'Metoda NLA', 'Kerberos wymaga dostępu do kontrolera domeny.', ['Negotiate (Kerberos, NTLM)', 'Tylko NTLM'], 'Negotiate (Kerberos, NTLM)'),
+        sel('cert', 'Certyfikat serwera', 'Co robić z nieznanym certyfikatem.', ['Zapytaj przy pierwszym połączeniu', 'Wymagaj zaufanego', 'Nie sprawdzaj'], 'Zapytaj przy pierwszym połączeniu'),
+        fld('kdc', 'Adres KDC (opcjonalnie)', 'Pusty: wykrywany automatycznie.', '', 220, ''),
+        g('Monitory'),
+        seg('mon', 'Monitory w nowej sesji', '', ['Jeden', 'Wszystkie', 'Wybrane w hoście'], 'Wszystkie'),
+        sel('dpi', 'Skalowanie DPI', 'Skala pulpitu zdalnego na każdym monitorze.', ['Automatyczne', '100%', '125%', '150%', '200%'], 'Automatyczne'),
+        tog('span', 'Rozciągnij pulpit na wszystkie monitory w pełnym ekranie', '', true)
+      ],
+      bezp: [
+        g('Blokada'),
+        sel('lock', 'Blokuj po bezczynności', '', ['Nigdy', '5 minut', '15 minut', '30 minut'], '15 minut'),
+        tog('lockmin', 'Blokuj po zminimalizowaniu okna', '', true),
+        fld('clipclr', 'Czyść schowek po', 'Po skopiowaniu hasła z aplikacji.', '30', 72, 's'),
+        g('Dane'),
+        act('Plik z hostami', 'Zaszyfrowany hasłem głównym.', 'Zmień lokalizację'),
+        act('Hasło główne', '', 'Zmień hasło główne'),
+        tog('bak', 'Kopia zapasowa pliku przy zapisie', 'Zachowuje kilka ostatnich wersji.', true),
+        g('Klucze SSH'),
+        sel('agent', 'Agent SSH', '', ['Systemowy (SSH_AUTH_SOCK)', 'Wbudowany agent aplikacji'], 'Systemowy (SSH_AUTH_SOCK)'),
+        act('Zaufane klucze hostów', 'Odciski zapisane po pierwszym połączeniu.', 'Zarządzaj')
+      ],
+      sesje: [
+        g('Karty'),
+        seg('open', 'Otwieranie hosta', 'Jak otworzyć sesję z drzewa.', ['Pojedyncze kliknięcie', 'Dwuklik'], 'Dwuklik'),
+        sel('tabtitle', 'Tytuł karty', '', ['Nazwa hosta', 'Użytkownik@host'], 'Nazwa hosta'),
+        sel('closeact', 'Zamknięcie karty z aktywną sesją', '', ['Zapytaj', 'Zamknij bez pytania'], 'Zapytaj'),
+        tog('restore', 'Przywracaj karty po uruchomieniu', 'Ponownie łączy otwarte sesje.', false),
+        g('Powiadomienia'),
+        tog('notifydisc', 'Powiadom o rozłączeniu sesji', '', true)
+      ],
+      sync: [
+        g('Plik z hostami'),
+        tog('syncon', 'Synchronizuj przez zewnętrzny folder', 'Plik z hostami jest kopiowany do wskazanego katalogu.', true),
+        act('Folder synchronizacji', 'Na przykład katalog Syncthing lub Nextcloud.', 'Wybierz folder'),
+        inf('Stan', 'Ostatnie sprawdzenie zmian.', 'Aktualny, 2 minuty temu'),
+        act('Synchronizuj teraz', '', 'Synchronizuj'),
+        g('Zmiany z innych komputerów'),
+        tog('watch', 'Wykrywaj zmiany pliku na bieżąco', '', true),
+        sel('onchange', 'Gdy plik zmieni się na innym komputerze', 'Jeśli nie masz niezapisanych zmian.', ['Wczytaj automatycznie', 'Zapytaj'], 'Wczytaj automatycznie'),
+        sel('conflict', 'Gdy zmieniono plik na obu komputerach', 'Różnice można zawsze porównać ręcznie.', ['Pokaż okno porównania', 'Zachowaj nowszy', 'Zachowaj lokalny'], 'Pokaż okno porównania'),
+        tog('syncbak', 'Zachowaj kopię przed nadpisaniem', '', true)
+      ],
+      linki: [
+        g('Linki w systemie'),
+        tog('sshurl', 'Obsługuj linki ssh://', '', true),
+        tog('rdpurl', 'Obsługuj linki rdp://', '', true),
+        tog('askurl', 'Pytaj przed połączeniem z linku', 'Chroni przed otwarciem hosta z cudzego linku.', true),
+        tog('trustsaved', 'Nie pytaj dla zapisanych hostów', 'Dotyczy tylko hostów z Twojej listy.', false),
+        g('Wiersz poleceń'),
+        cmd('Połącz z zapisanym hostem', 'Nazwa jak w drzewie.', 'multiremotemanager connect zabbix'),
+        cmd('Połącz z adresu', 'Protokół, użytkownik, host i port.', 'multiremotemanager ssh://sebastian@zabbix:22')
+      ],
+      skroty: [
+        g('Ogólne'),
+        keys('Szybkie łączenie', ['Ctrl', 'K']),
+        keys('Szukaj hosta w drzewie', ['Ctrl', 'F']),
+        keys('Zablokuj aplikację', ['Ctrl', 'L']),
+        keys('Pełny ekran', ['F11']),
+        g('Karty'),
+        keys('Następna karta', ['Ctrl', 'Tab']),
+        keys('Poprzednia karta', ['Ctrl', 'Shift', 'Tab']),
+        keys('Zamknij kartę', ['Ctrl', 'W']),
+        keys('Ukryj panel hostów', ['Ctrl', 'B'])
+      ],
+      zaaw: [
+        g('Diagnostyka'),
+        sel('log', 'Poziom dziennika', '', ['Błędy', 'Ostrzeżenia', 'Informacje', 'Szczegółowy'], 'Ostrzeżenia'),
+        act('Dziennik aplikacji', 'Plik tekstowy do zgłaszania problemów.', 'Otwórz dziennik'),
+        g('Dane aplikacji'),
+        act('Eksport hostów', 'Do zaszyfrowanego pliku.', 'Eksportuj'),
+        act('Przywróć ustawienia fabryczne', 'Nie usuwa pliku z hostami.', 'Przywróć')
+      ]
+    };
+
+    const cur = st.section;
+    const val = (r) => (st.v[r.id] !== undefined ? st.v[r.id] : r.def);
+
+    const rows = DATA[cur].map((r) => {
+      const base = {
+        label: r.label || '',
+        hint: r.hint || '',
+        hasHint: !!r.hint,
+        isGroup: false, isPreview: false, isControl: false,
+        isToggle: false, isSeg: false, isSelect: false, isField: false,
+        isSlider: false, isShortcut: false, isAction: false, isInfo: false, isCode: false
+      };
+      if (r.kind === 'group') return { ...base, isGroup: true };
+      if (r.kind === 'preview') {
+        const shape = st.v.cursor !== undefined ? st.v.cursor : 'Blok';
+        let cursorStyle = 'display:inline-block;vertical-align:text-bottom;width:9px;height:17px;background:' + accent;
+        if (shape === 'Pasek') { cursorStyle = 'display:inline-block;vertical-align:text-bottom;width:2px;height:17px;background:' + accent; }
+        if (shape === 'Podkreślenie') { cursorStyle = 'display:inline-block;vertical-align:baseline;width:9px;height:2px;background:' + accent; }
+        return { ...base, isPreview: true, cursorStyle };
+      }
+      const c = { ...base, isControl: true };
+      if (r.kind === 'toggle') {
+        const on = !!val(r);
+        return { ...c, isToggle: true, checked: on,
+          track: on ? accent : '#262626', knob: on ? '#0F0F0F' : '#A0A0A0', knobLeft: on ? 22 : 2,
+          flip: () => this.setVal(r.id, !on) };
+      }
+      if (r.kind === 'seg') {
+        const now = val(r);
+        return { ...c, isSeg: true,
+          options: r.options.map((o) => ({
+            label: o,
+            bg: o === now ? accent : 'transparent',
+            fg: o === now ? '#0F0F0F' : '#EDEDED',
+            pick: () => this.setVal(r.id, o)
+          })) };
+      }
+      if (r.kind === 'select') {
+        const now = val(r);
+        const next = r.options[(r.options.indexOf(now) + 1) % r.options.length];
+        return { ...c, isSelect: true, value: now, cycle: () => this.setVal(r.id, next) };
+      }
+      if (r.kind === 'field') {
+        return { ...c, isField: true, value: String(val(r)), width: r.width, unit: r.unit || '', hasUnit: !!r.unit };
+      }
+      if (r.kind === 'slider') {
+        return { ...c, isSlider: true, min: r.min, max: r.max, value: val(r), valueText: val(r) + ' ' + r.unit };
+      }
+      if (r.kind === 'keys') {
+        return { ...c, isShortcut: true, keys: r.list.map((k) => ({ label: k })) };
+      }
+      if (r.kind === 'info') { return { ...c, isInfo: true, value: r.def }; }
+      if (r.kind === 'code') { return { ...c, isCode: true, value: r.def }; }
+      return { ...c, isAction: true, value: r.def };
+    });
+
+    const nav = SECTIONS.map(([id, label]) => ({
+      label,
+      bg: cur === id ? '#262626' : 'transparent',
+      fw: cur === id ? 600 : 400,
+      pick: () => this.setState({ section: id })
+    }));
+
+    const title = SECTIONS.find((s) => s[0] === cur)[1];
+    return { accent, nav, title, rows };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Stany komponentów</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+</style>
+</helmet>
+<div style="width: 1200px; height: 980px; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px; padding: 40px; background: #0F0F0F; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px">
+
+  <div>
+    <div style="font-size: 18px; font-weight: 600">Stany komponentów</div>
+    <div style="margin-top: 4px; font-size: 13px; color: #A0A0A0">Fokus z klawiatury to zawsze ten sam pierścień: obrys 2 px w kolorze akcentu, odsunięty o 2 px. W monochromatycznej palecie stany odróżniają jasność tła, grubość obramowania i pierścień, nigdy sam kolor.</div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 170px repeat(5, minmax(0, 1fr)); gap: 0 16px; align-items: center; padding-bottom: 8px; border-bottom: 1px solid #3A3A3A; font-size: 12px; font-weight: 600; color: #A0A0A0">
+    <span>Komponent</span>
+    <sc-for list="{{heads}}" as="h" hint-placeholder-count="5"><span>{{h}}</span></sc-for>
+  </div>
+
+  <sc-for list="{{rows}}" as="r" hint-placeholder-count="9">
+    <div style="display: grid; grid-template-columns: 170px repeat(5, minmax(0, 1fr)); gap: 0 16px; align-items: center; min-height: 64px; border-bottom: 1px solid #2C2C2C">
+      <span style="font-size: 13px">{{r.label}}</span>
+      <sc-for list="{{r.cells}}" as="c" hint-placeholder-count="5">
+        <div style="display: flex; flex-direction: column; gap: 4px; min-width: 0">
+          <sc-if value="{{ c.isBtn }}" hint-placeholder-val="{{ true }}">
+            <div style="display: flex; align-items: center; justify-content: center; min-height: 36px; box-sizing: border-box; padding: 0 12px; border: 1px solid {{c.bd}}; border-radius: 6px; background: {{c.bg}}; color: {{c.fg}}; outline: {{c.ol}}; outline-offset: 2px; opacity: {{c.op}}; font-size: 13px; font-weight: 600">{{c.txt}}</div>
+          </sc-if>
+          <sc-if value="{{ c.isInput }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; align-items: center; min-height: 36px; box-sizing: border-box; padding: 0 10px; border: 1px solid {{c.bd}}; border-radius: 6px; background: {{c.bg}}; color: {{c.fg}}; outline: {{c.ol}}; outline-offset: 2px; opacity: {{c.op}}; font-size: 13px">{{c.txt}}</div>
+            <span style="min-height: 14px; font-size: 11px; color: #EDEDED">{{c.note}}</span>
+          </sc-if>
+          <sc-if value="{{ c.isSelect }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; align-items: center; justify-content: space-between; min-height: 36px; box-sizing: border-box; padding: 0 10px; border: 1px solid {{c.bd}}; border-radius: 6px; background: {{c.bg}}; color: {{c.fg}}; outline: {{c.ol}}; outline-offset: 2px; opacity: {{c.op}}; font-size: 13px"><span>{{c.txt}}</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
+          </sc-if>
+          <sc-if value="{{ c.isSwitch }}" hint-placeholder-val="{{ false }}">
+            <div role="switch" aria-checked="{{c.on}}" style="width: 40px; height: 22px; box-sizing: border-box; padding: 2px; display: flex; justify-content: {{c.jc}}; border: 1px solid {{c.bd}}; border-radius: 4px; background: {{c.bg}}; outline: {{c.ol}}; outline-offset: 2px; opacity: {{c.op}}"><span style="width: 16px; height: 16px; border-radius: 2px; background: {{c.fg}}"></span></div>
+          </sc-if>
+          <sc-if value="{{ c.isCheck }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; align-items: center; gap: 8px; opacity: {{c.op}}">
+              <span style="display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; box-sizing: border-box; border: 1px solid {{c.bd}}; border-radius: 3px; background: {{c.bg}}; outline: {{c.ol}}; outline-offset: 2px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="{{c.fg}}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display: {{c.show}}"><path d="M5 12l5 5 9-10"/></svg></span>
+              <span style="font-size: 13px">{{c.txt}}</span>
+            </div>
+          </sc-if>
+          <sc-if value="{{ c.isTree }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; align-items: center; gap: 8px; min-height: 32px; box-sizing: border-box; padding: 0 10px; border-radius: 4px; background: {{c.bg}}; outline: {{c.ol}}; outline-offset: -2px; opacity: {{c.op}}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v10H4zM9 19h6M12 15v4"/></svg><span style="font-size: 13px">{{c.txt}}</span></div>
+          </sc-if>
+        </div>
+      </sc-for>
+    </div>
+  </sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":1200,"height":980}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const A = this.props.accent ?? '#EDEDED';
+    const ring = '2px solid ' + A;
+    const none = '0 solid transparent';
+    const mk = (kind, o) => ({ isBtn: kind === 'btn', isInput: kind === 'input', isSelect: kind === 'select', isSwitch: kind === 'switch',
+      isCheck: kind === 'check', isTree: kind === 'tree', bd: 'transparent', bg: 'transparent', fg: '#EDEDED', ol: none, op: 1, txt: '', note: '', jc: 'flex-start', show: 'none', on: 'false', ...o });
+    const btn = (label, base, hover, active, dis, extraBd) => [
+      mk('btn', { ...base, txt: label }),
+      mk('btn', { ...base, ...hover, txt: label }),
+      mk('btn', { ...base, ol: ring, txt: label }),
+      mk('btn', { ...base, ...active, txt: label }),
+      mk('btn', { ...base, ...dis, op: 0.45, txt: label })
+    ];
+    const rows = [
+      { label: 'Przycisk główny', cells: btn('Zapisz', { bg: A, fg: '#0F0F0F' }, { bg: '#FFFFFF' }, { bg: '#CFCFCF' }, {}) },
+      { label: 'Przycisk drugorzędny', cells: btn('Anuluj', { bg: '#1C1C1C', bd: '#3A3A3A' }, { bg: '#262626' }, { bg: '#0F0F0F' }, {}) },
+      { label: 'Przycisk tekstowy', cells: btn('Szczegóły', {}, { bg: '#262626' }, { bg: '#1C1C1C' }, {}) },
+      { label: 'Przycisk niebezpieczny', cells: btn('Usuń', { bd: '#EDEDED' }, { bg: '#EDEDED', fg: '#0F0F0F' }, { bg: '#CFCFCF', fg: '#0F0F0F', bd: '#CFCFCF' }, {}) },
+      { label: 'Pole tekstowe', cells: [
+        mk('input', { bg: '#0F0F0F', bd: '#3A3A3A', txt: 'dc01.firma.local' }),
+        mk('input', { bg: '#0F0F0F', bd: '#A0A0A0', txt: 'dc01.firma.local' }),
+        mk('input', { bg: '#0F0F0F', bd: A, ol: ring, txt: 'dc01.firma.local' }),
+        mk('input', { bg: '#0F0F0F', bd: '#EDEDED', txt: '', note: 'Podaj adres hosta' }),
+        mk('input', { bg: '#161616', bd: '#2C2C2C', fg: '#A0A0A0', txt: 'dc01.firma.local' })
+      ] },
+      { label: 'Lista rozwijana', cells: [
+        mk('select', { bg: '#1C1C1C', bd: '#3A3A3A', txt: 'Negotiate' }),
+        mk('select', { bg: '#262626', bd: '#A0A0A0', txt: 'Negotiate' }),
+        mk('select', { bg: '#1C1C1C', bd: A, ol: ring, txt: 'Negotiate' }),
+        mk('select', { bg: '#1C1C1C', bd: '#EDEDED', txt: 'Otwarta' }),
+        mk('select', { bg: '#161616', bd: '#2C2C2C', op: 0.45, txt: 'Negotiate' })
+      ] },
+      { label: 'Przełącznik', cells: [
+        mk('switch', { bg: '#1C1C1C', bd: '#3A3A3A', fg: '#A0A0A0', jc: 'flex-start' }),
+        mk('switch', { bg: '#262626', bd: '#A0A0A0', fg: '#EDEDED', jc: 'flex-start' }),
+        mk('switch', { bg: '#1C1C1C', bd: A, fg: '#A0A0A0', ol: ring, jc: 'flex-start' }),
+        mk('switch', { bg: A, bd: A, fg: '#0F0F0F', jc: 'flex-end', on: 'true' }),
+        mk('switch', { bg: '#1C1C1C', bd: '#2C2C2C', fg: '#3A3A3A', op: 0.45, jc: 'flex-start' })
+      ] },
+      { label: 'Pole wyboru', cells: [
+        mk('check', { bg: '#0F0F0F', bd: '#3A3A3A', txt: 'Zapisz hasło' }),
+        mk('check', { bg: '#262626', bd: '#A0A0A0', txt: 'Zapisz hasło' }),
+        mk('check', { bg: '#0F0F0F', bd: A, ol: ring, txt: 'Zapisz hasło' }),
+        mk('check', { bg: A, bd: A, fg: '#0F0F0F', show: 'block', txt: 'Zapisz hasło' }),
+        mk('check', { bg: '#161616', bd: '#2C2C2C', op: 0.45, txt: 'Zapisz hasło' })
+      ] },
+      { label: 'Wiersz drzewa', cells: [
+        mk('tree', { txt: 'dc01' }),
+        mk('tree', { bg: '#1C1C1C', txt: 'dc01' }),
+        mk('tree', { ol: ring, txt: 'dc01' }),
+        mk('tree', { bg: '#262626', txt: 'dc01' }),
+        mk('tree', { op: 0.5, txt: 'dc01' })
+      ] }
+    ];
+    return { heads: ['Normalny', 'Najechany', 'Fokus', 'Aktywny / błąd', 'Wyłączony'], rows };
+  }
+}
+</script>
+</body>
+</html>

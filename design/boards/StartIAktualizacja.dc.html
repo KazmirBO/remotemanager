@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Start i aktualizacja</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+button:hover{filter:brightness(1.15)}
+.sk{background: #1C1C1C; border-radius: 4px}
+</style>
+</helmet>
+<div style="width: 1100px; height: 520px; box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 40px; padding: 40px; background: #0F0F0F; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px">
+
+  <div style="display: flex; flex-direction: column; gap: 10px; min-width: 0">
+    <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Start programu: odszyfrowywanie i wczytywanie (szkielety)</div>
+    <div style="flex: 1 1 auto; display: flex; background: #161616; border: 1px solid #2C2C2C; border-radius: 8px; overflow: hidden">
+      <div style="flex: none; width: 200px; display: flex; flex-direction: column; gap: 10px; padding: 14px; border-right: 1px solid #2C2C2C">
+        <div class="sk" style="height: 30px"></div>
+        <sc-for list="{{skel}}" as="s" hint-placeholder-count="8"><div class="sk" style="height: 18px; width: {{s.w}}px; margin-left: {{s.l}}px"></div></sc-for>
+      </div>
+      <div style="flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0">
+        <div style="flex: none; min-height: 36px; border-bottom: 1px solid #2C2C2C"></div>
+        <div style="flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: #0A0A0A">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#EDEDED" stroke-width="2" stroke-linecap="round" role="img" aria-label="Wczytywanie"><circle cx="12" cy="12" r="9" stroke="#3A3A3A"/><path d="M12 3a9 9 0 0 1 9 9"/></svg>
+          <div style="font-weight: 600">Odszyfrowywanie pliku z hostami</div>
+          <div style="font-size: 13px; color: #A0A0A0">Wyprowadzanie klucza z hasła może potrwać do kilku sekund.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px; min-width: 0">
+    <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Dostępna aktualizacja</div>
+    <div style="flex: 1 1 auto; display: flex; flex-direction: column; background: #161616; border: 1px solid #3A3A3A; border-radius: 10px; overflow: hidden">
+      <div style="flex: none; padding: 16px 20px; border-bottom: 1px solid #2C2C2C">
+        <div style="font-size: 16px; font-weight: 600">Dostępna nowa wersja</div>
+        <div style="margin-top: 4px; font-size: 13px; color: #A0A0A0">Wersja 0.2.0 (obecna: 0.1.0)</div>
+      </div>
+      <div style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 10px; padding: 16px 20px; font-size: 13px">
+        <div style="font-weight: 600">Co nowego</div>
+        <ul style="display: flex; flex-direction: column; gap: 6px; margin: 0; padding-left: 18px; color: #A0A0A0"><li>Sesje SSH przez bastion</li><li>Poprawiona obsługa wielu monitorów w RDP</li><li>Poprawki bezpieczeństwa</li></ul>
+        <div style="margin-top: auto; padding: 10px 12px; border: 1px solid #2C2C2C; border-radius: 6px; background: #1C1C1C; color: #A0A0A0; font-size: 12px">Otwarte sesje zostaną rozłączone podczas restartu. Plik z hostami nie jest zmieniany.</div>
+      </div>
+      <div style="flex: none; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 14px 20px; border-top: 1px solid #2C2C2C">
+        <button type="button" style="min-height: 36px; padding: 0 12px; border: 0; background: transparent; color: #A0A0A0; font-size: 13px; cursor: pointer">Pomiń tę wersję</button>
+        <div style="display: flex; gap: 8px">
+          <button type="button" style="min-height: 36px; padding: 0 14px; border: 1px solid #3A3A3A; border-radius: 6px; background: #1C1C1C; color: #EDEDED; font-size: 13px; cursor: pointer">Później</button>
+          <button type="button" style="min-height: 36px; padding: 0 16px; border: 0; border-radius: 6px; background: {{accent}}; color: #0F0F0F; font-size: 13px; font-weight: 600; cursor: pointer">Zainstaluj i uruchom ponownie</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":1100,"height":520}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const skel = [[150,0],[120,16],[110,32],[130,16],[110,32],[150,0],[120,16],[140,0]].map((a) => ({ w: a[0], l: a[1] }));
+    return { accent: this.props.accent ?? '#EDEDED', skel };
+  }
+}
+</script>
+</body>
+</html>

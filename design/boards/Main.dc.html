@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Menedżer sesji</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+button:hover{filter:brightness(1.15)}
+input{font-family:inherit}
+</style>
+</helmet>
+<div style="min-height: 800px; box-sizing: border-box; display: flex; flex-wrap: wrap; background: #0F0F0F; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px">
+
+  <aside style="position: relative; flex: 1 1 300px; min-width: 0; box-sizing: border-box; background: #161616; border-right: 1px solid #2C2C2C; display: flex; flex-direction: column">
+
+    <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px; border-bottom: 1px solid #2C2C2C">
+      <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px">
+        <div style="font-size: 16px; font-weight: 600">Hosty</div>
+        <button type="button" aria-label="Synchronizacja: plik aktualny, sprawdzono 2 minuty temu" style="display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #A0A0A0; font-size: 12px; cursor: pointer">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg>
+          <span>Zsynchronizowano 2 min temu</span>
+        </button>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px">
+        <button type="button" style="min-height: 36px; padding: 0 12px; border: 1px solid #3A3A3A; border-radius: 6px; background: #1C1C1C; color: #EDEDED; font-size: 13px; font-weight: 500; cursor: pointer">Nowy katalog</button>
+        <button type="button" style="min-height: 36px; padding: 0 12px; border: 0; border-radius: 6px; background: {{accent}}; color: #0F0F0F; font-size: 13px; font-weight: 600; cursor: pointer">Nowy host</button>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 4px">
+        <label for="szukaj" style="font-size: 12px; color: #A0A0A0">Szukaj hosta</label>
+        <input id="szukaj" type="text" placeholder="nazwa hosta" style="box-sizing: border-box; width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: #0F0F0F; color: #EDEDED; font: inherit">
+      </div>
+    </div>
+
+    <nav aria-label="Drzewo hostów" style="display: flex; flex-direction: column; padding: 8px 0; flex: 1 1 auto">
+      <sc-for list="{{rows}}" as="row" hint-placeholder-count="8">
+        <button type="button" onClick="{{ row.act }}" style="display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; min-height: 36px; padding: 0 12px 0 {{row.pad}}px; border: 0; background: {{row.bg}}; color: #EDEDED; font-size: 14px; text-align: left; cursor: pointer">
+          <sc-if value="{{ row.isFolder }}" hint-placeholder-val="{{ true }}">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex: none; transform: rotate({{row.rot}}deg)"><path d="M9 6l6 6-6 6"/></svg>
+            <sc-if value="{{ row.isPlainFolder }}" hint-placeholder-val="{{ true }}">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex: none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            </sc-if>
+            <sc-if value="{{ row.isFavGroup }}" hint-placeholder-val="{{ false }}">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#EDEDED" stroke-width="1.8" stroke-linejoin="round" style="flex: none"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></svg>
+            </sc-if>
+            <sc-if value="{{ row.isRecentGroup }}" hint-placeholder-val="{{ false }}">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#EDEDED" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex: none"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+            </sc-if>
+            <span style="font-weight: 500">{{row.name}}</span>
+          </sc-if>
+          <sc-if value="{{ row.isHost }}" hint-placeholder-val="{{ false }}">
+            <span style="flex: none; width: 14px"></span>
+            <sc-if value="{{ row.isSsh }}" hint-placeholder-val="{{ true }}">
+              <span style="flex: none; box-sizing: border-box; min-width: 38px; padding: 1px 5px; border: 1px solid {{accent}}; border-radius: 3px; background: {{accent}}; color: #0F0F0F; font-size: 11px; font-weight: 600; text-align: center">SSH</span>
+            </sc-if>
+            <sc-if value="{{ row.isRdp }}" hint-placeholder-val="{{ false }}">
+              <span style="flex: none; box-sizing: border-box; min-width: 38px; padding: 1px 5px; border: 1px solid #A0A0A0; border-radius: 3px; color: #EDEDED; font-size: 11px; font-weight: 600; text-align: center">RDP</span>
+            </sc-if>
+            <span>{{row.name}}</span>
+            <sc-if value="{{ row.isFav }}" hint-placeholder-val="{{ false }}">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="#A0A0A0" stroke="#A0A0A0" stroke-width="1.5" stroke-linejoin="round" style="flex: none; margin-left: auto" role="img" aria-label="Ulubiony"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></svg>
+            </sc-if>
+          </sc-if>
+        </button>
+      </sc-for>
+    </nav>
+
+    <sc-if value="{{ hasHost }}" hint-placeholder-val="{{ true }}">
+      <section aria-label="Ustawienia wybranego hosta" style="display: flex; flex-direction: column; gap: 10px; padding: 16px; border-top: 1px solid #2C2C2C; background: #1C1C1C">
+        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px">
+          <div style="font-size: 13px; font-weight: 600">Ustawienia: {{hostName}}</div>
+          <button type="button" aria-pressed="{{favOn}}" onClick="{{ toggleFav }}" style="display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 12px; cursor: pointer">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="{{favFill}}" stroke="#EDEDED" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></svg>
+            <span>{{favText}}</span>
+          </button>
+        </div>
+        <sc-for list="{{fields}}" as="f" hint-placeholder-count="4">
+          <div style="display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px">
+            <div style="display: flex; flex-direction: column; gap: 2px">
+              <span style="font-size: 12px; color: #A0A0A0">{{f.label}}</span>
+              <span>{{f.value}}</span>
+            </div>
+            <span style="font-size: 12px; color: {{f.srcColor}}">{{f.src}}</span>
+          </div>
+        </sc-for>
+      </section>
+    </sc-if>
+
+    <div style="flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-top: 1px solid #2C2C2C">
+      <button type="button" style="display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 12px; border: 0; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 13px; cursor: pointer">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#EDEDED" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>
+        <span>Ustawienia</span>
+      </button>
+      <button type="button" aria-label="Zablokuj aplikację" style="display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 0; border-radius: 6px; background: transparent; cursor: pointer">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#EDEDED" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+      </button>
+      <span style="flex: 1 1 auto"></span>
+      <button type="button" aria-label="Menu aplikacji" aria-haspopup="menu" aria-expanded="{{menuOpen}}" onClick="{{ toggleMenu }}" style="display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 0; border-radius: 6px; background: {{menuBtnBg}}; cursor: pointer">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="#EDEDED"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+      </button>
+    </div>
+
+    <sc-if value="{{ menuOpen }}" hint-placeholder-val="{{ false }}">
+      <div role="menu" aria-label="Menu aplikacji" style="position: absolute; left: 12px; bottom: 56px; width: 270px; box-sizing: border-box; padding: 6px; background: #1C1C1C; border: 1px solid #3A3A3A; border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5)">
+        <sc-for list="{{menuItems}}" as="m" hint-placeholder-count="8">
+          <sc-if value="{{ m.isSep }}" hint-placeholder-val="{{ false }}">
+            <div style="height: 1px; margin: 6px 4px; background: #2C2C2C"></div>
+          </sc-if>
+          <sc-if value="{{ m.isItem }}" hint-placeholder-val="{{ true }}">
+            <button type="button" role="menuitem" onClick="{{ toggleMenu }}" style="display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; min-height: 32px; box-sizing: border-box; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: #EDEDED; font-size: 14px; text-align: left; cursor: pointer">
+              <span>{{m.label}}</span>
+              <span style="font-size: 12px; color: #A0A0A0">{{m.key}}</span>
+            </button>
+          </sc-if>
+        </sc-for>
+      </div>
+    </sc-if>
+  </aside>
+
+  <main style="position: relative; flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+
+    <div role="tablist" aria-label="Otwarte sesje" style="display: flex; align-items: stretch; overflow-x: auto; background: #161616; border-bottom: 1px solid #2C2C2C">
+      <sc-for list="{{tabs}}" as="tab" hint-placeholder-count="3">
+        <div style="flex: none; display: flex; align-items: center; border-top: 2px solid {{tab.bd}}; background: {{tab.bg}}">
+          <button type="button" role="tab" onClick="{{ tab.select }}" style="display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 4px 0 14px; border: 0; background: transparent; color: #EDEDED; font-size: 14px; cursor: pointer">
+            <sc-if value="{{ tab.isSsh }}" hint-placeholder-val="{{ true }}">
+              <span style="box-sizing: border-box; min-width: 38px; padding: 1px 5px; border: 1px solid {{accent}}; border-radius: 3px; background: {{accent}}; color: #0F0F0F; font-size: 11px; font-weight: 600; text-align: center">SSH</span>
+            </sc-if>
+            <sc-if value="{{ tab.isRdp }}" hint-placeholder-val="{{ false }}">
+              <span style="box-sizing: border-box; min-width: 38px; padding: 1px 5px; border: 1px solid #A0A0A0; border-radius: 3px; color: #EDEDED; font-size: 11px; font-weight: 600; text-align: center">RDP</span>
+            </sc-if>
+            <span>{{tab.name}}</span>
+          </button>
+          <button type="button" aria-label="Zamknij sesję" onClick="{{ tab.close }}" style="display: flex; align-items: center; justify-content: center; width: 32px; min-height: 40px; border: 0; background: transparent; cursor: pointer">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="flex: 1 1 auto; display: flex; flex-direction: column; min-height: 520px">
+
+      <sc-if value="{{ showSsh }}" hint-placeholder-val="{{ true }}">
+        <div style="flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; background: #0A0A0A">
+          <sc-if value="{{ searchOpen }}" hint-placeholder-val="{{ false }}">
+            <div role="search" style="flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #2C2C2C; background: #161616">
+              <label for="bufor" style="font-size: 12px; color: #A0A0A0">Szukaj w buforze</label>
+              <input id="bufor" type="text" value="status" readOnly="{{ true }}" style="box-sizing: border-box; width: 200px; min-height: 30px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: #0F0F0F; color: #EDEDED; font-size: 13px">
+              <span style="font-size: 12px; color: #A0A0A0">1 z 2</span>
+              <button type="button" aria-label="Poprzednie dopasowanie" style="display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; cursor: pointer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#EDEDED" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg></button>
+              <button type="button" aria-label="Następne dopasowanie" style="display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; cursor: pointer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#EDEDED" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
+              <button type="button" aria-pressed="false" aria-label="Rozróżniaj wielkość liter" style="min-width: 30px; height: 30px; padding: 0 6px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 12px; cursor: pointer">Aa</button>
+              <span style="flex: 1 1 auto"></span>
+              <button type="button" aria-label="Zamknij wyszukiwanie" onClick="{{ toggleSearch }}" style="display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; cursor: pointer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+            </div>
+          </sc-if>
+          <div style="flex: 1 1 auto; box-sizing: border-box; padding: 20px; font-family: 'JetBrains Mono', monospace; font-size: 14px; line-height: 1.6">
+            <div style="color: #A0A0A0">{{connectLine}}</div>
+            <sc-if value="{{ hasLogLine }}" hint-placeholder-val="{{ true }}">
+              <div style="color: #A0A0A0">Dziennik sesji: {{logFile}}</div>
+            </sc-if>
+            <div style="margin-top: 8px">{{termUser}}@{{termName}} ~ $ rc-service sshd <span style="background: {{hlBg}}; color: {{hlFg}}">status</span></div>
+            <div> * <span style="background: {{hlBg}}; color: {{hlFg}}">status</span>: started</div>
+            <div>{{termUser}}@{{termName}} ~ $ <span style="display: inline-block; width: 9px; height: 17px; vertical-align: text-bottom; background: {{accent}}"></span></div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ showRdp }}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; background: #0A0A0A">
+          <div role="toolbar" aria-label="Narzędzia sesji RDP" style="flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid #2C2C2C; background: #161616">
+            <button type="button" style="display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 12px; cursor: pointer">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#EDEDED" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+              <span>Pełny ekran</span>
+            </button>
+            <button type="button" style="min-height: 30px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 12px; cursor: pointer">Ctrl+Alt+Del</button>
+            <button type="button" aria-pressed="{{clipOn}}" onClick="{{ toggleClip }}" style="min-height: 30px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: {{clipBg}}; color: {{clipFg}}; font-size: 12px; cursor: pointer">Schowek</button>
+            <button type="button" aria-haspopup="menu" style="display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 12px; cursor: pointer"><span>Monitory: 2 z 3</span><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
+            <button type="button" aria-haspopup="menu" style="display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 12px; cursor: pointer"><span>Skala: dopasuj do okna</span><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
+            <span style="flex: 1 1 auto"></span>
+            <button type="button" style="min-height: 30px; padding: 0 12px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 12px; font-weight: 600; cursor: pointer">Rozłącz</button>
+          </div>
+          <div style="flex: 1 1 auto; box-sizing: border-box; display: flex; align-items: center; justify-content: center; padding: 24px">
+            <div style="display: flex; flex-direction: column; gap: 6px; align-items: center; max-width: 420px; padding: 32px; border: 1px dashed #3A3A3A; border-radius: 8px; text-align: center">
+              <div style="font-weight: 600">Obszar sesji RDP: {{termName}}</div>
+              <div style="color: #A0A0A0">Tu zostanie narysowany obraz pulpitu zdalnego, przekazywany do elementu canvas.</div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ showEmpty }}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1 1 auto; display: flex; align-items: center; justify-content: center; padding: 24px; background: #0A0A0A; color: #A0A0A0">Brak otwartych sesji. Wybierz host z drzewa po lewej.</div>
+      </sc-if>
+
+      <sc-if value="{{ hasSession }}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; padding: 6px 16px; border-top: 1px solid #2C2C2C; background: #161616; color: #A0A0A0; font-size: 12px">
+          <span>{{statusText}}</span>
+          <sc-if value="{{ showSsh }}" hint-placeholder-val="{{ true }}">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+              <button type="button" aria-pressed="{{searchOpen}}" onClick="{{ toggleSearch }}" style="display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 12px; cursor: pointer">Szukaj w buforze</button>
+              <button type="button" aria-pressed="{{logOn}}" onClick="{{ toggleLog }}" style="display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 12px; cursor: pointer">
+                <span style="width: 8px; height: 8px; border-radius: 50%; background: {{logDot}}"></span>
+                <span>{{logText}}</span>
+              </button>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+    </div>
+
+    <sc-if value="{{ hasToast }}" hint-placeholder-val="{{ false }}">
+      <div role="status" style="position: absolute; right: 16px; bottom: 48px; display: flex; align-items: center; gap: 12px; max-width: 360px; box-sizing: border-box; padding: 10px 12px; background: #262626; border: 1px solid #3A3A3A; border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5)">
+        <span style="font-size: 13px">{{toastText}}</span>
+        <button type="button" onClick="{{ toastUndo }}" style="flex: none; min-height: 28px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 12px; font-weight: 600; cursor: pointer">Cofnij</button>
+        <button type="button" aria-label="Zamknij powiadomienie" onClick="{{ toastClose }}" style="flex: none; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; background: transparent; cursor: pointer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+    </sc-if>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  state = {
+    expanded: { f1: true, f2: true, f3: true, f4: false, f5: true, vfav: true, vrec: true },
+    tabs: ['h1', 'h2', 'h4'],
+    active: 'h1',
+    fav: ['h1', 'h2'],
+    recent: ['h1', 'h4', 'h2'],
+    log: true,
+    menuOpen: false,
+    search: false,
+    clip: true,
+    toast: null
+  };
+
+  openTab(id) {
+    const tabs = this.state.tabs.includes(id) ? this.state.tabs : [...this.state.tabs, id];
+    const recent = [id, ...this.state.recent.filter((r) => r !== id)].slice(0, 5);
+    this.setState({ tabs, active: id, recent });
+  }
+
+  closeTab(id, name) {
+    const tabs = this.state.tabs.filter((t) => t !== id);
+    let active = this.state.active;
+    if (active === id) { active = tabs.length ? tabs[tabs.length - 1] : null; }
+    this.setState({ tabs, active, toast: { id, text: 'Zamknięto sesję ' + name } });
+  }
+
+  renderVals() {
+    const accent = this.props.accent ?? '#EDEDED';
+    const st = this.state;
+
+    const real = [
+      { id: 'f1', type: 'folder', name: 'FIRMA', parent: null, set: { user: 'sebastian', domain: 'FIRMA' } },
+      { id: 'f2', type: 'folder', name: 'Kontrolery domeny', parent: 'f1', set: {} },
+      { id: 'h2', type: 'host', proto: 'rdp', name: 'dc01', parent: 'f2', own: {} },
+      { id: 'h3', type: 'host', proto: 'rdp', name: 'dc02', parent: 'f2', own: {} },
+      { id: 'f3', type: 'folder', name: 'Monitoring', parent: 'f1', set: { domain: '', key: '~/.ssh/id_ed25519' } },
+      { id: 'h4', type: 'host', proto: 'ssh', name: 'zabbix', parent: 'f3', own: { via: 'bastion' } },
+      { id: 'h5', type: 'host', proto: 'ssh', name: 'wazuh', parent: 'f3', own: { port: 2222 } },
+      { id: 'f4', type: 'folder', name: 'Kopie zapasowe', parent: 'f1', set: {} },
+      { id: 'h6', type: 'host', proto: 'rdp', name: 'veeam', parent: 'f4', own: {} },
+      { id: 'h7', type: 'host', proto: 'ssh', name: 'bastion', parent: 'f1', own: {} },
+      { id: 'f5', type: 'folder', name: 'Dom', parent: null, set: { user: 'sebastian', key: '~/.ssh/id_ed25519' } },
+      { id: 'h1', type: 'host', proto: 'ssh', name: 'gentoo', parent: 'f5', own: {} }
+    ];
+    const realById = {};
+    real.forEach((n) => { realById[n.id] = n; });
+
+    const copyOf = (prefix, parent) => (id) => ({
+      id: prefix + ':' + id, ref: id, type: 'host',
+      proto: realById[id].proto, name: realById[id].name, parent
+    });
+    const virtual = [
+      { id: 'vfav', type: 'folder', name: 'Ulubione', parent: null, kind: 'fav' },
+      ...st.fav.filter((id) => realById[id]).map(copyOf('fav', 'vfav')),
+      { id: 'vrec', type: 'folder', name: 'Ostatnie', parent: null, kind: 'recent' },
+      ...st.recent.filter((id) => realById[id]).map(copyOf('rec', 'vrec'))
+    ];
+    const nodes = [...virtual, ...real];
+    const byId = {};
+    nodes.forEach((n) => { byId[n.id] = n; });
+
+    const depthOf = (n) => { let d = 0; let p = n.parent; while (p) { d++; p = byId[p].parent; } return d; };
+    const visible = (n) => { let p = n.parent; while (p) { if (!st.expanded[p]) return false; p = byId[p].parent; } return true; };
+
+    const rows = nodes.filter(visible).map((n) => {
+      const isFolder = n.type === 'folder';
+      const target = n.ref || n.id;
+      return {
+        name: n.name,
+        isFolder,
+        isPlainFolder: isFolder && !n.kind,
+        isFavGroup: n.kind === 'fav',
+        isRecentGroup: n.kind === 'recent',
+        isHost: !isFolder,
+        isSsh: n.proto === 'ssh',
+        isRdp: n.proto === 'rdp',
+        isFav: !isFolder && !n.ref && st.fav.includes(n.id),
+        pad: 12 + depthOf(n) * 18,
+        rot: st.expanded[n.id] ? 90 : 0,
+        bg: !isFolder && st.active === target ? '#262626' : 'transparent',
+        act: isFolder
+          ? () => this.setState({ expanded: { ...st.expanded, [n.id]: !st.expanded[n.id] } })
+          : () => this.openTab(target)
+      };
+    });
+
+    const tabs = st.tabs.map((id) => {
+      const n = realById[id];
+      const on = st.active === id;
+      return {
+        name: n.name,
+        isSsh: n.proto === 'ssh',
+        isRdp: n.proto === 'rdp',
+        bd: on ? accent : 'transparent',
+        bg: on ? '#0F0F0F' : 'transparent',
+        select: () => this.setState({ active: id }),
+        close: () => this.closeTab(id, n.name)
+      };
+    });
+
+    const eff = (host, key) => {
+      if (host.own && host.own[key] !== undefined) return { v: host.own[key], src: 'własne', own: true };
+      let p = host.parent;
+      while (p) {
+        const f = realById[p];
+        if (f.set && f.set[key] !== undefined) return { v: f.set[key], src: f.name, own: false };
+        p = f.parent;
+      }
+      return { v: null, src: 'domyślne', own: false };
+    };
+    const show = (r, fallback) => (r.v === null ? fallback : (r.v === '' ? 'brak' : String(r.v)));
+
+    const act = st.active ? realById[st.active] : null;
+    const hasHost = !!act;
+    let fields = [];
+    let termUser = '';
+    let viaName = '';
+    if (act) {
+      const user = eff(act, 'user');
+      const port = eff(act, 'port');
+      const via = eff(act, 'via');
+      const mk = (label, r, fallback) => ({
+        label,
+        value: show(r, fallback),
+        src: r.src,
+        srcColor: r.own ? accent : '#A0A0A0'
+      });
+      fields.push(mk('Użytkownik', user, 'pytaj przy łączeniu'));
+      if (act.proto === 'rdp') {
+        fields.push(mk('Domena', eff(act, 'domain'), 'brak'));
+        fields.push(mk('Port', port.v === null ? { v: 3389, src: 'domyślne', own: false } : port, '3389'));
+      } else {
+        fields.push(mk('Port', port.v === null ? { v: 22, src: 'domyślne', own: false } : port, '22'));
+        fields.push(mk('Klucz SSH', eff(act, 'key'), 'z agenta'));
+      }
+      fields.push(mk('Przez (bastion)', via, 'brak'));
+      termUser = show(user, 'uzytkownik');
+      viaName = via.v ? String(via.v) : '';
+    }
+
+    const favOn = !!act && st.fav.includes(act.id);
+    const isSsh = !!act && act.proto === 'ssh';
+    const logOn = !!st.log;
+
+    const item = (label, key) => ({ isItem: true, isSep: false, label, key });
+    const sep = () => ({ isItem: false, isSep: true, label: '', key: '' });
+
+    return {
+      accent,
+      rows,
+      tabs,
+      hasHost,
+      hostName: act ? act.name : '',
+      fields,
+      favOn,
+      favFill: favOn ? '#EDEDED' : 'none',
+      favText: favOn ? 'Ulubiony' : 'Dodaj do ulubionych',
+      toggleFav: () => {
+        if (!act) { return; }
+        this.setState({ fav: favOn ? st.fav.filter((x) => x !== act.id) : [...st.fav, act.id] });
+      },
+      menuOpen: st.menuOpen,
+      menuBtnBg: st.menuOpen ? '#262626' : 'transparent',
+      toggleMenu: () => this.setState({ menuOpen: !st.menuOpen }),
+      menuItems: [
+        item('Ustawienia', 'Ctrl+,'),
+        item('Szybkie łączenie', 'Ctrl+K'),
+        sep(),
+        item('Zaufane klucze hostów', ''),
+        item('Dzienniki sesji', ''),
+        sep(),
+        item('Zablokuj aplikację', 'Ctrl+L'),
+        item('O programie', ''),
+        sep(),
+        item('Zakończ', 'Ctrl+Q')
+      ],
+      searchOpen: st.search,
+      toggleSearch: () => this.setState({ search: !st.search }),
+      hlBg: st.search ? accent : 'transparent',
+      hlFg: st.search ? '#0F0F0F' : 'inherit',
+      clipOn: st.clip,
+      clipBg: st.clip ? accent : 'transparent',
+      clipFg: st.clip ? '#0F0F0F' : '#EDEDED',
+      toggleClip: () => this.setState({ clip: !st.clip }),
+      hasToast: !!st.toast,
+      toastText: st.toast ? st.toast.text : '',
+      toastUndo: () => { const t = st.toast; this.setState({ toast: null }); if (t) { this.openTab(t.id); } },
+      toastClose: () => this.setState({ toast: null }),
+      termName: act ? act.name : '',
+      termUser,
+      connectLine: act ? 'Połączono z ' + act.name + ' jako ' + termUser + (viaName ? ' przez ' + viaName : '') : '',
+      showSsh: isSsh,
+      showRdp: !!act && act.proto === 'rdp',
+      showEmpty: !act,
+      hasSession: !!act,
+      hasLogLine: isSsh && logOn,
+      logFile: act ? act.name + '_2026-10-11_14-32.log' : '',
+      logOn,
+      logDot: logOn ? accent : '#3A3A3A',
+      logText: logOn ? 'Dziennik sesji: włączony' : 'Dziennik sesji: wyłączony',
+      toggleLog: () => this.setState({ log: !logOn }),
+      statusText: act ? (act.proto === 'ssh' ? 'SSH, uwierzytelnianie kluczem z agenta' : 'RDP, uwierzytelnianie NLA (CredSSP), monitory: 2') : ''
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  rust:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/ui/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Zależności systemowe Tauri (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev openssh-server
+      - run: pnpm --dir app/ui install --frozen-lockfile
+      - run: pnpm --dir app/ui build
+      - run: pnpm --dir app/ui check
+      - run: pnpm --dir app/ui test
+      - run: cargo fmt --all --check
+      - run: cargo build --manifest-path tools/rdp/Cargo.toml
+      - run: cargo clippy --manifest-path tools/rdp/Cargo.toml -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace

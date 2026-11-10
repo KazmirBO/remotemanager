@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Stany drzewa hostów</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit}
+button:hover{filter:brightness(1.15)}
+input{font-family:inherit}
+</style>
+</helmet>
+<div style="width: 1400px; height: 640px; box-sizing: border-box; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 40px; padding: 40px; background: #0F0F0F; color: #EDEDED; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px">
+
+  <!-- 1 pusty -->
+  <div style="display: flex; flex-direction: column; gap: 10px; min-width: 0">
+    <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Pusta lista hostów</div>
+    <div style="flex: 1 1 auto; display: flex; flex-direction: column; background: #161616; border: 1px solid #2C2C2C; border-radius: 8px; overflow: hidden">
+      <div style="flex: none; padding: 10px; border-bottom: 1px solid #2C2C2C"><input type="text" aria-label="Szukaj" placeholder="Szukaj hostów" readOnly="{{ true }}" style="box-sizing: border-box; width: 100%; min-height: 34px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: #0F0F0F; color: #EDEDED; font-size: 13px"></div>
+      <div style="flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 20px; text-align: center">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        <div style="font-weight: 600">Nie masz jeszcze hostów</div>
+        <div style="font-size: 13px; color: #A0A0A0">Dodaj pierwszy host lub utwórz katalog, aby pogrupować połączenia.</div>
+        <button type="button" style="min-height: 34px; padding: 0 14px; border: 0; border-radius: 6px; background: {{accent}}; color: #0F0F0F; font-size: 13px; font-weight: 600; cursor: pointer">Dodaj host</button>
+        <button type="button" style="min-height: 34px; padding: 0 14px; border: 1px solid #3A3A3A; border-radius: 6px; background: #1C1C1C; color: #EDEDED; font-size: 13px; cursor: pointer">Nowy katalog</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2 brak wyników -->
+  <div style="display: flex; flex-direction: column; gap: 10px; min-width: 0">
+    <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Brak wyników wyszukiwania</div>
+    <div style="flex: 1 1 auto; display: flex; flex-direction: column; background: #161616; border: 1px solid #2C2C2C; border-radius: 8px; overflow: hidden">
+      <div style="flex: none; padding: 10px; border-bottom: 1px solid #2C2C2C"><input type="text" aria-label="Szukaj" value="prod-db" readOnly="{{ true }}" style="box-sizing: border-box; width: 100%; min-height: 34px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: #0F0F0F; color: #EDEDED; font-size: 13px"></div>
+      <div style="flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 20px; text-align: center">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8.5 8.5l5 5M13.5 8.5l-5 5"/></svg>
+        <div style="font-weight: 600">Nic nie znaleziono</div>
+        <div style="font-size: 13px; color: #A0A0A0">Brak hostów pasujących do „prod-db”. Szukanie obejmuje nazwy, adresy i katalogi.</div>
+        <button type="button" style="min-height: 34px; padding: 0 14px; border: 1px solid #3A3A3A; border-radius: 6px; background: #1C1C1C; color: #EDEDED; font-size: 13px; cursor: pointer">Wyczyść filtr</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3 przeciąganie -->
+  <div style="display: flex; flex-direction: column; gap: 10px; min-width: 0">
+    <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Przeciąganie hosta do katalogu</div>
+    <div style="flex: 1 1 auto; display: flex; flex-direction: column; background: #161616; border: 1px solid #2C2C2C; border-radius: 8px; overflow: hidden; position: relative">
+      <div style="flex: 1 1 auto; padding: 8px 0">
+        <sc-for list="{{dragRows}}" as="r" hint-placeholder-count="7">
+          <div style="display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 12px 0 {{r.pad}}px; background: {{r.bg}}; outline: {{r.outline}}; outline-offset: -2px; opacity: {{r.opacity}}">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A0A0A0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{r.icon}}"/></svg>
+            <span style="font-size: 13px">{{r.name}}</span>
+          </div>
+          <sc-if value="{{ r.line }}" hint-placeholder-val="{{ false }}">
+            <div style="height: 2px; margin: 0 12px 0 {{r.pad}}px; background: #EDEDED"></div>
+          </sc-if>
+        </sc-for>
+      </div>
+      <div style="flex: none; padding: 10px 12px; border-top: 1px solid #2C2C2C; font-size: 12px; color: #A0A0A0">Przenieś „veeam” do: Serwery Windows</div>
+    </div>
+  </div>
+
+  <!-- 4 wielokrotny wybór -->
+  <div style="display: flex; flex-direction: column; gap: 10px; min-width: 0">
+    <div style="font-size: 12px; font-weight: 600; color: #A0A0A0">Zaznaczenie wielu pozycji</div>
+    <div style="flex: 1 1 auto; display: flex; flex-direction: column; background: #161616; border: 1px solid #2C2C2C; border-radius: 8px; overflow: hidden">
+      <div style="flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px; min-height: 44px; background: #262626; border-bottom: 1px solid #3A3A3A">
+        <span style="font-size: 13px; font-weight: 600">Zaznaczono: 3</span>
+        <button type="button" style="min-height: 28px; padding: 0 8px; border: 0; background: transparent; color: #A0A0A0; font-size: 12px; cursor: pointer">Odznacz</button>
+      </div>
+      <div style="flex: 1 1 auto; padding: 8px 0">
+        <sc-for list="{{multiRows}}" as="r" hint-placeholder-count="6">
+          <div style="display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 12px 0 {{r.pad}}px; background: {{r.bg}}">
+            <input type="checkbox" aria-label="Zaznacz {{r.name}}" defaultChecked="{{ r.checked }}" style="width: 14px; height: 14px; accent-color: {{accent}}">
+            <span style="font-size: 13px">{{r.name}}</span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="flex: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 12px; border-top: 1px solid #2C2C2C">
+        <button type="button" style="min-height: 30px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: #1C1C1C; color: #EDEDED; font-size: 12px; cursor: pointer">Przenieś do...</button>
+        <button type="button" style="min-height: 30px; padding: 0 10px; border: 1px solid #3A3A3A; border-radius: 6px; background: #1C1C1C; color: #EDEDED; font-size: 12px; cursor: pointer">Połącz wszystkie</button>
+        <button type="button" style="min-height: 30px; padding: 0 10px; border: 1px solid #EDEDED; border-radius: 6px; background: transparent; color: #EDEDED; font-size: 12px; cursor: pointer">Usuń</button>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#EDEDED"},"$preview":{"width":1400,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? '#EDEDED';
+    const FOLDER = 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z';
+    const HOST = 'M4 5h16v10H4zM9 19h6M12 15v4';
+    const dragRows = [
+      { name: 'FIRMA', pad: 12, icon: FOLDER },
+      { name: 'Monitoring', pad: 28, icon: FOLDER },
+      { name: 'zabbix', pad: 44, icon: HOST },
+      { name: 'Serwery Windows', pad: 28, icon: FOLDER, target: true },
+      { name: 'dc01', pad: 44, icon: HOST, line: true },
+      { name: 'veeam', pad: 28, icon: HOST, ghost: true },
+      { name: 'Prywatne', pad: 12, icon: FOLDER }
+    ].map((r) => ({
+      ...r,
+      bg: r.target ? '#262626' : 'transparent',
+      outline: r.target ? '2px solid #EDEDED' : 'none',
+      opacity: r.ghost ? 0.5 : 1,
+      line: !!r.line
+    }));
+    const multiRows = [
+      { name: 'FIRMA', pad: 12, checked: false },
+      { name: 'zabbix', pad: 28, checked: true },
+      { name: 'dc01', pad: 28, checked: true },
+      { name: 'veeam', pad: 28, checked: true },
+      { name: 'bastion', pad: 28, checked: false },
+      { name: 'gentoo', pad: 12, checked: false }
+    ].map((r) => ({ ...r, bg: r.checked ? '#262626' : 'transparent' }));
+    return { accent, dragRows, multiRows };
+  }
+}
+</script>
+</body>
+</html>
