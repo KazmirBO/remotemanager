@@ -15,7 +15,7 @@ Własna aplikacja desktopowa do sesji SSH i RDP z panelem bocznym w stylu mRemot
 
 ## Prototyp RDP
 
-Prototyp `tools/rdp-probe/` (własny workspace Cargo, ironrdp 0.17, ironrdp-blocking 0.10, sspi 0.21 z `network_client`): host, użytkownik, domena, hasło z `RDP_PASSWORD` albo z ukrytego pytania, opcje `--kerberos`, `--kdc`, `--width`, `--height`, zapis pierwszej ramki do PNG.
+Prototyp `tools/rdp/rdp-probe/` (workspace Cargo `tools/rdp`, osobny od głównego, ironrdp 0.17, ironrdp-blocking 0.10, sspi 0.21 z `network_client`): host, użytkownik, domena, hasło z `RDP_PASSWORD` albo z ukrytego pytania, opcje `--kerberos`, `--kdc`, `--width`, `--height`, zapis pierwszej ramki do PNG.
 
 Wyniki (17.10.2026), serwer testowy `freerdp-shadow-cli` 3.32.1 na lokalnej maszynie, NLA z plikiem SAM, udostępniony tylko mały prostokąt ekranu:
 
@@ -52,8 +52,9 @@ Plan szczegółowy: `~/.claude/plans/zr-bmy-plan-pracy-technologia-agile-harbor.
 - Szyfrowanie: XChaCha20-Poly1305 (`chacha20poly1305` 0.11) + Argon2id (`argon2` 0.6) + `zeroize`.
 - SSH: `russh` 0.64.1; ProxyJump przez własny kanał `direct-tcpip` (do potwierdzenia w spike'u).
 - RDP: IronRDP 0.17 z `sspi` 0.21 (0.23 niezgodne z ironrdp-connector), plan B libfreerdp przez FFI. Patrz konflikt zależności w sekcji Prototyp RDP.
-- `rdp-probe` powstał od zera w `tools/rdp-probe` (Faza 1).
+- `rdp-probe` powstał od zera w `tools/rdp-probe` (Faza 1), dziś leży w `tools/rdp/rdp-probe` obok procesu RDP.
 - Zrobione: `vault`, `model` (w tym parser linków), `ssh` (testy na prawdziwym sshd), `sync` (konflikty po skrótach SHA-256), RDP w osobnym procesie, `app` (Tauri, zasobnik z trzema stanami ikony), frontend Svelte: drzewo, terminal SSH, widok RDP, edycja z dziedziczeniem, zaufanie do kluczy i certyfikatów, Ctrl+K z linkami, ustawienia, edytowalne skróty, schematy terminala, synchronizacja z rozstrzyganiem konfliktów i automatyczną wysyłką, kopie zapasowe z przywracaniem, dziennik diagnostyczny bez sekretów, dziennik sesji SSH, hasło na jedną sesję, pełny ekran RDP. Dodatkowo zrobione: Kerberos w formularzu hosta RDP (parametry do procesu; niesprawdzone bez KDC), zmiana rozmiaru pulpitu RDP przez Display Control (niesprawdzona na serwerze, który ją wspiera), pełny schowek RDP: tekst, HTML, obrazy, pliki i katalogi w obu kierunkach z limitami i przełącznikiem (logika i bezpieczeństwo ścieżek pokryte testami jednostkowymi, ale niesprawdzone na żywo z serwerem, żeby nie dotykać prawdziwego schowka), centrum powiadomień, pojedyncza instancja, pakiet deb ze sidecarem i rejestracją schematów. Niezrobione: wiele monitorów RDP (wymaga okien na osobnych monitorach), rejestracja schematów w systemie Windows, instalator dla Gentoo (ebuild), ekran aktualizacji (brak serwera aktualizacji).
+- Poprawki po przeglądach (10-14.11.2026): odporność zapisu i zmiany hasła w `vault`, synchronizacja bez fałszywych kopii konfliktu, blokada pliku z jednego miejsca (`lock_all`, zdarzenie `vault-locked`), kolejka monitów o hasło, skróty w terminalu i pod oknami modalnymi, schowek RDP tylko z ogłoszonej migawki i tylko przy fokusie, lista dozwolonych poleceń `rdp_send`, limity czasu SSH, walidacja bastionów i ustawień, zapis pliku tylko przy faktycznej zmianie, uprawnienia dziennika sesji, kontrola przepływu obrazu RDP (potwierdzenia z interfejsu, ograniczona kolejka zdarzeń) i sprawdzanie lokalnego schowka z odstępem zależnym od kosztu odczytu. Niesprawdzone w działającej aplikacji: kontrola przepływu obrazu pod obciążeniem (np. wideo w sesji RDP), zachowania tylko dla Windows (okno konsoli procesu RDP, AltGr, nazwy zastrzeżone, tożsamość plików serwowanych przez schowek), Kerberos z KDC, Display Control i schowek z serwerem Windows.
 
 ## Do ustalenia przed kodem (propozycje)
 
@@ -97,6 +98,6 @@ W `design/`:
 
 ## Uwagi
 
-- Dane na planszach (nazwy hostów, odciski, wersje, ścieżki) są przykładowe. Nazwa "Menedżer sesji" i polecenie `multiremotemanager` są robocze, licencja projektu nie jest wybrana.
+- Dane na planszach (nazwy hostów, odciski, wersje, ścieżki) są przykładowe. Nazwa "Menedżer sesji" i polecenie `multiremotemanager` są robocze.
 - Plansze nie były oglądane w przeglądarce podczas tworzenia.
 - Sekretów (hasła, klucze prywatne) nie wolno zapisywać w logach ani w dzienniku diagnostycznym; ekran dziennika zakłada tę regułę.

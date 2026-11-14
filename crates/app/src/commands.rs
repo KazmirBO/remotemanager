@@ -59,10 +59,42 @@ pub async fn unlock(state: State<'_, AppState>, password: String) -> Result<(), 
 }
 
 #[tauri::command]
-pub async fn lock(state: State<'_, AppState>) -> Result<(), String> {
-    *state.inner.lock().await = None;
-    state.log("zablokowano plik z hostami");
+pub async fn lock(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    lock_all(&app, &state, "zablokowano plik z hostami").await;
     Ok(())
+}
+
+/// Blokada pliku z dowolnego miejsca (komenda, zasobnik): zamyka sesje SSH i RDP, usuwa klucz
+/// z pamięci i emituje `vault-locked`, żeby interfejs schował drzewo i karty.
+pub async fn lock_all(app: &tauri::AppHandle, state: &AppState, log: &str) {
+    use tauri::Emitter;
+    // Kolejność jest celowa: najpierw znika klucz w pamięci, potem anulowane są pytania o zaufanie.
+    // Połączenie, które skończy się po opróżnieniu map, zobaczy już zablokowany plik.
+    *state.inner.lock().await = None;
+    state.cancel_trust();
+    let ssh: Vec<_> = state
+        .sessions
+        .lock()
+        .expect("sessions")
+        .drain()
+        .map(|(_, l)| l)
+        .collect();
+    let rdp: Vec<_> = state
+        .rdp
+        .lock()
+        .expect("rdp")
+        .drain()
+        .map(|(_, c)| c)
+        .collect();
+    for c in rdp {
+        c.close();
+    }
+    for l in ssh {
+        let _ = l.shell.close().await;
+        l.session.disconnect().await;
+    }
+    state.log(log);
+    let _ = app.emit("vault-locked", ());
 }
 
 #[tauri::command]
@@ -83,9 +115,27 @@ pub async fn change_password(
     let mut guard = state.inner.lock().await;
     let u = guard.as_mut().ok_or("Plik z hostami jest zablokowany")?;
     let pre = state.sync_pre();
-    u.vault.change_password(&new, &u.doc).map_err(vault_err)?;
+    // Argon2 (ok. 64 MiB) liczy się długo: `block_in_place` nie zatrzymuje innych zadań tokio.
+    tokio::task::block_in_place(|| u.vault.change_password(&new, &u.doc)).map_err(vault_err)?;
     state.sync_post(pre);
     state.log("zmieniono hasło główne");
+    Ok(())
+}
+
+/// Zmiana nie może zepsuć łańcucha bastionów hosta, który przed nią działał (cykl, bastion RDP,
+/// bastion poza drzewem). Hosty zepsute wcześniej nie blokują niezwiązanych zmian.
+fn check_jumps(before: &model::Tree, after: &model::Tree) -> Result<(), String> {
+    for h in &after.hosts {
+        if before.host(h.id).is_some() && before.jump_chain(h.id).is_err() {
+            continue;
+        }
+        if let Err(e) = after.jump_chain(h.id) {
+            return Err(format!(
+                "Zmiana psuje łańcuch bastionów hosta {}: {e}.",
+                h.name
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -110,6 +160,7 @@ pub async fn save_folder(state: State<'_, AppState>, input: FolderInput) -> Resu
     }
     state
         .mutate(|doc| {
+            let before = doc.tree.clone();
             let id = match input.id {
                 Some(id) => {
                     let existing = doc
@@ -135,6 +186,7 @@ pub async fn save_folder(state: State<'_, AppState>, input: FolderInput) -> Resu
                 .expect("istnieje");
             f.name = input.name.trim().to_owned();
             f.fields = input.fields.apply(&f.fields);
+            check_jumps(&before, &doc.tree)?;
             Ok(id)
         })
         .await
@@ -147,6 +199,7 @@ pub async fn save_host(state: State<'_, AppState>, input: HostInput) -> Result<I
     }
     state
         .mutate(|doc| {
+            let before = doc.tree.clone();
             let id = match input.id {
                 Some(id) => {
                     doc.tree.host(id).ok_or("Nie ma takiego hosta")?;
@@ -174,8 +227,10 @@ pub async fn save_host(state: State<'_, AppState>, input: HostInput) -> Result<I
             h.protocol = input.protocol;
             h.notes = input.notes;
             h.fields = input.fields.apply(&h.fields);
-            // Bastion nie może prowadzić do cyklu.
+            // Bastion nie może prowadzić do cyklu ani zepsuć łańcuchów innych hostów (np. zmiana
+            // protokołu bastionu na RDP).
             doc.tree.jump_chain(id).map_err(err)?;
+            check_jumps(&before, &doc.tree)?;
             Ok(id)
         })
         .await
@@ -202,7 +257,11 @@ pub async fn move_host(
     folder: Option<Id>,
 ) -> Result<(), String> {
     state
-        .mutate(|doc| doc.tree.move_host(id, folder).map_err(err))
+        .mutate(|doc| {
+            let before = doc.tree.clone();
+            doc.tree.move_host(id, folder).map_err(err)?;
+            check_jumps(&before, &doc.tree)
+        })
         .await
 }
 
@@ -213,7 +272,11 @@ pub async fn move_folder(
     parent: Option<Id>,
 ) -> Result<(), String> {
     state
-        .mutate(|doc| doc.tree.move_folder(id, parent).map_err(err))
+        .mutate(|doc| {
+            let before = doc.tree.clone();
+            doc.tree.move_folder(id, parent).map_err(err)?;
+            check_jumps(&before, &doc.tree)
+        })
         .await
 }
 
@@ -252,13 +315,104 @@ pub async fn resolve_host(state: State<'_, AppState>, id: Id) -> Result<Resolved
 
 #[tauri::command]
 pub async fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
-    if !matches!(settings.theme.as_str(), "dark" | "light" | "system") {
-        return Err("Nieznany motyw.".into());
-    }
+    validate_settings(&settings)?;
     state
         .mutate(|doc| {
             doc.settings = settings;
             Ok(())
         })
         .await
+}
+
+/// Sprawdza ustawienia przed zapisem: motyw, schemat terminala, skróty i rozmiar czcionki.
+fn validate_settings(settings: &Settings) -> Result<(), String> {
+    if !matches!(settings.theme.as_str(), "dark" | "light" | "system") {
+        return Err("Nieznany motyw.".into());
+    }
+    if !matches!(
+        settings.terminal_scheme.as_str(),
+        "domyslny" | "szary" | "kontrast"
+    ) {
+        return Err("Nieznany schemat terminala.".into());
+    }
+    if settings.shortcuts.len() > 64
+        || settings
+            .shortcuts
+            .iter()
+            .any(|(k, v)| k.len() > 64 || v.len() > 64 || v.is_empty())
+    {
+        return Err("Nieprawidłowe skróty klawiszowe.".into());
+    }
+    if !(9..=32).contains(&settings.terminal_font_size) {
+        return Err("Rozmiar czcionki terminala musi być liczbą od 9 do 32.".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use model::{Protocol, Tree};
+
+    #[test]
+    fn folder_change_that_creates_bastion_cycle_is_rejected() {
+        let mut t = Tree::default();
+        let fa = t.add_folder("A", None).unwrap();
+        let fb = t.add_folder("B", None).unwrap();
+        let a = t.add_host("a", "a", Protocol::Ssh, Some(fa)).unwrap();
+        let b = t.add_host("b", "b", Protocol::Ssh, Some(fb)).unwrap();
+        t.hosts
+            .iter_mut()
+            .find(|h| h.id == a)
+            .unwrap()
+            .fields
+            .jump_host = Some(b);
+        let before = t.clone();
+        // Katalog z bastionem B dostaje bastion A: A -> B -> A.
+        t.folders
+            .iter_mut()
+            .find(|f| f.id == fb)
+            .unwrap()
+            .fields
+            .jump_host = Some(a);
+        let e = check_jumps(&before, &t).unwrap_err();
+        assert!(e.contains("cykl"), "{e}");
+    }
+
+    #[test]
+    fn settings_validation_rejects_bad_values() {
+        assert!(validate_settings(&Settings::default()).is_ok());
+
+        let with_size = |terminal_font_size| Settings {
+            terminal_font_size,
+            ..Settings::default()
+        };
+        assert!(validate_settings(&with_size(8)).is_err());
+        assert!(validate_settings(&with_size(33)).is_err());
+        assert!(validate_settings(&with_size(9)).is_ok());
+        assert!(validate_settings(&with_size(32)).is_ok());
+
+        let unknown_theme = Settings {
+            theme: "neon".into(),
+            ..Settings::default()
+        };
+        assert!(validate_settings(&unknown_theme).is_err());
+
+        let unknown_scheme = Settings {
+            terminal_scheme: "nieznany".into(),
+            ..Settings::default()
+        };
+        assert!(validate_settings(&unknown_scheme).is_err());
+    }
+
+    #[test]
+    fn already_broken_host_does_not_block_unrelated_changes() {
+        let mut t = Tree::default();
+        let x = t.add_host("x", "x", Protocol::Ssh, None).unwrap();
+        t.hosts[0].fields.jump_host = Some(uuid::Uuid::new_v4());
+        let before = t.clone();
+        t.add_host("y", "y", Protocol::Ssh, None).unwrap();
+        assert!(t.jump_chain(x).is_err());
+        assert!(check_jumps(&before, &t).is_ok());
+    }
 }

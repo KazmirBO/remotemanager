@@ -22,7 +22,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
 }
 .btn:hover:not(:disabled) { background: var(--hover); }
-.btn:active:not(:disabled) { background: var(--panel); }
+.btn:active:not(:disabled) { background: var(--hover); filter: brightness(0.92); }
 .btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .btn.primary:hover:not(:disabled) { filter: brightness(1.1); background: var(--accent); }
 .btn.danger { border-color: var(--text); background: transparent; }
@@ -43,6 +43,17 @@ input[type='text'], input[type='password'], input[type='number'], select, textar
   border: 1px solid var(--border-strong); background: var(--surface); width: 100%;
 }
 textarea { height: auto; padding: 8px 10px; resize: vertical; min-height: 64px; }
+/* WebKitGTK rysuje natywne pole wyboru w motywie GTK (jasne tło) i ignoruje `background`, a tekst
+   dziedziczy jasny kolor ciemnego motywu, więc był prawie niewidoczny. Własny wygląd ze strzałką
+   z dwóch gradientów w kolorze tokenu. */
+select {
+  appearance: none; padding-right: 32px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%;
+  background-size: 5px 5px; background-repeat: no-repeat;
+}
+select option { background: var(--surface); color: var(--text); }
 input.invalid { border-color: var(--text); }
 .badge {
   font-size: 10px; font-weight: 600; line-height: 1; padding: 3px 5px; border-radius: var(--radius-badge);

@@ -3,7 +3,8 @@
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import { api, connectSsh, sshWrite, type Id } from './api';
-  import { closeTab, host as hostById, needsPassword, reconnect, requestPassword, ui } from './store.svelte';
+  import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsPassword, reconnect, requestPassword, ui } from './store.svelte';
+  import { matchAction } from './shortcuts';
   import { inherited } from './tree';
   import { terminalTheme } from './terminalThemes';
   import Icon from './Icon.svelte';
@@ -26,7 +27,7 @@
 
   // Po przełączeniu na kartę kontener ma niezerowy rozmiar, więc dopasowujemy terminal.
   $effect(() => {
-    if (active) queueMicrotask(() => { refit(); term?.focus(); });
+    if (active) queueMicrotask(() => { refit(); if (!modalOpen()) term?.focus(); });
   });
 
   onMount(() => {
@@ -51,6 +52,9 @@
     term.open(el);
     fit.fit();
 
+    // xterm zatrzymuje zdarzenia klawiszy, które dają dane (np. Ctrl+K, Ctrl+PageDown), więc skróty
+    // aplikacji trzeba przepuścić jawnie: `false` oznacza, że xterm nie wyśle ich do serwera.
+    term.attachCustomKeyEventHandler((e) => !matchAction(ui.doc?.settings, e));
     term.onData((s) => sessionId && void sshWrite(sessionId, encoder.encode(s)));
     term.onBinary((s) => sessionId && void sshWrite(sessionId, Uint8Array.from(s, (c) => c.charCodeAt(0))));
 
@@ -65,6 +69,8 @@
         password,
         (bytes) => term?.write(bytes),
         (c) => {
+          // Po `exit` zawsze przychodzi jeszcze `closed`; komunikat z kodem wyjścia zostaje.
+          if (c.t !== 'exit' && status === 'closed') return;
           status = 'closed';
           message = c.t === 'exit' ? `Sesja zakończona (kod wyjścia ${c.code}).` : 'Połączenie zostało zamknięte.';
         },
@@ -72,8 +78,8 @@
         // Brak agenta albo kluczy: pytamy o hasło tylko na tę sesję i próbujemy jeszcze raz.
         const reason = needsPassword(e);
         if (reason === null || password !== null) throw e;
-        const pw = await requestPassword(h?.name ?? 'host', reason);
-        if (pw === null) throw 'Anulowano łączenie.';
+        const pw = await requestPassword(h?.name ?? 'host', reason, tabId);
+        if (pw === null || disposed) throw 'Anulowano łączenie.';
         return attempt(pw);
       });
 
@@ -86,8 +92,9 @@
         sessionId = id;
         if (status === 'connecting') status = 'connected';
         refit();
-        // Dialog zaufania oddaje fokus wierszowi drzewa, więc po połączeniu terminal przejmuje go z powrotem.
-        if (active) term?.focus();
+        // Dialog zaufania oddaje fokus wierszowi drzewa, więc po połączeniu terminal przejmuje go z powrotem,
+        // chyba że użytkownik pisze akurat w innym oknie.
+        if (active && !modalOpen()) term?.focus();
       })
       .catch((e) => {
         status = 'error';
@@ -96,6 +103,7 @@
 
     return () => {
       disposed = true;
+      cancelPasswordPrompts(tabId);
       observer.disconnect();
       if (sessionId) void api.sshClose(sessionId);
       term?.dispose();

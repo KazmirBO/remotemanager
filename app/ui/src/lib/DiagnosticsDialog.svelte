@@ -8,7 +8,7 @@
   let { onclose }: { onclose: () => void } = $props();
   let lines = $state<string[]>([]);
 
-  const load = () => api.getDiagnostics().then((l) => (lines = l)).catch((e) => notify(String(e)));
+  const load = () => api.getDiagnostics().then((l) => (lines = l)).catch((e) => notify(String(e), true));
   onMount(() => void load());
 
   /** Wpis ma postać "<sekundy epoki> <treść>". */
@@ -24,7 +24,7 @@
       await navigator.clipboard.writeText(text);
       notify('Skopiowano dziennik.');
     } catch {
-      notify('Nie udało się skopiować.');
+      notify('Nie udało się skopiować.', true);
     }
   }
   async function clear() {

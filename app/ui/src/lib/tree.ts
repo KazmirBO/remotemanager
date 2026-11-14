@@ -55,7 +55,8 @@ export function matches(h: HostView, query: string): boolean {
   return [h.name, h.address, h.notes].some((s) => s.toLowerCase().includes(q));
 }
 
-export type InheritableKey = 'port' | 'username' | 'domain' | 'jump_host' | 'terminal_scheme' | 'rdp_multimon';
+export type InheritableKey =
+  | 'port' | 'username' | 'domain' | 'jump_host' | 'terminal_scheme' | 'rdp_multimon' | 'rdp_kerberos' | 'rdp_kdc';
 
 /**
  * Wartość dziedziczona dla pola, licząc od katalogu `start` w górę.

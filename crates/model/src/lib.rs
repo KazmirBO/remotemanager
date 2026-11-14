@@ -3,7 +3,7 @@
 //! Kolejność rozwiązywania pola: host -> katalog -> katalog nadrzędny -> ... -> ustawienia domyślne
 //! -> wartość wbudowana. Pole puste (`None`) oznacza dziedziczenie.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub mod link;
 
@@ -22,6 +22,8 @@ pub enum Error {
     FolderCycle,
     #[error("cykl w łańcuchu bastionów")]
     JumpCycle,
+    #[error("bastion musi być hostem SSH")]
+    JumpNotSsh,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -67,7 +69,28 @@ macro_rules! fields {
             $(pub $name: Option<Source>,)*
         }
 
+        #[cfg(test)]
+        impl Sources {
+            fn all(&self, s: Source) -> bool {
+                true $(&& self.$name == Some(s))*
+            }
+        }
+
         impl Fields {
+            /// Oznacza pola ustawione bezpośrednio (na hoście) jako własne. Lista pól pochodzi z tego
+            /// samego makra, więc nowe pole nie może zostać tu pominięte.
+            fn mark_own(&self, src: &mut Sources) {
+                $(if self.$name.is_some() {
+                    src.$name = Some(Source::Host);
+                })*
+            }
+
+            /// Wszystkie pola ustawione (do testów kompletności).
+            #[cfg(test)]
+            fn all_set() -> Self {
+                Self { $($name: Some(<$ty>::default()),)* }
+            }
+
             /// Uzupełnia puste pola wartościami z `lower`, zapisując źródło w `src`.
             fn fill_from(&mut self, lower: &Fields, origin: Source, src: &mut Sources) {
                 $(if self.$name.is_none() {
@@ -275,7 +298,7 @@ impl Tree {
         let mut fields = h.fields.clone();
         let mut sources = Sources::default();
         // Pola ustawione na hoście mają źródło Host.
-        mark_own(&h.fields, &mut sources);
+        h.fields.mark_own(&mut sources);
         let mut seen = HashSet::new();
         let mut cur = h.folder;
         while let Some(fid) = cur {
@@ -287,6 +310,12 @@ impl Tree {
             cur = f.parent;
         }
         fields.fill_from(&self.defaults, Source::Defaults, &mut sources);
+        // Bastion ustawiony w katalogu obejmuje też sam bastion, jeśli leży w tym katalogu: on łączy
+        // się bezpośrednio (inaczej cały katalog dostawałby cykl).
+        if fields.jump_host == Some(host) && sources.jump_host != Some(Source::Host) {
+            fields.jump_host = None;
+            sources.jump_host = None;
+        }
         let port = fields.port.unwrap_or_else(|| h.protocol.default_port());
         Ok(Resolved {
             fields,
@@ -303,6 +332,9 @@ impl Tree {
         while let Some(j) = cur {
             if !seen.insert(j) {
                 return Err(Error::JumpCycle);
+            }
+            if self.host(j).ok_or(Error::NoHost(j))?.protocol != Protocol::Ssh {
+                return Err(Error::JumpNotSsh);
             }
             chain.push(j);
             cur = self.resolve(j)?.fields.jump_host;
@@ -372,11 +404,22 @@ pub struct TrustedKey {
 }
 
 /// Ustawienia aplikacji zapisywane w pliku (synchronizują się razem z hostami).
+/// Pola dodane później mają `serde(default)`, żeby starsze pliki dalej się otwierały.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     /// "dark", "light" albo "system".
     pub theme: String,
     pub terminal_font_size: u8,
+    /// Domyślny schemat terminala ("domyslny", "szary" albo "kontrast").
+    #[serde(default = "default_terminal_scheme")]
+    pub terminal_scheme: String,
+    /// Nadpisane skróty: id akcji -> kombinacja, np. "quick_connect" -> "Ctrl+K".
+    #[serde(default)]
+    pub shortcuts: BTreeMap<String, String>,
+}
+
+fn default_terminal_scheme() -> String {
+    "domyslny".into()
 }
 
 impl Default for Settings {
@@ -384,6 +427,8 @@ impl Default for Settings {
         Self {
             theme: "system".into(),
             terminal_font_size: 13,
+            terminal_scheme: default_terminal_scheme(),
+            shortcuts: BTreeMap::new(),
         }
     }
 }
@@ -419,21 +464,6 @@ impl Document {
         });
         self.trusted_keys.push(key);
     }
-}
-
-fn mark_own(own: &Fields, src: &mut Sources) {
-    macro_rules! mark {
-        ($($n:ident),*) => { $(if own.$n.is_some() { src.$n = Some(Source::Host); })* };
-    }
-    mark!(
-        port,
-        username,
-        domain,
-        password,
-        jump_host,
-        terminal_scheme,
-        rdp_multimon
-    );
 }
 
 #[cfg(test)]
@@ -592,5 +622,57 @@ mod tests {
                 .unwrap_or(22);
             prop_assert_eq!(t.resolve(h).unwrap().port, expected);
         }
+    }
+
+    #[test]
+    fn settings_keep_scheme_and_shortcuts_and_read_old_files() {
+        let mut st = Settings {
+            terminal_scheme: "szary".into(),
+            ..Settings::default()
+        };
+        st.shortcuts
+            .insert("quick_connect".into(), "Ctrl+Shift+K".into());
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
+        assert_eq!(back, st);
+        // Plik zapisany przed dodaniem pól.
+        let old: Settings =
+            serde_json::from_str(r#"{"theme":"dark","terminal_font_size":14}"#).unwrap();
+        assert_eq!(old.terminal_scheme, "domyslny");
+        assert!(old.shortcuts.is_empty());
+    }
+
+    #[test]
+    fn every_field_set_on_host_has_host_source() {
+        let mut t = Tree::default();
+        let h = t.add_host("h", "h", Protocol::Ssh, None).unwrap();
+        t.hosts[0].fields = Fields::all_set();
+        let r = t.resolve(h).unwrap();
+        assert!(r.sources.all(Source::Host), "{:?}", r.sources);
+    }
+
+    #[test]
+    fn bastion_inside_folder_with_that_bastion_connects_directly() {
+        let mut t = Tree::default();
+        let prod = t.add_folder("Prod", None).unwrap();
+        let b = t
+            .add_host("bastion", "b", Protocol::Ssh, Some(prod))
+            .unwrap();
+        let web = t.add_host("web", "w", Protocol::Ssh, Some(prod)).unwrap();
+        t.folders[0].fields.jump_host = Some(b);
+        assert_eq!(t.jump_chain(b).unwrap(), Vec::<Id>::new());
+        assert_eq!(t.resolve(b).unwrap().sources.jump_host, None);
+        assert_eq!(t.jump_chain(web).unwrap(), vec![b]);
+        // Bastion ustawiony jawnie na sobie samym nadal jest błędem.
+        t.hosts[0].fields.jump_host = Some(b);
+        assert_eq!(t.jump_chain(b), Err(Error::JumpCycle));
+    }
+
+    #[test]
+    fn rdp_host_cannot_be_a_bastion() {
+        let mut t = Tree::default();
+        let r = t.add_host("rdp", "r", Protocol::Rdp, None).unwrap();
+        let s = t.add_host("ssh", "s", Protocol::Ssh, None).unwrap();
+        t.hosts[1].fields.jump_host = Some(r);
+        assert_eq!(t.jump_chain(s), Err(Error::JumpNotSsh));
     }
 }

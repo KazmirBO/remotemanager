@@ -14,6 +14,7 @@ export const ACTIONS: ActionDef[] = [
 
 interface KeyLike {
   ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; code: string;
+  getModifierState?: (key: string) => boolean;
 }
 
 const MODIFIER_CODES = /^(Control|Shift|Alt|Meta|OS)(Left|Right)?$/;
@@ -39,11 +40,15 @@ export function comboFromEvent(e: KeyLike): string | null {
   return parts.join('+');
 }
 
-/** Skrót musi mieć Ctrl, Alt albo Meta (albo być klawiszem funkcyjnym), inaczej zabrałby zwykłe pisanie. */
+/** Skrót musi mieć Ctrl, Alt albo Meta (albo być klawiszem funkcyjnym), inaczej zabrałby zwykłe pisanie.
+ * Ctrl+Alt (bez Meta) jest odrzucane, bo na Windows tak wygląda AltGr: na polskiej klawiaturze
+ * Ctrl+Alt+L to zwykłe "ł". */
 export function validCombo(combo: string): boolean {
   const parts = combo.split('+');
   const key = parts[parts.length - 1];
-  return parts.length >= 2 ? parts.slice(0, -1).some((m) => m === 'Ctrl' || m === 'Alt' || m === 'Meta') : /^F\d{1,2}$/.test(key);
+  const mods = parts.slice(0, -1);
+  if (mods.includes('Ctrl') && mods.includes('Alt') && !mods.includes('Meta')) return false;
+  return parts.length >= 2 ? mods.some((m) => m === 'Ctrl' || m === 'Alt' || m === 'Meta') : /^F\d{1,2}$/.test(key);
 }
 
 export function binding(settings: Settings | undefined, id: string): string {
@@ -53,6 +58,8 @@ export function binding(settings: Settings | undefined, id: string): string {
 
 /** Akcja przypisana do zdarzenia klawiatury albo `null`. */
 export function matchAction(settings: Settings | undefined, e: KeyLike): string | null {
+  // AltGr wpisuje znaki (ą, ę, ł...), nawet jeśli przeglądarka zgłasza je jako Ctrl+Alt.
+  if (e.getModifierState?.('AltGraph')) return null;
   const combo = comboFromEvent(e);
   if (!combo) return null;
   return ACTIONS.find((a) => binding(settings, a.id) === combo)?.id ?? null;
@@ -61,4 +68,10 @@ export function matchAction(settings: Settings | undefined, e: KeyLike): string 
 /** Id innej akcji, która już używa tej kombinacji. */
 export function findConflict(settings: Settings | undefined, id: string, combo: string): string | null {
   return ACTIONS.find((a) => a.id !== id && binding(settings, a.id) === combo)?.id ?? null;
+}
+
+/** Czy akcja działa, gdy otwarte jest okno modalne. Tylko blokada pliku, bo to akcja bezpieczeństwa.
+ * Pozostałe skróty zamieniłyby okno z niezapisanym formularzem albo zmieniły karty schowane pod oknem. */
+export function allowedWithModal(action: string): boolean {
+  return action === 'lock';
 }

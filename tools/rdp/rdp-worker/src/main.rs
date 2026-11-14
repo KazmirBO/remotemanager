@@ -381,33 +381,69 @@ impl Dirty {
     }
 }
 
+/// Największy fragment obrazu w jednej ramce. Musi być poniżej `MAX_FRAME`: większe ramki były
+/// odrzucane po cichu i duże pulpity (od ok. 4K) przestawały się odświeżać. Mniejsze pasy dochodzą
+/// też szybciej do interfejsu.
+const STRIP_BYTES: usize = 16 * 1024 * 1024;
+const _: () = assert!(STRIP_BYTES < rdp_proto::MAX_FRAME);
+
 fn flush(image: &DecodedImage, dirty: &mut Dirty) {
-    let Some((l, t, r, b)) = dirty.0.take() else {
+    let Some(rect) = dirty.0.take() else {
         return;
     };
-    let (iw, ih) = (image.width(), image.height());
+    for img in strips(
+        image.data(),
+        image.width(),
+        image.height(),
+        rect,
+        STRIP_BYTES,
+    ) {
+        emit_image(&img);
+    }
+}
+
+/// Wycina prostokąt `(l, t, r, b)` (włącznie) z obrazu RGBA, dzieląc go na poziome pasy
+/// po najwyżej `max_bytes` bajtów (zawsze co najmniej jeden wiersz).
+fn strips(
+    data: &[u8],
+    iw: u16,
+    ih: u16,
+    (l, t, r, b): (u16, u16, u16, u16),
+    max_bytes: usize,
+) -> Vec<Image> {
     if iw == 0 || ih == 0 {
-        return;
+        return Vec::new();
     }
     let (r, b) = (r.min(iw - 1), b.min(ih - 1));
     if l > r || t > b {
-        return;
+        return Vec::new();
     }
-    let (w, h) = (r - l + 1, b - t + 1);
+    let w = r - l + 1;
+    let row_bytes = usize::from(w) * 4;
+    let rows_per_strip = u16::try_from((max_bytes / row_bytes).max(1)).unwrap_or(u16::MAX);
     let stride = usize::from(iw) * 4;
-    let data = image.data();
-    let mut rgba = Vec::with_capacity(usize::from(w) * usize::from(h) * 4);
-    for row in t..=b {
-        let start = usize::from(row) * stride + usize::from(l) * 4;
-        rgba.extend_from_slice(&data[start..start + usize::from(w) * 4]);
+    let mut out = Vec::new();
+    let mut top = t;
+    loop {
+        let bottom = top.saturating_add(rows_per_strip - 1).min(b);
+        let mut rgba = Vec::with_capacity(row_bytes * usize::from(bottom - top + 1));
+        for row in top..=bottom {
+            let start = usize::from(row) * stride + usize::from(l) * 4;
+            rgba.extend_from_slice(&data[start..start + row_bytes]);
+        }
+        out.push(Image {
+            x: l,
+            y: top,
+            width: w,
+            height: bottom - top + 1,
+            rgba,
+        });
+        if bottom == b {
+            break;
+        }
+        top = bottom + 1;
     }
-    emit_image(&Image {
-        x: l,
-        y: t,
-        width: w,
-        height: h,
-        rgba,
-    });
+    out
 }
 
 fn set_timeout(framed: &Framed, d: Duration) {
@@ -474,13 +510,27 @@ fn connect(
     rx: &Receiver<ToWorker>,
     clip_tx: mpsc::Sender<clip::ClipEvent>,
 ) -> anyhow::Result<(ConnectionResult, Framed)> {
-    let addr = (p.host.as_str(), p.port)
+    let addrs: Vec<_> = (p.host.as_str(), p.port)
         .to_socket_addrs()
         .with_context(|| format!("nie można rozwiązać adresu {}", p.host))?
-        .next()
-        .context("brak adresu hosta")?;
-    let tcp =
-        TcpStream::connect_timeout(&addr, Duration::from_secs(10)).context("połączenie TCP")?;
+        .collect();
+    // Kolejne adresy z DNS: np. przy niedziałającej trasie IPv6 próbujemy jeszcze IPv4.
+    let mut last_err = None;
+    let mut tcp = None;
+    for addr in &addrs {
+        match TcpStream::connect_timeout(addr, Duration::from_secs(10)) {
+            Ok(s) => {
+                tcp = Some(s);
+                break;
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    let tcp = match (tcp, last_err) {
+        (Some(t), _) => t,
+        (None, Some(e)) => return Err(anyhow::Error::new(e).context("połączenie TCP")),
+        (None, None) => anyhow::bail!("brak adresu hosta"),
+    };
     tcp.set_read_timeout(Some(CONNECT_TIMEOUT))?;
     let client_addr = tcp.local_addr()?;
     let mut framed = ironrdp_blocking::Framed::new(tcp);
@@ -664,5 +714,30 @@ mod tests {
     fn control_commands_produce_no_input() {
         assert!(operations_for(&ToWorker::Close).is_empty());
         assert!(operations_for(&ToWorker::ClipFetchFiles).is_empty());
+    }
+
+    #[test]
+    fn large_dirty_area_is_split_into_strips_under_the_limit() {
+        let (iw, ih) = (10u16, 7u16);
+        let data: Vec<u8> = (0..usize::from(iw) * usize::from(ih) * 4)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        // Prostokąt 4x7 od kolumny 2; limit pozwala na 2 wiersze (32 B) w pasie.
+        let parts = strips(&data, iw, ih, (2, 0, 5, 6), 40);
+        assert_eq!(parts.len(), 4);
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.rgba.len() <= 40 && p.x == 2 && p.width == 4)
+        );
+        assert_eq!(
+            parts.iter().map(|p| (p.y, p.height)).collect::<Vec<_>>(),
+            [(0, 2), (2, 2), (4, 2), (6, 1)]
+        );
+        // Złożone pasy dają ten sam obraz co jeden duży prostokąt.
+        let whole = strips(&data, iw, ih, (2, 0, 5, 6), usize::MAX);
+        assert_eq!(whole.len(), 1);
+        let joined: Vec<u8> = parts.iter().flat_map(|p| p.rgba.clone()).collect();
+        assert_eq!(joined, whole[0].rgba);
     }
 }

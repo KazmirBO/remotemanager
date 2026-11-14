@@ -34,7 +34,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="backdrop" onmousedown={(e) => e.target === e.currentTarget && onclose()} onkeydown={key}>
-  <div class="box" role="dialog" aria-label="Szybkie łączenie">
+  <div class="box" role="dialog" aria-modal="true" aria-label="Szybkie łączenie">
     <div class="search">
       <Icon name="search" size={16} />
       <input bind:this={input} bind:value={query} type="text" placeholder="Szukaj hosta albo wklej link ssh:// lub rdp://" aria-label="Szukaj hosta" />

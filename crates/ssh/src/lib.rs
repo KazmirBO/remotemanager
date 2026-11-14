@@ -4,6 +4,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use russh::client::{self, Handle};
@@ -28,6 +29,8 @@ pub enum Error {
     HostKeyRejected(String),
     #[error("błąd protokołu SSH: {0}")]
     Protocol(String),
+    #[error("{0} nie odpowiada (przekroczono czas oczekiwania)")]
+    Timeout(String),
 }
 
 impl From<russh::Error> for Error {
@@ -85,6 +88,8 @@ struct Client {
     port: u16,
     verifier: HostKeyVerifier,
     rejected: Option<oneshot::Sender<()>>,
+    /// Ustawiane na czas pytania użytkownika o zaufanie: ten czas nie liczy się do limitu łączenia.
+    asking: Arc<AtomicBool>,
 }
 
 impl client::Handler for Client {
@@ -104,7 +109,9 @@ impl client::Handler for Client {
             algorithm: pk.algorithm().to_string(),
             fingerprint: pk.fingerprint(HashAlg::Sha256).to_string(),
         };
+        self.asking.store(true, Ordering::Relaxed);
         let ok = (self.verifier)(info).await;
+        self.asking.store(false, Ordering::Relaxed);
         if !ok && let Some(tx) = self.rejected.take() {
             let _ = tx.send(());
         }
@@ -227,34 +234,77 @@ impl ShellHandle {
     }
 }
 
+/// Domyślny limit czasu na połączenie i uwierzytelnienie jednego przystanku.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Czeka na `f`, ale najwyżej `limit` czasu, w którym `paused` było fałszywe (czas pytania
+/// użytkownika o zaufanie nie jest liczony). `None` oznacza przekroczenie limitu.
+async fn within<F: Future>(f: F, limit: Duration, paused: &AtomicBool) -> Option<F::Output> {
+    const TICK: Duration = Duration::from_millis(250);
+    tokio::pin!(f);
+    let mut waited = Duration::ZERO;
+    loop {
+        tokio::select! {
+            out = &mut f => return Some(out),
+            _ = tokio::time::sleep(TICK) => {
+                if !paused.load(Ordering::Relaxed) {
+                    waited += TICK;
+                    if waited >= limit {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl Session {
     /// Łączy przez kolejne przystanki; ostatni element `hops` to cel.
     pub async fn connect(hops: &[Hop], verifier: HostKeyVerifier) -> Result<Self> {
+        Self::connect_with_timeout(hops, verifier, CONNECT_TIMEOUT).await
+    }
+
+    /// Jak `connect`, z własnym limitem czasu na przystanek. Serwer, który przyjmuje połączenie TCP
+    /// i milczy, kończy się błędem `Timeout` zamiast wiecznego "Łączenie...".
+    pub async fn connect_with_timeout(
+        hops: &[Hop],
+        verifier: HostKeyVerifier,
+        limit: Duration,
+    ) -> Result<Self> {
         let mut handles: Vec<Handle<Client>> = Vec::new();
         for (i, hop) in hops.iter().enumerate() {
             let (rej_tx, rej_rx) = oneshot::channel();
+            let asking = Arc::new(AtomicBool::new(false));
             let handler = Client {
                 host: hop.host.clone(),
                 port: hop.port,
                 verifier: verifier.clone(),
                 rejected: Some(rej_tx),
+                asking: asking.clone(),
             };
             let target = format!("{}:{}", hop.host, hop.port);
-            let connected = match handles.last() {
-                None => client::connect(config(), (hop.host.as_str(), hop.port), handler).await,
-                Some(prev) => {
-                    let ch = prev
-                        .channel_open_direct_tcpip(
-                            hop.host.clone(),
-                            hop.port as u32,
-                            "127.0.0.1",
-                            0,
-                        )
-                        .await
-                        .map_err(|_| Error::Connect(target.clone()))?;
-                    client::connect_stream(config(), ch.into_stream(), handler).await
+            let connecting = async {
+                match handles.last() {
+                    None => Ok::<_, Error>(
+                        client::connect(config(), (hop.host.as_str(), hop.port), handler).await,
+                    ),
+                    Some(prev) => {
+                        let ch = prev
+                            .channel_open_direct_tcpip(
+                                hop.host.clone(),
+                                hop.port as u32,
+                                "127.0.0.1",
+                                0,
+                            )
+                            .await
+                            .map_err(|_| Error::Connect(target.clone()))?;
+                        Ok(client::connect_stream(config(), ch.into_stream(), handler).await)
+                    }
                 }
             };
+            let connected = within(connecting, limit, &asking)
+                .await
+                .ok_or_else(|| Error::Timeout(target.clone()))??;
             let mut handle = match connected {
                 Ok(h) => h,
                 Err(e) => {
@@ -267,14 +317,17 @@ impl Session {
                     });
                 }
             };
-            authenticate(&mut handle, hop).await.map_err(|e| {
-                // Dla czytelności błędu przy bastionie.
-                if i + 1 < hops.len() {
-                    Error::Protocol(format!("bastion {}: {e}", hop.host))
-                } else {
-                    e
-                }
-            })?;
+            within(authenticate(&mut handle, hop), limit, &asking)
+                .await
+                .unwrap_or_else(|| Err(Error::Timeout(target.clone())))
+                .map_err(|e| {
+                    // Dla czytelności błędu przy bastionie.
+                    if i + 1 < hops.len() {
+                        Error::Protocol(format!("bastion {}: {e}", hop.host))
+                    } else {
+                        e
+                    }
+                })?;
             handles.push(handle);
         }
         if handles.is_empty() {

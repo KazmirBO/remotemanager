@@ -60,6 +60,8 @@ pub fn parse_link(input: &str) -> Result<Link, LinkError> {
     if input.chars().any(|c| c.is_control()) {
         return Err(LinkError::Chars);
     }
+    // Fragment (`#...`) nie należy do adresu.
+    let rest = rest.split('#').next().unwrap_or("");
     let (authority_path, query) = rest.split_once('?').unwrap_or((rest, ""));
     let authority = authority_path.split('/').next().unwrap_or("");
     let (userinfo, hostport) = match authority.rsplit_once('@') {
@@ -82,9 +84,17 @@ pub fn parse_link(input: &str) -> Result<Link, LinkError> {
         {
             return Err(LinkError::Ipv6);
         }
-        (h.to_owned(), after.strip_prefix(':'))
+        // Po nawiasie może być tylko `:port` albo nic.
+        let port = match after {
+            "" => None,
+            a => Some(a.strip_prefix(':').ok_or(LinkError::Ipv6)?),
+        };
+        (h.to_owned(), port)
     } else {
         match hostport.rsplit_once(':') {
+            // Drugi dwukropek oznacza adres IPv6 bez nawiasów (np. `fe80::1`), którego nie da się
+            // jednoznacznie odróżnić od portu.
+            Some((h, _)) if h.contains(':') => return Err(LinkError::Ipv6),
             Some((h, p)) => (h.to_owned(), Some(p)),
             None => (hostport.to_owned(), None),
         }
@@ -118,9 +128,9 @@ pub fn parse_link(input: &str) -> Result<Link, LinkError> {
             _ => {}
         }
     }
-    if username.as_deref().is_some_and(|u| !valid_text(u))
-        || domain.as_deref().is_some_and(|d| !valid_text(d))
-    {
+    // Ta sama reguła co dla hosta: wartość zaczynająca się od '-' wyglądałaby jak opcja.
+    let bad = |v: &str| !valid_text(v) || v.starts_with('-');
+    if username.as_deref().is_some_and(bad) || domain.as_deref().is_some_and(bad) {
         return Err(LinkError::Chars);
     }
     Ok(Link {
@@ -203,5 +213,23 @@ mod tests {
             parse_link("ssh://-oProxyCommand=evil"),
             Err(LinkError::Chars)
         );
+    }
+
+    #[test]
+    fn rejects_ambiguous_ipv6_garbage_and_option_like_users() {
+        // IPv6 bez nawiasów dawało host "fe80:" i port 1.
+        assert_eq!(parse_link("ssh://fe80::1"), Err(LinkError::Ipv6));
+        assert_eq!(parse_link("ssh://::1"), Err(LinkError::Ipv6));
+        assert_eq!(parse_link("ssh://[::1]smieci"), Err(LinkError::Ipv6));
+        assert_eq!(parse_link("ssh://[::1]:x"), Err(LinkError::Port));
+        assert_eq!(
+            parse_link("ssh://-oProxyCommand=x@host"),
+            Err(LinkError::Chars)
+        );
+        assert_eq!(parse_link("rdp://host?domain=-x"), Err(LinkError::Chars));
+        // Fragment jest odcinany.
+        let l = ok("ssh://host:2200#kotwica");
+        assert_eq!((l.host.as_str(), l.port), ("host", Some(2200)));
+        assert_eq!(ok("ssh://[::1]:2222").port, Some(2222));
     }
 }

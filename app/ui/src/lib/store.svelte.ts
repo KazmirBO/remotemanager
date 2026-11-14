@@ -10,8 +10,11 @@ export interface Tab {
 }
 
 export interface PasswordPrompt {
+  id: number;
   title: string;
   reason: string;
+  /** Karta, która pyta; jej zamknięcie anuluje monit. */
+  owner: string | null;
   resolve: (password: string | null) => void;
 }
 
@@ -23,16 +26,22 @@ export interface Notice {
 export const ui = $state({
   history: [] as Notice[],
   sync: null as SyncView | null,
-  passwordPrompt: null as PasswordPrompt | null,
+  /** Kolejka monitów o hasło; pokazywany jest pierwszy. */
+  passwordQueue: [] as PasswordPrompt[],
   phase: 'loading' as 'loading' | VaultState,
   doc: null as DocView | null,
   tabs: [] as Tab[],
   activeTab: null as string | null,
+  /** Host do pokazania i zaznaczenia w drzewie (np. po otwarciu linku); drzewo zeruje to pole. */
+  reveal: null as Id | null,
   notice: null as string | null,
+  noticeError: false,
 });
 
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
-export function notify(message: string) {
+/** Powiadomienie w dymku i w historii; `error` zmienia ikonę na ostrzeżenie. */
+export function notify(message: string, error = false) {
+  ui.noticeError = error;
   ui.history.unshift({ time: Date.now(), text: message });
   if (ui.history.length > 50) ui.history.pop();
   ui.notice = message;
@@ -63,11 +72,24 @@ export async function afterUnlock() {
   ui.phase = 'unlocked';
 }
 
-export async function lockVault() {
-  for (const t of ui.tabs) closeTabNow(t.id);
-  await api.lock();
+/** Czy jest otwarte okno modalne. Sesja, która właśnie się połączyła, nie zabiera mu wtedy fokusu
+ * (inaczej np. wpisywane hasło trafiłoby do zdalnej powłoki). */
+export function modalOpen(): boolean {
+  return document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
+}
+
+/** Stan interfejsu po blokadzie pliku (z przycisku, skrótu, zasobnika albo po pobraniu zdalnej wersji). */
+export function onLocked() {
+  ui.tabs = [];
+  ui.activeTab = null;
+  cancelPasswordPrompts();
   ui.doc = null;
   ui.phase = 'locked';
+}
+
+export async function lockVault() {
+  onLocked();
+  await api.lock();
 }
 
 export function host(id: Id): HostView | undefined {
@@ -94,18 +116,32 @@ export function reconnect(id: string) {
   if (t) t.generation += 1;
 }
 
-/** Pyta o hasło do jednej sesji (nie jest zapisywane). Zwraca `null`, gdy użytkownik anuluje. */
-export function requestPassword(title: string, reason: string): Promise<string | null> {
+/** Pyta o hasło do jednej sesji (nie jest zapisywane). Zwraca `null`, gdy użytkownik anuluje
+ * albo karta `owner` zostanie zamknięta. Kolejne monity czekają w kolejce, żaden nie ginie. */
+export function requestPassword(title: string, reason: string, owner: string | null = null): Promise<string | null> {
   return new Promise((resolve) => {
-    ui.passwordPrompt = {
+    const id = ++promptSeq;
+    ui.passwordQueue.push({
+      id,
       title,
       reason,
+      owner,
       resolve: (pw) => {
-        ui.passwordPrompt = null;
+        const i = ui.passwordQueue.findIndex((p) => p.id === id);
+        if (i < 0) return; // już rozwiązany
+        ui.passwordQueue.splice(i, 1);
         resolve(pw);
       },
-    };
+    });
   });
+}
+let promptSeq = 0;
+
+/** Anuluje monity danej karty (albo wszystkie, gdy `owner` nie jest podany). */
+export function cancelPasswordPrompts(owner?: string) {
+  for (const p of [...ui.passwordQueue]) {
+    if (owner === undefined || p.owner === owner) p.resolve(null);
+  }
 }
 
 /** Odpowiedź backendu "NEEDS_PASSWORD:<powód>" oznacza, że trzeba zapytać o hasło i ponowić próbę. */
@@ -123,8 +159,4 @@ export async function refreshSync() {
 }
 
 /** Po pobraniu zdalnej wersji plik jest zablokowany: zamykamy karty i wracamy do odblokowania. */
-export function lockedBySync() {
-  for (const t of [...ui.tabs]) closeTabNow(t.id);
-  ui.doc = null;
-  ui.phase = 'locked';
-}
+export const lockedBySync = onLocked;

@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Uprawnienia głównego okna",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-set-fullscreen"]
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:app:allow-version",
+    "core:window:allow-set-fullscreen"
+  ]
 }

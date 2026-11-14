@@ -8,9 +8,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 pub use rdp_proto::{ClipKind, ConnectParams, FromWorker, Image, RemoteFile, ToWorker, clipfmt};
+
+/// Pojemność kolejki zdarzeń między wątkiem czytającym stdout procesu a odbiorcą. Kolejka jest
+/// ograniczona celowo: gdy odbiorca nie nadąża (np. interfejs wolno rysuje obraz), wątek czeka,
+/// potok się zapełnia, proces przestaje czytać z sieci i serwer RDP zwalnia, zamiast żeby ramki
+/// obrazu (do 16 MiB każda) rosły w pamięci bez limitu.
+pub const EVENT_QUEUE: usize = 8;
 
 /// Nazwa pliku wykonywalnego procesu obok aplikacji.
 pub const WORKER_NAME: &str = if cfg!(windows) {
@@ -72,16 +78,21 @@ pub struct RdpClient {
 
 impl RdpClient {
     /// Uruchamia proces i wysyła `Connect`. Zdarzenia trafiają do `events` aż do końca procesu.
-    pub fn spawn(
-        worker: &Path,
-        params: ConnectParams,
-        events: UnboundedSender<Event>,
-    ) -> io::Result<Self> {
-        let mut child = Command::new(worker)
-            .stdin(Stdio::piped())
+    /// Kolejka `events` powinna mieć pojemność `EVENT_QUEUE`; zapełniona wstrzymuje odczyt z procesu.
+    pub fn spawn(worker: &Path, params: ConnectParams, events: Sender<Event>) -> io::Result<Self> {
+        let mut cmd = Command::new(worker);
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
+            .stderr(Stdio::inherit());
+        // Proces jest aplikacją konsolową: bez tej flagi Windows otwierałby okno konsoli przy każdej
+        // sesji, a jego zamknięcie kończyłoby sesję.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = cmd.spawn()?;
         let mut stdout = child
             .stdout
             .take()
@@ -99,6 +110,8 @@ impl RdpClient {
         };
         client.send(&ToWorker::Connect(params))?;
 
+        // Wątek trzyma tylko słabą referencję, żeby zwolnienie ostatniego `RdpClient` kończyło proces.
+        let inner = Arc::downgrade(&inner);
         std::thread::spawn(move || {
             let mut finished = false;
             loop {
@@ -110,19 +123,19 @@ impl RdpClient {
                         Ok(ev) => {
                             finished |=
                                 matches!(ev, FromWorker::Closed { .. } | FromWorker::Error { .. });
-                            if events.send(Event::Worker(ev)).is_err() {
+                            if events.blocking_send(Event::Worker(ev)).is_err() {
                                 break;
                             }
                         }
                         Err(_) => continue,
                     },
                     Ok(Some(rdp_proto::Message::Clip { kind, data })) => {
-                        if events.send(Event::Clip { kind, data }).is_err() {
+                        if events.blocking_send(Event::Clip { kind, data }).is_err() {
                             break;
                         }
                     }
                     Ok(Some(rdp_proto::Message::Image(img))) => {
-                        if events.send(Event::Image(img)).is_err() {
+                        if events.blocking_send(Event::Image(img)).is_err() {
                             break;
                         }
                     }
@@ -130,17 +143,12 @@ impl RdpClient {
                 }
             }
             if !finished {
-                let code = inner
-                    .child
-                    .lock()
-                    .ok()
-                    .and_then(|mut c| c.wait().ok())
-                    .and_then(|s| s.code());
+                let code = inner.upgrade().and_then(|i| reap(&i));
                 let message = match code {
                     Some(c) => format!("proces RDP zakończył się nieoczekiwanie (kod {c})"),
                     None => "proces RDP zakończył się nieoczekiwanie".to_owned(),
                 };
-                let _ = events.send(Event::Worker(FromWorker::Error { message }));
+                let _ = events.blocking_send(Event::Worker(FromWorker::Error { message }));
             }
         });
         Ok(client)
@@ -179,6 +187,22 @@ impl RdpClient {
             }
         });
     }
+}
+
+/// Czeka chwilę na koniec procesu (bez trzymania blokady, żeby `close` mógł działać), a potem go
+/// kończy. Bez tego uszkodzona ramka przy żywym procesie zawieszała wątek w `wait()` na zawsze.
+fn reap(inner: &Inner) -> Option<i32> {
+    for _ in 0..20 {
+        if let Ok(mut c) = inner.child.lock()
+            && let Ok(Some(status)) = c.try_wait()
+        {
+            return status.code();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let mut c = inner.child.lock().ok()?;
+    let _ = c.kill();
+    c.wait().ok()?.code()
 }
 
 impl Drop for Inner {

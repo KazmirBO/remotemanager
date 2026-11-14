@@ -7,8 +7,9 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock, mpsc};
+use std::time::Duration;
 
 use rdp::clipfmt::{self, Rgba};
 use rdp::{ClipKind, ToWorker};
@@ -179,11 +180,73 @@ impl RemoteAssembler {
 }
 
 // ---- dostęp do schowka systemowego (arboard) ----
+//
+// Cały dostęp idzie przez jeden wątek, który trzyma jedną instancję `arboard::Clipboard` przez cały
+// czas działania aplikacji. Na X11 dane wstawione do schowka istnieją tylko, dopóki żyje instancja,
+// która je wstawiła (bez menedżera schowka znikały od razu), a na Windows równoległe otwieranie
+// schowka z kilku wątków daje błędy i puste odczyty.
 
+enum Req {
+    Snapshot(mpsc::Sender<Snapshot>),
+    Item(Item, mpsc::Sender<()>),
+    Files(Vec<PathBuf>, mpsc::Sender<()>),
+}
+
+/// Limit czasu odpowiedzi wątku schowka; po nim traktujemy schowek jak pusty.
+const HOST_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn host() -> &'static Mutex<mpsc::Sender<Req>> {
+    static HOST: OnceLock<Mutex<mpsc::Sender<Req>>> = OnceLock::new();
+    HOST.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Req>();
+        std::thread::Builder::new()
+            .name("schowek".into())
+            .spawn(move || {
+                let mut cb: Option<arboard::Clipboard> = None;
+                for req in rx {
+                    if cb.is_none() {
+                        cb = arboard::Clipboard::new().ok();
+                    }
+                    match (req, cb.as_mut()) {
+                        (Req::Snapshot(reply), Some(c)) => {
+                            let _ = reply.send(read_snapshot(c));
+                        }
+                        (Req::Snapshot(reply), None) => {
+                            let _ = reply.send(Snapshot::default());
+                        }
+                        (Req::Item(item, reply), Some(c)) => {
+                            write_item(c, item);
+                            let _ = reply.send(());
+                        }
+                        (Req::Files(paths, reply), Some(c)) => {
+                            let _ = c.set().file_list(&paths);
+                            let _ = reply.send(());
+                        }
+                        (Req::Item(_, reply) | Req::Files(_, reply), None) => {
+                            let _ = reply.send(());
+                        }
+                    }
+                }
+            })
+            .expect("wątek schowka");
+        Mutex::new(tx)
+    })
+}
+
+fn ask<T: Default>(make: impl FnOnce(mpsc::Sender<T>) -> Req) -> T {
+    let (tx, rx) = mpsc::channel();
+    if host().lock().expect("schowek").send(make(tx)).is_err() {
+        return T::default();
+    }
+    rx.recv_timeout(HOST_TIMEOUT).unwrap_or_default()
+}
+
+/// Bieżąca zawartość schowka systemowego (blokujące).
 pub fn snapshot() -> Snapshot {
-    let Ok(mut c) = arboard::Clipboard::new() else {
-        return Snapshot::default();
-    };
+    ask(Req::Snapshot)
+}
+
+fn read_snapshot(c: &mut arboard::Clipboard) -> Snapshot {
     let files: Vec<PathBuf> = c
         .get()
         .file_list()
@@ -223,10 +286,7 @@ pub fn snapshot() -> Snapshot {
     }
 }
 
-fn apply_item(item: Item) {
-    let Ok(mut c) = arboard::Clipboard::new() else {
-        return;
-    };
+fn write_item(c: &mut arboard::Clipboard, item: Item) {
     let _ = match item {
         Item::Text(t) => c.set_text(t),
         Item::Html { html, alt } => c.set().html(html, alt),
@@ -238,17 +298,18 @@ fn apply_item(item: Item) {
     };
 }
 
-fn apply_files(paths: &[PathBuf]) {
-    if let Ok(mut c) = arboard::Clipboard::new() {
-        let _ = c.set().file_list(paths);
-    }
-}
-
 /// Stan synchronizacji schowka jednej sesji.
 pub struct ClipSync {
-    /// Czy okno sesji ma fokus: tylko wtedy ogłaszamy zmiany lokalnego schowka.
+    /// Czy okno sesji ma fokus: tylko wtedy ogłaszamy zmiany lokalnego schowka i przyjmujemy zdalne.
     pub watching: AtomicBool,
+    /// Odcisk ostatnio ogłoszonej albo wstawionej ze zdalnej sesji zawartości. Blokada obejmuje cały
+    /// odczyt i zapis schowka, żeby sprawdzanie zmian nie wpadło między wstawienie a zapis odcisku.
     last: Mutex<Option<u64>>,
+    /// Migawka z chwili ostatniego ogłoszenia: serwer dostaje dane tylko z niej, nigdy z bieżącego
+    /// schowka, więc nie odczyta niczego, co skopiowano później w innym programie.
+    announced: Mutex<Option<Snapshot>>,
+    /// Zmiana zdalnego schowka, która przyszła bez fokusu; pobieramy ją po powrocie fokusu.
+    pending_remote: Mutex<Option<(Vec<ClipKind>, bool)>>,
     pub remote: Mutex<RemoteAssembler>,
     download_root: PathBuf,
     counter: AtomicU32,
@@ -259,53 +320,91 @@ impl ClipSync {
         Self {
             watching: AtomicBool::new(false),
             last: Mutex::new(None),
+            announced: Mutex::new(None),
+            pending_remote: Mutex::new(None),
             remote: Mutex::default(),
             download_root,
             counter: AtomicU32::new(0),
         }
     }
 
-    /// Wywoływane po zmianie fokusu: wymusza ponowne ogłoszenie przy następnym sprawdzeniu.
-    pub fn reset(&self) {
-        *self.last.lock().expect("clip") = None;
-    }
-
     /// Ogłoszenie, jeśli lokalny schowek zmienił się od ostatniego (blokujące, woła się z `spawn_blocking`).
+    /// Ogłoszenie unieważnia odłożoną zmianę zdalną: wygrywa nowsza zmiana lokalna.
     pub fn local_announcement(&self) -> Option<ToWorker> {
+        let mut last = self.last.lock().expect("clip");
         let snap = snapshot();
         let fp = snap.fingerprint();
-        let mut last = self.last.lock().expect("clip");
         if *last == Some(fp) {
             return None;
         }
         *last = Some(fp);
-        snap.announcement()
+        let msg = snap.announcement();
+        *self.announced.lock().expect("clip") = Some(snap);
+        if msg.is_some() {
+            *self.pending_remote.lock().expect("clip") = None;
+        }
+        msg
     }
 
-    /// Odpowiedź na prośbę serwera o dane (blokujące).
+    /// Zapomina ogłoszoną migawkę (np. po wyłączeniu schowka): serwer nie dostanie już tych danych.
+    pub fn forget_announced(&self) {
+        *self.announced.lock().expect("clip") = None;
+        *self.last.lock().expect("clip") = None;
+    }
+
+    /// Odpowiedź na prośbę serwera o dane: tylko ogłoszone rodzaje z ogłoszonej migawki.
     pub fn answer(&self, kind: ClipKind) -> ToWorker {
-        ToWorker::ClipData {
-            kind,
-            data: snapshot().data_for(kind),
+        let data = self
+            .announced
+            .lock()
+            .expect("clip")
+            .as_ref()
+            .filter(|s| s.kinds().contains(&kind))
+            .map(|s| s.data_for(kind))
+            .unwrap_or_default();
+        ToWorker::ClipData { kind, data }
+    }
+
+    /// Zdalny schowek się zmienił. Z fokusem zwraca, co pobrać; bez fokusu odkłada zmianę.
+    pub fn on_remote(&self, kinds: Vec<ClipKind>, files: bool) -> Option<Fetch> {
+        if self.watching.load(Ordering::Relaxed) {
+            *self.pending_remote.lock().expect("clip") = None;
+            self.remote.lock().expect("clip").on_remote(&kinds, files)
+        } else {
+            *self.pending_remote.lock().expect("clip") = Some((kinds, files));
+            None
         }
+    }
+
+    /// Po powrocie fokusu: pobranie odłożonej zmiany zdalnej, jeśli jest.
+    pub fn take_pending(&self) -> Option<Fetch> {
+        let (kinds, files) = self.pending_remote.lock().expect("clip").take()?;
+        self.remote.lock().expect("clip").on_remote(&kinds, files)
     }
 
     /// Ustawia element ze zdalnego schowka i zapamiętuje odcisk, żeby go nie odesłać (blokujące).
     pub fn apply(&self, item: Item) {
-        apply_item(item);
-        *self.last.lock().expect("clip") = Some(snapshot().fingerprint());
+        let mut last = self.last.lock().expect("clip");
+        ask(|tx| Req::Item(item, tx));
+        *last = Some(snapshot().fingerprint());
     }
 
     pub fn apply_files(&self, paths: Vec<PathBuf>) {
-        apply_files(&paths);
-        *self.last.lock().expect("clip") = Some(snapshot().fingerprint());
+        let mut last = self.last.lock().expect("clip");
+        ask(|tx| Req::Files(paths, tx));
+        *last = Some(snapshot().fingerprint());
     }
 
     /// Nowy katalog na pobierane pliki; poprzedni z tej sesji jest usuwany, żeby nie rosły w nieskończoność.
     pub fn next_download_dir(&self) -> PathBuf {
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
         if n > 0 {
-            let _ = std::fs::remove_dir_all(self.download_root.join((n - 1).to_string()));
+            // Usuwanie do 5000 plików trwa: robi to osobny wątek, żeby nie wstrzymywać pętli zdarzeń
+            // sesji (obrazu). Proces RDP przerwał już pobieranie do tego katalogu.
+            let old = self.download_root.join((n - 1).to_string());
+            std::thread::spawn(move || {
+                let _ = std::fs::remove_dir_all(old);
+            });
         }
         self.download_root.join(n.to_string())
     }
@@ -457,10 +556,55 @@ mod tests {
         std::fs::write(first.join("a"), b"x").unwrap();
         let second = sync.next_download_dir();
         assert_ne!(first, second);
+        // Usuwanie działa w tle; czekamy najwyżej 5 s.
+        let start = std::time::Instant::now();
+        while first.exists() && start.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(
             !first.exists(),
             "poprzedni katalog powinien zostać usunięty"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn server_gets_only_announced_kinds_from_announced_snapshot() {
+        let sync = ClipSync::new(std::env::temp_dir().join("mrm-clip-answer"));
+        let data = |m: ToWorker| match m {
+            ToWorker::ClipData { data, .. } => data,
+            other => panic!("{other:?}"),
+        };
+        // Nic nie ogłoszono: serwer nie dostaje niczego.
+        assert!(data(sync.answer(ClipKind::Text)).is_empty());
+        *sync.announced.lock().unwrap() = Some(Snapshot {
+            text: Some("ogłoszony".into()),
+            ..Default::default()
+        });
+        assert_eq!(data(sync.answer(ClipKind::Text)), "ogłoszony".as_bytes());
+        assert!(
+            data(sync.answer(ClipKind::Html)).is_empty(),
+            "rodzaj nieogłoszony"
+        );
+        sync.forget_announced();
+        assert!(data(sync.answer(ClipKind::Text)).is_empty());
+    }
+
+    #[test]
+    fn remote_change_without_focus_waits_for_focus() {
+        let sync = ClipSync::new(std::env::temp_dir().join("mrm-clip-pending"));
+        assert_eq!(sync.on_remote(vec![ClipKind::Text], false), None);
+        sync.watching.store(true, Ordering::Relaxed);
+        assert_eq!(sync.take_pending(), Some(Fetch::Kind(ClipKind::Text)));
+        assert_eq!(
+            sync.take_pending(),
+            None,
+            "odłożona zmiana jest pobierana raz"
+        );
+        assert_eq!(
+            sync.on_remote(vec![ClipKind::Image], false),
+            Some(Fetch::Kind(ClipKind::Image)),
+            "z fokusem pobieramy od razu"
+        );
     }
 }

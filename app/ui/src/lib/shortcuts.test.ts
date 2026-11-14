@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ACTIONS, binding, comboFromEvent, findConflict, matchAction, validCombo } from './shortcuts';
+import { ACTIONS, allowedWithModal, binding, comboFromEvent, findConflict, matchAction, validCombo } from './shortcuts';
 import type { Settings } from './api';
 
 const ev = (code: string, mods: Partial<Record<'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey', boolean>> = {}) => ({
@@ -31,6 +31,12 @@ describe('validCombo', () => {
     expect(validCombo('K')).toBe(false);
     expect(validCombo('F5')).toBe(true);
   });
+  it('odrzuca Ctrl+Alt, które na Windows jest AltGr', () => {
+    expect(validCombo('Ctrl+Alt+L')).toBe(false);
+    expect(validCombo('Ctrl+Alt+Shift+L')).toBe(false);
+    expect(validCombo('Ctrl+Alt+Meta+L')).toBe(true);
+    expect(validCombo('Alt+L')).toBe(true);
+  });
 });
 
 describe('bindings', () => {
@@ -40,11 +46,21 @@ describe('bindings', () => {
     expect(binding(settings({ quick_connect: '' }), 'quick_connect')).toBe('Ctrl+K');
   });
   it('rozpoznaje akcję i konflikty', () => {
-    const s = settings({ lock: 'Ctrl+Alt+L' });
-    expect(matchAction(s, ev('KeyL', { ctrlKey: true, altKey: true }))).toBe('lock');
+    const s = settings({ lock: 'Alt+Shift+L' });
+    expect(matchAction(s, ev('KeyL', { altKey: true, shiftKey: true }))).toBe('lock');
     expect(matchAction(s, ev('KeyL', { ctrlKey: true, shiftKey: true }))).toBeNull();
     expect(findConflict(s, 'lock', 'Ctrl+K')).toBe('quick_connect');
-    expect(findConflict(s, 'lock', 'Ctrl+Alt+L')).toBeNull();
+    expect(findConflict(s, 'lock', 'Alt+Shift+L')).toBeNull();
+  });
+  it('AltGr nie uruchamia skrótu, nawet zapisanego wcześniej jako Ctrl+Alt', () => {
+    const s = settings({ lock: 'Ctrl+Alt+L' });
+    const altGr = { ...ev('KeyL', { ctrlKey: true, altKey: true }), getModifierState: (k: string) => k === 'AltGraph' };
+    expect(matchAction(s, altGr)).toBeNull();
+    expect(matchAction(s, ev('KeyL', { ctrlKey: true, altKey: true }))).toBe('lock');
+  });
+  it('przy otwartym oknie działa tylko blokada pliku', () => {
+    expect(allowedWithModal('lock')).toBe(true);
+    for (const a of ACTIONS.filter((x) => x.id !== 'lock')) expect(allowedWithModal(a.id), a.id).toBe(false);
   });
   it('domyślne skróty są unikalne i poprawne', () => {
     const seen = new Set(ACTIONS.map((a) => a.default));

@@ -30,11 +30,12 @@ fn main() {
                 let _ = w.unminimize();
                 let _ = w.set_focus();
             }
-            if let Some(url) = link_in(argv.into_iter().skip(1)) {
-                *app.state::<state::AppState>()
-                    .pending_link
-                    .lock()
-                    .expect("pending") = Some(url);
+            // `try_state`: druga instancja może się zgłosić, zanim `setup` zarejestruje stan.
+            if let (Some(url), Some(state)) = (
+                link_in(argv.into_iter().skip(1)),
+                app.try_state::<state::AppState>(),
+            ) {
+                *state.pending_link.lock().expect("pending") = Some(url);
                 let _ = app.emit("open-link", ());
             }
         }))
@@ -46,10 +47,12 @@ fn main() {
             let _ = std::fs::remove_dir_all(dir.join("clip"));
             let state = state::AppState::new(dir.join("hosts.mrm"));
             // Link ssh:// albo rdp:// z wiersza poleceń czeka na odblokowanie pliku.
-            *state.pending_link.lock().expect("pending") = std::env::args().skip(1).find(|a| {
-                a.to_ascii_lowercase().starts_with("ssh://")
-                    || a.to_ascii_lowercase().starts_with("rdp://")
-            });
+            // `args_os`: argument z niepoprawnym UTF-8 nie może zatrzymać startu (std::env::args panikuje).
+            *state.pending_link.lock().expect("pending") = link_in(
+                std::env::args_os()
+                    .skip(1)
+                    .filter_map(|a| a.into_string().ok()),
+            );
             app.manage(state);
             tray::setup(app.handle())?;
             Ok(())
@@ -89,6 +92,7 @@ fn main() {
             sessions::answer_trust,
             rdp_sessions::connect_rdp,
             rdp_sessions::rdp_send,
+            rdp_sessions::rdp_ack,
             rdp_sessions::rdp_close,
             rdp_sessions::rdp_clipboard_focus,
         ])

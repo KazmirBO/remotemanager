@@ -100,10 +100,22 @@ fn timestamp() -> u64 {
         .unwrap_or(0)
 }
 
+/// Wolna nazwa kopii konfliktu obok `path`. Dwie kopie w tej samej sekundzie dostają licznik,
+/// żeby druga nie nadpisała pierwszej.
 fn conflict_copy(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(format!(".konflikt-{}", timestamp()));
-    PathBuf::from(name)
+    let stamp = timestamp();
+    (0u32..)
+        .map(|n| {
+            let mut name = path.as_os_str().to_owned();
+            if n == 0 {
+                name.push(format!(".konflikt-{stamp}"));
+            } else {
+                name.push(format!(".konflikt-{stamp}-{n}"));
+            }
+            PathBuf::from(name)
+        })
+        .find(|p| !p.exists())
+        .expect("nieskończony iterator")
 }
 
 /// Kopiuje `from` do `to` atomowo (plik tymczasowy obok celu, `fsync`, `rename`).
@@ -120,9 +132,10 @@ fn copy_atomic(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Wysyła lokalny plik do folderu. Jeśli zdalny plik się różni, jego kopia trafia do `*.konflikt-*`.
-/// Zwraca nowy skrót bazowy.
-pub fn push(local: &Path, folder: &Path) -> Result<String> {
+/// Wysyła lokalny plik do folderu. Jeśli zdalny plik zawiera zmiany, których nie ma w bazie
+/// (`base`, skrót z ostatniej synchronizacji), jego kopia trafia do `*.konflikt-*`. Zwykła wysyłka
+/// po zmianie lokalnej (zdalny plik równy bazie) nie tworzy kopii. Zwraca nowy skrót bazowy.
+pub fn push(local: &Path, folder: &Path, base: Option<&str>) -> Result<String> {
     if !folder.is_dir() {
         return Err(Error::NoFolder(folder.to_owned()));
     }
@@ -130,6 +143,7 @@ pub fn push(local: &Path, folder: &Path) -> Result<String> {
     let remote = remote_path(folder);
     if let Some(rh) = file_hash(&remote)?
         && rh != local_hash
+        && Some(rh.as_str()) != base
     {
         copy_atomic(&remote, &conflict_copy(&remote))?;
     }
@@ -137,13 +151,14 @@ pub fn push(local: &Path, folder: &Path) -> Result<String> {
     Ok(local_hash)
 }
 
-/// Pobiera zdalny plik na miejsce lokalnego. Lokalna wersja, jeśli się różni, zostaje jako `*.konflikt-*`.
-/// Zwraca nowy skrót bazowy.
-pub fn pull(local: &Path, folder: &Path) -> Result<String> {
+/// Pobiera zdalny plik na miejsce lokalnego. Lokalna wersja, jeśli zawiera zmiany spoza bazy,
+/// zostaje jako `*.konflikt-*`. Zwraca nowy skrót bazowy.
+pub fn pull(local: &Path, folder: &Path, base: Option<&str>) -> Result<String> {
     let remote = remote_path(folder);
     let remote_hash = file_hash(&remote)?.ok_or(Error::RemoteMissing)?;
     if let Some(lh) = file_hash(local)?
         && lh != remote_hash
+        && Some(lh.as_str()) != base
     {
         copy_atomic(local, &conflict_copy(local))?;
     }
@@ -162,10 +177,10 @@ pub fn sync(
     let st = status(local, folder, base)?;
     let new_base = match (st, keep) {
         (Status::InSync, _) => file_hash(local)?,
-        (Status::RemoteMissing | Status::LocalChanged, _) => Some(push(local, folder)?),
-        (Status::RemoteChanged, _) => Some(pull(local, folder)?),
-        (Status::Conflict, Some(Keep::Local)) => Some(push(local, folder)?),
-        (Status::Conflict, Some(Keep::Remote)) => Some(pull(local, folder)?),
+        (Status::RemoteMissing | Status::LocalChanged, _) => Some(push(local, folder, base)?),
+        (Status::RemoteChanged, _) => Some(pull(local, folder, base)?),
+        (Status::Conflict, Some(Keep::Local)) => Some(push(local, folder, base)?),
+        (Status::Conflict, Some(Keep::Remote)) => Some(pull(local, folder, base)?),
         (Status::Conflict, None) => return Err(Error::Conflict),
     };
     Ok((st, new_base))
@@ -255,6 +270,20 @@ mod tests {
         assert_eq!(st, Status::RemoteChanged);
         assert_eq!(fs::read(&d.local).unwrap(), b"v3-remote");
         assert_eq!(base, file_hash(&d.local).unwrap());
+        // Zwykła wysyłka i zwykłe pobranie nie zostawiają kopii konfliktu po żadnej stronie.
+        assert_eq!(d.conflicts(&d.root), 0);
+        assert_eq!(d.conflicts(&d.folder), 0);
+    }
+
+    #[test]
+    fn conflict_copies_in_the_same_second_do_not_overwrite_each_other() {
+        let d = Dirs::new("samesecond");
+        fs::write(&d.local, b"L").unwrap();
+        fs::write(d.remote(), b"R1").unwrap();
+        push(&d.local, &d.folder, None).unwrap();
+        fs::write(d.remote(), b"R2").unwrap();
+        push(&d.local, &d.folder, None).unwrap();
+        assert_eq!(d.conflicts(&d.folder), 2);
     }
 
     #[test]
@@ -304,11 +333,11 @@ mod tests {
     fn errors_for_missing_pieces() {
         let d = Dirs::new("errors");
         assert!(matches!(
-            push(&d.local, &d.folder),
+            push(&d.local, &d.folder, None),
             Err(Error::LocalMissing)
         ));
         assert!(matches!(
-            pull(&d.local, &d.folder),
+            pull(&d.local, &d.folder, None),
             Err(Error::RemoteMissing)
         ));
         assert!(matches!(

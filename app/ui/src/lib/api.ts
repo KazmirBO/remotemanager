@@ -140,17 +140,33 @@ export async function connectRdp(
   onControl: (c: RdpControl) => void,
 ): Promise<string> {
   const channel = new Channel<ArrayBuffer | RdpControl>();
+  // Kontrola przepływu: backend wstrzymuje obraz, gdy za dużo bajtów czeka na odebranie, więc
+  // potwierdzamy odebrane porcje. Obraz może przyjść przed identyfikatorem sesji; licznik wtedy czeka.
+  let id: string | null = null;
+  let unacked = 0;
+  const ack = () => {
+    if (id === null || unacked < RDP_ACK_BYTES) return;
+    const bytes = unacked;
+    unacked = 0;
+    void call<void>('rdp_ack', { id, bytes }).catch(() => {});
+  };
   channel.onmessage = (msg) => {
     if (msg instanceof ArrayBuffer) {
       const v = new DataView(msg);
       onImage(v.getUint16(0, true), v.getUint16(2, true), v.getUint16(4, true), v.getUint16(6, true),
         new Uint8ClampedArray(msg, 8));
+      unacked += msg.byteLength;
+      ack();
     } else {
       onControl(msg as RdpControl);
     }
   };
-  return call<string>('connect_rdp', { hostId, width, height, password, onEvent: channel });
+  id = await call<string>('connect_rdp', { hostId, width, height, password, onEvent: channel });
+  ack();
+  return id;
 }
+/** Co tyle odebranych bajtów obrazu interfejs wysyła potwierdzenie (okno backendu to 64 MiB). */
+const RDP_ACK_BYTES = 1024 * 1024;
 
 export const rdpSend = (id: string, cmd: RdpCommand) => call<void>('rdp_send', { id, cmd }).catch(() => {});
 export const rdpClipboardFocus = (id: string, focused: boolean) =>

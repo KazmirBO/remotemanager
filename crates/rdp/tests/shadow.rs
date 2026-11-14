@@ -9,7 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use rdp::{ConnectParams, Event, FromWorker, RdpClient, ToWorker};
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::mpsc::{Receiver, channel};
 
 struct Server {
     child: Child,
@@ -163,7 +163,7 @@ fn params(s: &Server, password: &str) -> ConnectParams {
     }
 }
 
-async fn next(rx: &mut UnboundedReceiver<Event>) -> Event {
+async fn next(rx: &mut Receiver<Event>) -> Event {
     tokio::time::timeout(Duration::from_secs(30), rx.recv())
         .await
         .expect("limit czasu")
@@ -177,7 +177,7 @@ async fn nla_login_delivers_frames_and_accepts_input() {
             "pominięto: brak procesu rdp-worker, freerdp-shadow-cli, openssl albo DISPLAY"
         );
     };
-    let (tx, mut rx) = unbounded_channel();
+    let (tx, mut rx) = channel(rdp::EVENT_QUEUE);
     let client = RdpClient::spawn(&worker, params(&server, &server.password), tx).unwrap();
 
     let Event::Worker(FromWorker::Cert { fingerprint, .. }) = next(&mut rx).await else {
@@ -244,7 +244,7 @@ async fn wrong_password_is_reported_as_error() {
             "pominięto: brak procesu rdp-worker, freerdp-shadow-cli, openssl albo DISPLAY"
         );
     };
-    let (tx, mut rx) = unbounded_channel();
+    let (tx, mut rx) = channel(rdp::EVENT_QUEUE);
     let client = RdpClient::spawn(&worker, params(&server, "zle-haslo"), tx).unwrap();
     assert!(matches!(
         next(&mut rx).await,
@@ -277,7 +277,7 @@ async fn rejected_certificate_stops_before_credentials() {
             "pominięto: brak procesu rdp-worker, freerdp-shadow-cli, openssl albo DISPLAY"
         );
     };
-    let (tx, mut rx) = unbounded_channel();
+    let (tx, mut rx) = channel(rdp::EVENT_QUEUE);
     let client = RdpClient::spawn(&worker, params(&server, &server.password), tx).unwrap();
     assert!(matches!(
         next(&mut rx).await,

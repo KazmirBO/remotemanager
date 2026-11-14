@@ -4,7 +4,7 @@
   import Icon from './Icon.svelte';
   import { scancodeFor } from './scancodes';
   import { matchAction } from './shortcuts';
-  import { closeTab, host as hostById, needsPassword, notify, reconnect, requestPassword, ui } from './store.svelte';
+  import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsPassword, notify, reconnect, requestPassword, ui } from './store.svelte';
 
   let { tabId, hostId, active }: { tabId: string; hostId: Id; active: boolean } = $props();
 
@@ -14,6 +14,10 @@
   let message = $state('');
   let sessionId: string | null = null;
   const pressed = new Set<string>();
+  /** Wciśnięte przyciski myszy (numeracja RDP), zwalniane przy utracie fokusu. */
+  const buttons = new Set<number>();
+  /** Niewysłana reszta przewijania z touchpada (w pikselach). */
+  let wheelRest = { x: 0, y: 0 };
   let pendingMove: { x: number; y: number } | null = null;
 
   const send = (cmd: Parameters<typeof rdpSend>[1]) => sessionId && void rdpSend(sessionId, cmd);
@@ -43,15 +47,34 @@
     const map: Record<number, number> = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4 };
     const button = map[e.button];
     if (button === undefined) return;
+    if (down) buttons.add(button);
+    else if (!buttons.delete(button)) return;
     send({ t: 'mouse_move', ...toRemote(e) });
     send({ t: 'mouse_button', button, down });
   }
 
+  /** Liczba pełnych "ząbków" kółka z delty; reszta z płynnego przewijania czeka na kolejne zdarzenia. */
+  function wheelSteps(delta: number, mode: number, axis: 'x' | 'y'): number {
+    // Linie i strony przeliczamy na piksele; jeden ząbek to ok. 100 px.
+    const px = mode === 1 ? delta * 40 : mode === 2 ? delta * 800 : delta;
+    if (Math.abs(px) >= 50) {
+      wheelRest[axis] = 0;
+      return Math.sign(px) * Math.max(1, Math.round(Math.abs(px) / 100));
+    }
+    wheelRest[axis] += px;
+    if (Math.abs(wheelRest[axis]) < 50) return 0;
+    const steps = Math.sign(wheelRest[axis]);
+    wheelRest[axis] = 0;
+    return steps;
+  }
+
   function onWheel(e: WheelEvent) {
     e.preventDefault();
-    // Jeden "ząbek" kółka to 120 jednostek w RDP.
-    if (e.deltaY) send({ t: 'wheel', vertical: true, delta: -Math.sign(e.deltaY) * 120 });
-    if (e.deltaX) send({ t: 'wheel', vertical: false, delta: Math.sign(e.deltaX) * 120 });
+    // Jeden ząbek kółka to 120 jednostek w RDP; szybkie przewijanie ograniczamy do 5 ząbków na zdarzenie.
+    const y = Math.max(-5, Math.min(5, wheelSteps(e.deltaY, e.deltaMode, 'y')));
+    const x = Math.max(-5, Math.min(5, wheelSteps(e.deltaX, e.deltaMode, 'x')));
+    for (let i = 0; i < Math.abs(y); i++) send({ t: 'wheel', vertical: true, delta: -Math.sign(y) * 120 });
+    for (let i = 0; i < Math.abs(x); i++) send({ t: 'wheel', vertical: false, delta: Math.sign(x) * 120 });
   }
 
   function onKey(e: KeyboardEvent, down: boolean) {
@@ -72,6 +95,8 @@
       if (sc) send({ t: 'key', ...sc, down: false });
     }
     pressed.clear();
+    for (const button of buttons) send({ t: 'mouse_button', button, down: false });
+    buttons.clear();
   }
 
   function resizeCanvas(w: number, h: number) {
@@ -91,7 +116,9 @@
   }
 
   $effect(() => {
-    if (active && status === 'connected') queueMicrotask(() => canvas?.focus());
+    if (active && status === 'connected') queueMicrotask(() => !modalOpen() && canvas?.focus());
+    // Ukryta karta może nie dostać `blur`, więc wciśnięte klawisze zwalniamy też przy przełączeniu.
+    if (!active) releaseAll();
   });
 
   onMount(() => {
@@ -110,7 +137,7 @@
           if (c.t === 'connected' || c.t === 'resized') {
             resizeCanvas(c.width, c.height);
             status = 'connected';
-            if (active) queueMicrotask(() => canvas?.focus());
+            if (active) queueMicrotask(() => !modalOpen() && canvas?.focus());
           } else if (c.t === 'notice') {
             notify(c.message);
           } else if (c.t === 'error') {
@@ -125,8 +152,8 @@
         // RDP z NLA wymaga hasła: bez zapisanego pytamy na tę sesję.
         const reason = needsPassword(e);
         if (reason === null || password !== null) throw e;
-        const pw = await requestPassword(hostById(hostId)?.name ?? 'host', reason);
-        if (pw === null) throw 'Anulowano łączenie.';
+        const pw = await requestPassword(hostById(hostId)?.name ?? 'host', reason, tabId);
+        if (pw === null || disposed) throw 'Anulowano łączenie.';
         return attempt(pw);
       });
 
@@ -155,6 +182,7 @@
 
     return () => {
       disposed = true;
+      cancelPasswordPrompts(tabId);
       clearTimeout(resizeTimer);
       observer.disconnect();
       if (fullscreen) void import('@tauri-apps/api/window').then((m) => m.getCurrentWindow().setFullscreen(false)).catch(() => {});
@@ -162,6 +190,8 @@
     };
   });
 </script>
+
+<svelte:window onblur={releaseAll} />
 
 <div class="wrap" class:hidden={!active}>
   <div class="stage" bind:this={stage}>
@@ -171,6 +201,7 @@
       tabindex="0"
       aria-label="Zdalny pulpit"
       onmousemove={onMove}
+      onpointerdown={(e) => canvas.setPointerCapture(e.pointerId)}
       onmousedown={(e) => onButton(e, true)}
       onmouseup={(e) => onButton(e, false)}
       onwheel={onWheel}

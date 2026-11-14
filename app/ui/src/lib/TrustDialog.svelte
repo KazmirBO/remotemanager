@@ -2,13 +2,26 @@
   import { api, type TrustRequest } from './api';
   import Modal from './Modal.svelte';
   import Icon from './Icon.svelte';
+  import { notify } from './store.svelte';
 
   let { request, ondone }: { request: TrustRequest; ondone: () => void } = $props();
   const changed = $derived(request.previous !== null);
   const rdp = $derived(request.protocol === 'rdp');
 
+  // Kolejne pytanie pojawia się w tym samym miejscu, więc przez chwilę po pokazaniu przyciski są
+  // nieaktywne: podwójne kliknięcie w poprzednim oknie nie zatwierdzi klucza bez przeczytania odcisku.
+  let ready = $state(false);
+  $effect(() => {
+    const t = setTimeout(() => (ready = true), 500);
+    return () => clearTimeout(t);
+  });
+
   async function answer(accept: boolean, remember: boolean) {
-    await api.answerTrust(request.id, accept, remember);
+    try {
+      await api.answerTrust(request.id, accept, remember);
+    } catch (e) {
+      if (accept) notify(String(e), true);
+    }
     ondone();
   }
 </script>
@@ -31,8 +44,8 @@
   </dl>
   {#snippet footer()}
     <button class="btn" onclick={() => answer(false, false)}>Odrzuć</button>
-    <button class="btn" onclick={() => answer(true, false)}>Połącz jednorazowo</button>
-    <button class="btn primary" onclick={() => answer(true, true)}>{changed ? (rdp ? 'Zaufaj nowemu certyfikatowi' : 'Zaufaj nowemu kluczowi') : 'Zapamiętaj i połącz'}</button>
+    <button class="btn" disabled={!ready} onclick={() => answer(true, false)}>Połącz jednorazowo</button>
+    <button class="btn primary" disabled={!ready} onclick={() => answer(true, true)}>{changed ? (rdp ? 'Zaufaj nowemu certyfikatowi' : 'Zaufaj nowemu kluczowi') : 'Zapamiętaj i połącz'}</button>
   {/snippet}
 </Modal>
 

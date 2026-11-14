@@ -10,6 +10,7 @@
   import NotificationsDialog from './lib/NotificationsDialog.svelte';
   import PasswordPrompt from './lib/PasswordPrompt.svelte';
   import Icon from './lib/Icon.svelte';
+  import Modal from './lib/Modal.svelte';
   import QuickConnect from './lib/QuickConnect.svelte';
   import SettingsDialog from './lib/SettingsDialog.svelte';
   import ShortcutsDialog from './lib/ShortcutsDialog.svelte';
@@ -19,9 +20,9 @@
   import Terminal from './lib/Terminal.svelte';
   import TrustDialog from './lib/TrustDialog.svelte';
   import Unlock from './lib/Unlock.svelte';
-  import { matchAction } from './lib/shortcuts';
+  import { allowedWithModal, matchAction } from './lib/shortcuts';
   import { api } from './lib/api';
-  import { applyTheme, closeTab, host as hostById, init, lockVault, notify, openHost, refreshSync, ui } from './lib/store.svelte';
+  import { applyTheme, closeTab, host as hostById, init, lockVault, modalOpen, notify, onLocked, openHost, refreshSync, ui } from './lib/store.svelte';
 
   type Dialog =
     | { kind: 'host'; host: HostView | null; folder: Id | null; prefill?: Prefill | null }
@@ -33,13 +34,20 @@
     | { kind: 'diagnostics' }
     | { kind: 'about' }
     | { kind: 'notices' }
-    | { kind: 'quick' };
+    | { kind: 'quick' }
+    | { kind: 'link'; host: HostView; target: string };
   let dialog = $state<Dialog | null>(null);
   let trustQueue = $state<TrustRequest[]>([]);
 
   onMount(() => {
-    init().catch((e) => (ui.notice = String(e)));
+    init().catch((e) => notify(String(e), true));
     const unlisten = listen<TrustRequest>('trust-request', (e) => trustQueue.push(e.payload));
+    // Blokada z zasobnika (albo z innego miejsca w backendzie): chowamy drzewo, karty i okna.
+    const unlistenLock = listen('vault-locked', () => onLocked());
+    // Pytanie o zaufanie wygasło po stronie backendu (120 s): okno znika, połączenie i tak padło.
+    const unlistenExpired = listen<string>('trust-expired', (e) => {
+      trustQueue = trustQueue.filter((r) => r.id !== e.payload);
+    });
     // Kolejne uruchomienie z linkiem: odbieramy go od razu, a przy zablokowanym pliku czeka do odblokowania.
     const unlistenLink = listen('open-link', () => {
       if (ui.phase === 'unlocked') {
@@ -55,6 +63,8 @@
     media.addEventListener('change', onScheme);
     return () => {
       void unlisten.then((f) => f());
+      void unlistenLock.then((f) => f());
+      void unlistenExpired.then((f) => f());
       void unlistenLink.then((f) => f());
       media.removeEventListener('change', onScheme);
     };
@@ -64,8 +74,11 @@
     try {
       const l = await api.resolveLink(url);
       const existing = l.matching_host ? hostById(l.matching_host) : undefined;
+      // Link nigdy nie łączy sam: pokazujemy pasujący host w drzewie i pytamy.
       if (existing) {
-        openHost(existing);
+        ui.reveal = existing.id;
+        const port = l.port ?? (l.protocol === 'rdp' ? 3389 : 22);
+        dialog = { kind: 'link', host: existing, target: `${l.host}:${port}` };
         return;
       }
       dialog = {
@@ -73,9 +86,17 @@
         prefill: { protocol: l.protocol, address: l.host, port: l.port, username: l.username, domain: l.domain },
       };
     } catch (e) {
-      notify(String(e));
+      notify(String(e), true);
     }
   }
+
+  // Po blokadzie nie zostają otwarte okna ani prośby o zaufanie, które wróciłyby po odblokowaniu.
+  $effect(() => {
+    if (ui.phase !== 'unlocked') {
+      dialog = null;
+      trustQueue = [];
+    }
+  });
 
   // Link z wiersza poleceń czeka na odblokowanie pliku.
   $effect(() => {
@@ -97,6 +118,8 @@
     if (dialog?.kind === 'shortcuts') return;
     const action = matchAction(ui.doc?.settings, e);
     if (!action) return;
+    // Przy otwartym oknie modalnym działa tylko blokada pliku.
+    if (modalOpen() && !allowedWithModal(action)) return;
     e.preventDefault();
     const tabs = ui.tabs;
     const i = tabs.findIndex((t) => t.id === ui.activeTab);
@@ -191,6 +214,18 @@
     <AboutDialog onclose={() => (dialog = null)} />
   {:else if dialog?.kind === 'quick'}
     <QuickConnect onclose={() => (dialog = null)} onlink={openLink} />
+  {:else if dialog?.kind === 'link'}
+    {@const d = dialog}
+    <Modal title="Połączyć z {d.host.name}?" onclose={() => (dialog = null)} width={460}>
+      <p class="link-q">
+        Link wskazuje zapisany host <b>{d.host.name}</b> ({d.host.protocol.toUpperCase()}, <span class="mono">{d.target}</span>).
+        Połączenie użyje zapisanych ustawień tego hosta.
+      </p>
+      {#snippet footer()}
+        <button class="btn" type="button" onclick={() => (dialog = null)}>Anuluj</button>
+        <button class="btn primary" type="button" onclick={() => { openHost(d.host); dialog = null; }}>Połącz</button>
+      {/snippet}
+    </Modal>
   {/if}
   {#if trustQueue.length}
     {#key trustQueue[0].id}
@@ -202,11 +237,13 @@
 <PasswordPrompt />
 
 {#if ui.notice}
-  <div class="toast" role="status"><Icon name="info" size={14} /> {ui.notice}</div>
+  <!-- Błąd odróżnia ikona (kształt), nie sam kolor. -->
+  <div class="toast" role={ui.noticeError ? 'alert' : 'status'}><Icon name={ui.noticeError ? 'alert' : 'info'} size={14} /> {ui.notice}</div>
 {/if}
 
 <style>
   .center { height: 100%; display: grid; place-items: center; }
+  .link-q { margin: 0; overflow-wrap: anywhere; }
   .shell { display: flex; height: 100%; }
   main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .tabs { height: 38px; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; align-items: stretch; overflow-x: auto; flex-shrink: 0; }

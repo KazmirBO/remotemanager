@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { api, type FolderView, type HostView, type Id } from './api';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
@@ -36,6 +37,33 @@
     try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...next])); } catch { /* brak pamięci lokalnej */ }
   }
 
+  // Pokazanie hosta z zewnątrz (link): rozwijamy katalogi nad nim, zaznaczamy i przewijamy do niego.
+  $effect(() => {
+    const id = ui.reveal;
+    if (!id) return;
+    untrack(() => {
+      ui.reveal = null;
+      const h = (ui.doc?.hosts ?? []).find((x) => x.id === id);
+      if (!h) return;
+      const next = new Set(expanded);
+      for (let f = h.folder; f; f = (ui.doc?.folders ?? []).find((x) => x.id === f)?.parent ?? null) next.add(f);
+      expanded = next;
+      query = '';
+      selected = { kind: 'host', id };
+      queueMicrotask(() => document.querySelector(`[data-host="${id}"]`)?.scrollIntoView({ block: 'nearest' }));
+    });
+  });
+
+  // Poniżej 900 px pole wyszukiwania jest ukryte, więc filtr nie może zostać aktywny bez możliwości
+  // wyczyszczenia go.
+  $effect(() => {
+    const narrow = matchMedia('(max-width: 899px)');
+    const onChange = () => { if (narrow.matches) query = ''; };
+    onChange();
+    narrow.addEventListener('change', onChange);
+    return () => narrow.removeEventListener('change', onChange);
+  });
+
   const folders = $derived(ui.doc?.folders ?? []);
   const hosts = $derived(ui.doc?.hosts ?? []);
   const tree = $derived(buildTree(folders, hosts));
@@ -57,7 +85,7 @@
   const closeMenu = () => (menu = null);
 
   async function run(action: () => Promise<unknown>) {
-    try { await action(); await refresh(); } catch (e) { notify(String(e)); }
+    try { await action(); await refresh(); } catch (e) { notify(String(e), true); }
   }
 
   function askDelete(kind: 'host' | 'folder', id: Id) {
@@ -78,20 +106,34 @@
     await run(() => (c.kind === 'host' ? api.deleteHost(c.id) : api.deleteFolder(c.id)));
   }
 
-  // Przeciąganie: host albo katalog na katalog (lub na tło = korzeń).
+  // Przeciąganie: host albo katalog na katalog (lub na tło = korzeń). Upuszczenie na host oznacza
+  // jego katalog. Katalogu nie da się upuścić na siebie ani na własnego potomka.
+  let dragging: { kind: 'host' | 'folder'; blocked: Set<Id> } | null = null;
   function dragStart(e: DragEvent, kind: 'host' | 'folder', id: Id) {
     e.dataTransfer?.setData('text/plain', JSON.stringify({ kind, id }));
     if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    dragging = { kind, blocked: kind === 'folder' ? descendantIds(folders, id) : new Set() };
+  }
+  function dragEnd() {
+    dragging = null;
+    dropTarget = null;
   }
   function dragOver(e: DragEvent, target: Id | 'root') {
-    e.preventDefault();
     e.stopPropagation();
+    if (target !== 'root' && dragging?.blocked.has(target)) {
+      // Bez preventDefault przeglądarka pokazuje, że tu nie wolno upuścić.
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
+      dropTarget = null;
+      return;
+    }
+    e.preventDefault();
     dropTarget = target;
   }
   async function drop(e: DragEvent, target: Id | 'root') {
     e.preventDefault();
     e.stopPropagation();
     dropTarget = null;
+    dragging = null;
     let payload: { kind: 'host' | 'folder'; id: Id };
     try { payload = JSON.parse(e.dataTransfer?.getData('text/plain') ?? ''); } catch { return; }
     const dest = target === 'root' ? null : target;
@@ -117,6 +159,15 @@
 
   const menuHost = $derived(menu?.target?.kind === 'host' ? hosts.find((h) => h.id === menu!.target!.id) : undefined);
   const menuFolder = $derived(menu?.target?.kind === 'folder' ? folders.find((f) => f.id === menu!.target!.id) : undefined);
+
+  async function copyAddress(address: string) {
+    try {
+      await navigator.clipboard.writeText(address);
+      notify('Skopiowano adres.');
+    } catch {
+      notify('Nie udało się skopiować adresu.', true);
+    }
+  }
 </script>
 
 <svelte:window onclick={closeMenu} onkeydown={(e) => e.key === 'Escape' && closeMenu()} />
@@ -124,10 +175,11 @@
 {#snippet hostRow(h: HostView, depth: number)}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
-    class="row" class:sel={selected?.kind === 'host' && selected.id === h.id}
+    class="row" data-host={h.id} class:sel={selected?.kind === 'host' && selected.id === h.id}
     role="treeitem" aria-selected={selected?.kind === 'host' && selected.id === h.id} tabindex="0"
     style="padding-left:{8 + depth * 16}px" title="{h.name} ({h.address})"
-    draggable="true" ondragstart={(e) => dragStart(e, 'host', h.id)}
+    draggable="true" ondragstart={(e) => dragStart(e, 'host', h.id)} ondragend={dragEnd}
+    ondragover={(e) => dragOver(e, h.folder ?? 'root')} ondragleave={() => (dropTarget = null)} ondrop={(e) => drop(e, h.folder ?? 'root')}
     onclick={() => (selected = { kind: 'host', id: h.id })} ondblclick={() => openHost(h)}
     oncontextmenu={(e) => openMenu(e, { kind: 'host', id: h.id })}
     onkeydown={(e) => rowKey(e, 'host', h.id, e.currentTarget)}
@@ -147,7 +199,7 @@
       class="row" class:sel={selected?.kind === 'folder' && selected.id === n.folder.id} class:drop={dropTarget === n.folder.id}
       role="treeitem" aria-expanded={open} aria-selected={selected?.kind === 'folder' && selected.id === n.folder.id} tabindex="0"
       style="padding-left:{8 + depth * 16}px" title={n.folder.name}
-      draggable="true" ondragstart={(e) => dragStart(e, 'folder', n.folder.id)}
+      draggable="true" ondragstart={(e) => dragStart(e, 'folder', n.folder.id)} ondragend={dragEnd}
       ondragover={(e) => dragOver(e, n.folder.id)} ondragleave={() => (dropTarget = null)} ondrop={(e) => drop(e, n.folder.id)}
       onclick={() => { selected = { kind: 'folder', id: n.folder.id }; toggle(n.folder.id); }}
       oncontextmenu={(e) => openMenu(e, { kind: 'folder', id: n.folder.id })}
@@ -186,16 +238,22 @@
     oncontextmenu={(e) => e.target === e.currentTarget && openMenu(e, null)}
   >
     {#if hosts.length === 0 && folders.length === 0}
-      <div class="empty label">
-        <Icon name="host" size={28} />
-        <p>Brak hostów.</p>
-        <button class="btn compact" onclick={() => onNewHost(null)}><Icon name="plus" size={14} /> Dodaj hosta</button>
+      <!-- W trybie wąskim zostaje ikona i przycisk bez podpisu, żeby pusty panel nie był całkiem pusty. -->
+      <div class="empty">
+        <span class="label"><Icon name="host" size={28} /></span>
+        <p class="label">Brak hostów.</p>
+        <button class="btn compact" aria-label="Dodaj hosta" title="Dodaj hosta" onclick={() => onNewHost(null)}>
+          <Icon name="plus" size={14} /><span class="label">Dodaj hosta</span>
+        </button>
       </div>
     {:else}
       {#if favorites.length}
-        <div class="section label">Ulubione</div>
-        {#each favorites as h (h.id)}{@render hostRow(h, 0)}{/each}
-        <div class="section label">Wszystkie</div>
+        <!-- W trybie wąskim nagłówki znikają, więc ulubione (powtórzone niżej) też są ukryte. -->
+        <div class="fav">
+          <div class="section label">Ulubione</div>
+          {#each favorites as h (h.id)}{@render hostRow(h, 0)}{/each}
+          <div class="section label">Wszystkie</div>
+        </div>
       {/if}
       {#each tree.roots as n (n.folder.id)}{@render folderRow(n, 0)}{/each}
       {#each tree.rootHosts.filter((h) => matches(h, query)) as h (h.id)}{@render hostRow(h, 0)}{/each}
@@ -223,7 +281,7 @@
       <button role="menuitem" onclick={() => run(() => api.setFavorite(menuHost.id, !menuHost.favorite))}>
         <Icon name="star" /> {menuHost.favorite ? 'Usuń z ulubionych' : 'Dodaj do ulubionych'}
       </button>
-      <button role="menuitem" onclick={() => navigator.clipboard?.writeText(menuHost.address)}><Icon name="copy" /> Kopiuj adres</button>
+      <button role="menuitem" onclick={() => copyAddress(menuHost.address)}><Icon name="copy" /> Kopiuj adres</button>
       <hr />
       <button role="menuitem" class="danger" onclick={() => askDelete('host', menuHost.id)}><Icon name="trash" /> Usuń</button>
     {:else if menuFolder}
@@ -286,7 +344,8 @@
   /* Poniżej 900 px pasek boczny zwija się do ikon. */
   @media (max-width: 899px) {
     aside { width: 56px; }
-    .label, .tools { display: none; }
+    .label, .tools, .fav { display: none; }
+    .empty { padding: 16px 0; }
     .head { justify-content: center; padding: 12px 0; }
     .foot { flex-direction: column; align-items: center; }
     .row { padding-left: 8px !important; justify-content: center; }

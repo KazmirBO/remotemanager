@@ -28,6 +28,7 @@
   };
   const jumpCandidates = $derived(hosts.filter((h) => h.protocol === 'ssh' && h.id !== selfId));
   const inheritedPw = $derived(inheritsPassword(folders, startFolder));
+  const kerberosHint = $derived(inherited(folders, startFolder, 'rdp_kerberos'));
 </script>
 
 <div class="field">
@@ -70,13 +71,24 @@
 
 {#if protocol !== 'ssh'}
   <div class="field">
-    <label class="check"><input type="checkbox" checked={fields.rdp_kerberos === true} onchange={(e) => (fields.rdp_kerberos = e.currentTarget.checked ? true : null)} /> Uwierzytelnianie Kerberos (RDP)</label>
+    <label for="f-krb">Uwierzytelnianie Kerberos (RDP)</label>
+    <!-- Trzy stany: "nie" musi dać się wybrać jawnie, żeby wyłączyć Kerberos odziedziczony z katalogu. -->
+    <select id="f-krb" value={fields.rdp_kerberos === null ? 'inherit' : fields.rdp_kerberos ? 'yes' : 'no'}
+      onchange={(e) => { const v = e.currentTarget.value; fields.rdp_kerberos = v === 'inherit' ? null : v === 'yes'; }}>
+      <option value="inherit">Dziedzicz{kerberosHint ? ` (${kerberosHint.value ? 'tak' : 'nie'})` : ' (nie)'}</option>
+      <option value="yes">Tak</option>
+      <option value="no">Nie (NTLM)</option>
+    </select>
+    {#if fields.rdp_kerberos === null && kerberosHint}
+      <span class="hint"><Icon name="route" size={12} /> Dziedziczone z „{kerberosHint.from}”: {kerberosHint.value ? 'tak' : 'nie'}</span>
+    {/if}
     <span class="hint">Wymaga pełnej nazwy hosta (np. dc01.firma.local) i hasła. Brak logowania jednokrotnego z ccache.</span>
   </div>
-  {#if fields.rdp_kerberos}
+  {#if fields.rdp_kerberos ?? kerberosHint?.value}
     <div class="field">
       <label for="f-kdc">Adres KDC albo proxy KKDCP (opcjonalnie)</label>
       <input id="f-kdc" type="text" bind:value={fields.rdp_kdc} placeholder="tcp://kdc.firma.local:88" class="mono" />
+      {#if !fields.rdp_kdc && hint('rdp_kdc')}<span class="hint"><Icon name="route" size={12} /> {hint('rdp_kdc')}</span>{/if}
     </div>
   {/if}
 {/if}
@@ -90,7 +102,11 @@
     </select>
     {#if fields.jump_host === null && hint('jump_host')}
       {@const v = inherited(folders, startFolder, 'jump_host')}
-      <span class="hint"><Icon name="route" size={12} /> Dziedziczone z „{v?.from}”: {hosts.find((h) => h.id === v?.value)?.name ?? '?'}</span>
+      {#if v?.value === selfId}
+        <span class="hint"><Icon name="route" size={12} /> Katalog „{v?.from}” wskazuje ten host jako bastion, więc on sam łączy się bezpośrednio.</span>
+      {:else}
+        <span class="hint"><Icon name="route" size={12} /> Dziedziczone z „{v?.from}”: {hosts.find((h) => h.id === v?.value)?.name ?? '?'}</span>
+      {/if}
     {/if}
   </div>
 {/if}
@@ -109,6 +125,5 @@
 {/if}
 
 <style>
-  .check { display: flex; gap: 8px; align-items: center; font-weight: 500; }
   .link { background: none; border: none; padding: 0; text-decoration: underline; color: var(--text); font-size: 12px; }
 </style>

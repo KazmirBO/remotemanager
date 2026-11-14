@@ -36,21 +36,50 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+    /// Wczytuje konfigurację. Brak pliku daje wartości domyślne. Uszkodzony plik jest odkładany jako
+    /// `config.json.bad` (żeby pierwszy zapis nie zatarł np. folderu synchronizacji), a drugi element
+    /// wyniku opisuje problem do dziennika diagnostycznego.
+    pub fn load(path: &Path) -> (Self, Option<String>) {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
+            Err(e) => {
+                return (
+                    Self::default(),
+                    Some(format!("nie można odczytać konfiguracji: {e}")),
+                );
+            }
+        };
+        match serde_json::from_str(&text) {
+            Ok(c) => (c, None),
+            Err(e) => {
+                let mut bad = path.as_os_str().to_owned();
+                bad.push(".bad");
+                let kept = std::fs::rename(path, PathBuf::from(&bad)).is_ok();
+                (
+                    Self::default(),
+                    Some(format!(
+                        "uszkodzona konfiguracja ({e}), użyto wartości domyślnych{}",
+                        if kept {
+                            "; poprzedni plik zachowano jako config.json.bad"
+                        } else {
+                            ""
+                        }
+                    )),
+                )
+            }
+        }
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        use std::io::Write;
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
-        std::fs::write(
-            &tmp,
-            serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?,
-        )?;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)?;
+        f.sync_all()?;
+        drop(f);
         std::fs::rename(tmp, path)
     }
 }
@@ -64,7 +93,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mrm-cfg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("config.json");
-        assert_eq!(Config::load(&p), Config::default());
+        assert_eq!(Config::load(&p), (Config::default(), None));
         let c = Config {
             sync_folder: Some("/x".into()),
             sync_base: Some("abc".into()),
@@ -76,9 +105,15 @@ mod tests {
             "schowek jest domyślnie włączony"
         );
         c.save(&p).unwrap();
-        assert_eq!(Config::load(&p), c);
+        assert_eq!(Config::load(&p), (c, None));
         std::fs::write(&p, b"{nie json").unwrap();
-        assert_eq!(Config::load(&p), Config::default());
+        let (loaded, warning) = Config::load(&p);
+        assert_eq!(loaded, Config::default());
+        assert!(warning.unwrap().contains("config.json.bad"));
+        assert_eq!(
+            std::fs::read(dir.join("config.json.bad")).unwrap(),
+            b"{nie json"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

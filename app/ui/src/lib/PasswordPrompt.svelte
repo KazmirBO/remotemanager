@@ -5,7 +5,13 @@
 
   let password = $state('');
   let show = $state(false);
-  const prompt = $derived(ui.passwordPrompt);
+  const prompt = $derived(ui.passwordQueue[0]);
+  // Nowy monit (np. dla innego hosta) zaczyna się od pustego pola, żeby hasło nie poszło pod zły adres.
+  $effect(() => {
+    void prompt;
+    password = '';
+    show = false;
+  });
 
   function submit(e: Event) {
     e.preventDefault();

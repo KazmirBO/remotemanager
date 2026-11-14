@@ -336,3 +336,54 @@ async fn proxy_jump_through_bastion() {
     session.disconnect().await;
     let _ = std::fs::remove_dir_all(&env.dir);
 }
+
+/// Serwer, który przyjmuje TCP i nic nie wysyła, nie może zawiesić łączenia na zawsze.
+#[tokio::test]
+async fn silent_server_times_out() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let keep = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((sock, _)) = listener.accept().await {
+            open.push(sock);
+        }
+    });
+    let (verifier, _) = accept_all();
+    let hop = Hop {
+        host: "127.0.0.1".into(),
+        port,
+        username: "ktos".into(),
+        auth: Auth::Agent,
+    };
+    let started = std::time::Instant::now();
+    let err = Session::connect_with_timeout(&[hop], verifier, Duration::from_secs(2))
+        .await
+        .err()
+        .unwrap();
+    assert!(matches!(err, Error::Timeout(_)), "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    keep.abort();
+}
+
+/// Czas pytania o zaufanie nie liczy się do limitu łączenia.
+#[tokio::test]
+async fn slow_trust_decision_does_not_time_out() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let verifier: HostKeyVerifier = Arc::new(|_| {
+        Box::pin(async {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            true
+        })
+    });
+    let session = Session::connect_with_timeout(
+        &[hop(&env, Auth::AgentSocket(env.good_agent.clone()))],
+        verifier,
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+    session.disconnect().await;
+    let _ = std::fs::remove_dir_all(&env.dir);
+}

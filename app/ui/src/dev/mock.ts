@@ -101,7 +101,13 @@ const handlers: Record<string, Handler> = {
   },
   delete_host: ({ id }) => { doc.hosts = doc.hosts.filter((h) => h.id !== id); },
   move_host: ({ id, folder }) => { doc.hosts.find((h) => h.id === id)!.folder = folder; },
-  move_folder: ({ id, parent }) => { doc.folders.find((f) => f.id === id)!.parent = parent; },
+  move_folder: ({ id, parent }) => {
+    // Jak backend: katalogu nie da się przenieść do samego siebie ani do potomka.
+    for (let p = parent; p; p = doc.folders.find((f) => f.id === p)?.parent ?? null) {
+      if (p === id) throw 'przeniesienie utworzyłoby cykl katalogów';
+    }
+    doc.folders.find((f) => f.id === id)!.parent = parent;
+  },
   set_favorite: ({ id, favorite }) => { doc.hosts.find((h) => h.id === id)!.favorite = favorite; },
   save_settings: ({ settings }) => { doc.settings = settings; },
   answer_trust: ({ accept, remember, id }) => {
@@ -176,6 +182,7 @@ const handlers: Record<string, Handler> = {
   ssh_resize: () => {},
   ssh_close: ({ id }) => { sessions.delete(id); },
   rdp_send: () => {},
+  rdp_ack: () => {},
   rdp_close: () => {},
   rdp_clipboard_focus: () => {},
 };

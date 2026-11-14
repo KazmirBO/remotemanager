@@ -5,6 +5,7 @@
   import Icon from './Icon.svelte';
   import { SCHEMES } from './terminalThemes';
   import { applyTheme, notify, refresh, ui } from './store.svelte';
+  import { fontSizeError, passwordChangeError } from './validation';
 
   let { onclose, onopen }: { onclose: () => void; onopen: (tool: 'backups' | 'shortcuts' | 'diagnostics' | 'about') => void } = $props();
   // svelte-ignore state_referenced_locally
@@ -15,25 +16,37 @@
   let newPw2 = $state('');
   let error = $state('');
   let busy = $state(false);
+  // Wartości konfiguracji lokalnej z chwili wczytania, żeby zapisywać tylko zmienione przełączniki.
+  let localLoaded: LocalConfig | null = null;
 
   onMount(() => {
-    api.getLocalConfig().then((c) => (local = c)).catch(() => {});
+    api.getLocalConfig().then((c) => {
+      local = c;
+      localLoaded = { ...c };
+    }).catch(() => {});
   });
 
   async function save(e: Event) {
     e.preventDefault();
+    const problem = fontSizeError(settings.terminal_font_size) ?? passwordChangeError(oldPw, newPw, newPw2);
+    if (problem) {
+      error = problem;
+      return;
+    }
     error = '';
     busy = true;
     try {
-      await api.saveSettings($state.snapshot(settings));
-      if (local) {
-        await api.setLogSessions(local.log_sessions);
-        await api.setRdpClipboard(local.rdp_clipboard);
-      }
+      // Zmiana hasła idzie pierwsza: złe obecne hasło wykrywa dopiero backend, a wtedy nic innego
+      // nie może być już zapisane. Pola są czyszczone, żeby ponowny zapis nie zmieniał hasła drugi raz.
       if (oldPw || newPw || newPw2) {
-        if (newPw !== newPw2) throw 'Nowe hasła nie są takie same.';
         await api.changePassword(oldPw, newPw);
+        oldPw = newPw = newPw2 = '';
         notify('Hasło główne zostało zmienione.');
+      }
+      await api.saveSettings($state.snapshot(settings));
+      if (local && localLoaded) {
+        if (local.log_sessions !== localLoaded.log_sessions) await api.setLogSessions(local.log_sessions);
+        if (local.rdp_clipboard !== localLoaded.rdp_clipboard) await api.setRdpClipboard(local.rdp_clipboard);
       }
       await refresh();
       applyTheme(settings);

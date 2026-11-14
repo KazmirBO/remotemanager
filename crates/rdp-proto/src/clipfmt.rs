@@ -34,7 +34,8 @@ pub fn dib_to_rgba(dib: &[u8]) -> Option<Rgba> {
     let bits = u16_at(dib, 14)?;
     let compression = u32_at(dib, 16)?;
     let colors_used = u32_at(dib, 32)? as usize;
-    if width <= 0 || raw_height == 0 || !(bits == 24 || bits == 32) || colors_used != 0 {
+    // Tablica kolorów jest dla 24 i 32 bitów opcjonalna (optymalizacja palety); przeskakujemy ją.
+    if width <= 0 || raw_height == 0 || !(bits == 24 || bits == 32) || colors_used > 256 {
         return None;
     }
     // 0 = BI_RGB, 3 = BI_BITFIELDS (przyjmujemy standardowy układ BGRA).
@@ -50,6 +51,7 @@ pub fn dib_to_rgba(dib: &[u8]) -> Option<Rgba> {
     if compression == 3 && header == 40 {
         offset += 12; // trzy maski kolorów
     }
+    offset += colors_used * 4;
     let bytes_pp = usize::from(bits / 8);
     let stride = (w as usize * bytes_pp).div_ceil(4) * 4;
     let needed = offset.checked_add(stride.checked_mul(h as usize)?)?;
@@ -165,9 +167,41 @@ pub fn cf_html_to_html(data: &[u8]) -> Option<String> {
     Some(text[html..].to_owned())
 }
 
-const RESERVED: [&str; 22] = [
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+/// Nazwy urządzeń Windows (z rozszerzeniem lub bez); `COM¹`-`COM³` i `LPT¹`-`LPT³` to cyfry
+/// w indeksie górnym, które Windows też traktuje jak urządzenia.
+const RESERVED: [&str; 32] = [
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "CONIN$",
+    "CONOUT$",
+    "COM0",
+    "COM1",
+    "COM2",
+    "COM3",
+    "COM4",
+    "COM5",
+    "COM6",
+    "COM7",
+    "COM8",
+    "COM9",
+    "COM\u{b9}",
+    "COM\u{b2}",
+    "COM\u{b3}",
+    "LPT0",
+    "LPT1",
+    "LPT2",
+    "LPT3",
+    "LPT4",
+    "LPT5",
+    "LPT6",
+    "LPT7",
+    "LPT8",
+    "LPT9",
+    "LPT\u{b9}",
+    "LPT\u{b2}",
+    "LPT\u{b3}",
 ];
 
 fn safe_component(c: &str) -> Option<String> {
@@ -183,7 +217,13 @@ fn safe_component(c: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let stem = trimmed.split('.').next().unwrap_or("").to_ascii_uppercase();
+    // Windows pomija spacje na końcu nazwy urządzenia, więc "CON .txt" to też konsola.
+    let stem = trimmed
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_ascii_uppercase();
     if RESERVED.contains(&stem.as_str()) {
         return None;
     }
@@ -245,6 +285,24 @@ mod tests {
         dib.extend_from_slice(&[4, 5, 6, 0]);
         let img = dib_to_rgba(&dib).unwrap();
         assert_eq!(img.rgba, vec![3, 2, 1, 255, 6, 5, 4, 255]);
+    }
+
+    #[test]
+    fn optional_color_table_in_24_bit_dib_is_skipped() {
+        // 1x1, 24 bity, dwa wpisy tablicy kolorów (biClrUsed = 2) przed pikselami.
+        let mut dib = Vec::new();
+        dib.extend_from_slice(&40u32.to_le_bytes());
+        dib.extend_from_slice(&1i32.to_le_bytes());
+        dib.extend_from_slice(&1i32.to_le_bytes());
+        dib.extend_from_slice(&1u16.to_le_bytes());
+        dib.extend_from_slice(&24u16.to_le_bytes());
+        dib.extend_from_slice(&[0u8; 16]); // kompresja, rozmiar, rozdzielczość
+        dib.extend_from_slice(&2u32.to_le_bytes()); // biClrUsed
+        dib.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+        dib.extend_from_slice(&[0xAA; 8]); // tablica kolorów
+        dib.extend_from_slice(&[1, 2, 3, 0]);
+        let img = dib_to_rgba(&dib).unwrap();
+        assert_eq!(img.rgba, vec![3, 2, 1, 255]);
     }
 
     #[test]
@@ -347,6 +405,13 @@ mod tests {
             (None, "con"),
             (None, "NUL.txt"),
             (Some("ok\\LPT1"), "a"),
+            (None, "CONOUT$"),
+            (None, "conin$.txt"),
+            (None, "COM0"),
+            (None, "LPT0.log"),
+            (None, "COM\u{b9}"),
+            (None, "LPT\u{b3}.txt"),
+            (None, "CON .txt"),
             (None, "zly\u{0}znak"),
             (None, ""),
             (None, "a/b"),

@@ -226,11 +226,21 @@ pub struct LocalConfig {
 
 #[tauri::command]
 pub async fn get_local_config(state: State<'_, AppState>) -> Result<LocalConfig, String> {
-    Ok(LocalConfig {
-        log_sessions: state.config.lock().expect("config").log_sessions,
-        rdp_clipboard: state.config.lock().expect("config").rdp_clipboard,
+    Ok(local_config(&state))
+}
+
+fn local_config(state: &AppState) -> LocalConfig {
+    // Jedna blokada: dwa `lock()` w jednym wyrażeniu zakleszczały wątek, bo tymczasowa blokada
+    // z pierwszego pola żyje do końca całego wyrażenia.
+    let (log_sessions, rdp_clipboard) = {
+        let c = state.config.lock().expect("config");
+        (c.log_sessions, c.rdp_clipboard)
+    };
+    LocalConfig {
+        log_sessions,
+        rdp_clipboard,
         logs_dir: state.data_dir.join("logs").display().to_string(),
-    })
+    }
 }
 
 #[tauri::command]
@@ -244,6 +254,9 @@ pub async fn set_log_sessions(state: State<'_, AppState>, enabled: bool) -> Resu
 pub async fn set_rdp_clipboard(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
     state.config.lock().expect("config").rdp_clipboard = enabled;
     state.save_config();
+    if !enabled {
+        crate::rdp_sessions::clipboard_disabled(&state);
+    }
     state.log(if enabled {
         "schowek RDP włączony"
     } else {
@@ -261,11 +274,13 @@ pub struct LinkView {
     port: Option<u16>,
     username: Option<String>,
     domain: Option<String>,
-    /// Zapisany host o tym samym adresie, protokole i porcie.
+    /// Zapisany host o tym samym adresie, protokole i porcie (link bez portu oznacza port
+    /// domyślny protokołu). Interfejs pyta przed połączeniem, link nigdy nie łączy sam.
     matching_host: Option<Id>,
 }
 
 fn link_view(doc: &Document, link: Link) -> LinkView {
+    let port = link.port.unwrap_or(link.protocol.default_port());
     let matching_host = doc
         .tree
         .hosts
@@ -273,9 +288,11 @@ fn link_view(doc: &Document, link: Link) -> LinkView {
         .find(|h| {
             h.protocol == link.protocol
                 && h.address.eq_ignore_ascii_case(&link.host)
-                && link
-                    .port
-                    .is_none_or(|p| doc.tree.resolve(h.id).map(|r| r.port == p).unwrap_or(false))
+                && doc
+                    .tree
+                    .resolve(h.id)
+                    .map(|r| r.port == port)
+                    .unwrap_or(false)
         })
         .map(|h| h.id);
     LinkView {
@@ -298,4 +315,49 @@ pub async fn resolve_link(state: State<'_, AppState>, url: String) -> Result<Lin
 #[tauri::command]
 pub async fn take_pending_link(state: State<'_, AppState>) -> Result<Option<String>, String> {
     Ok(state.pending_link.lock().expect("pending").take())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn link_without_port_matches_only_default_port() {
+        let mut doc = Document::default();
+        let h = doc
+            .tree
+            .add_host("srv", "srv", model::Protocol::Ssh, None)
+            .unwrap();
+        doc.tree
+            .hosts
+            .iter_mut()
+            .find(|x| x.id == h)
+            .unwrap()
+            .fields
+            .port = Some(2222);
+        let link = |u: &str| link_view(&doc, parse_link(u).unwrap()).matching_host;
+        assert_eq!(link("ssh://srv"), None, "port domyślny 22 to inny host");
+        assert_eq!(link("ssh://srv:2222"), Some(h));
+        assert_eq!(link("rdp://srv:2222"), None, "inny protokół");
+    }
+
+    #[test]
+    fn local_config_does_not_deadlock() {
+        let dir = std::env::temp_dir().join(format!("mrm-localcfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = std::sync::Arc::new(AppState::new(dir.join("hosts.mrm")));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let s = state.clone();
+        std::thread::spawn(move || {
+            let cfg = local_config(&s);
+            let _ = tx.send(cfg.rdp_clipboard);
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(),
+            "odczyt konfiguracji lokalnej zawisł"
+        );
+        // Blokada konfiguracji jest wolna po odczycie.
+        assert!(state.config.try_lock().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

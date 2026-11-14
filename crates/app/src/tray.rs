@@ -52,8 +52,12 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app.state::<AppState>();
-                    *state.inner.lock().await = None;
-                    state.log("zablokowano plik z hostami (zasobnik)");
+                    crate::commands::lock_all(
+                        &app,
+                        &state,
+                        "zablokowano plik z hostami (zasobnik)",
+                    )
+                    .await;
                 });
             }
             "quit" => app.exit(0),

@@ -159,6 +159,30 @@ enum Pending {
 struct LocalEntry {
     path: PathBuf,
     is_dir: bool,
+    /// Tożsamość pliku z chwili ogłoszenia (urządzenie, i-węzeł). Przy odczycie porównujemy ją
+    /// z otwartym plikiem, więc podmiana ścieżki na dowiązanie po ogłoszeniu nic nie da.
+    id: Option<(u64, u64)>,
+}
+
+#[cfg(unix)]
+fn file_id(meta: &fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_id(_meta: &fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+/// Ten sam warunek, którym ironrdp-cliprdr 0.7 (`is_absolute_path`) odrzuca opisy plików przed
+/// wysłaniem. Takie opisy musimy pominąć sami, bo inaczej indeksy serwera rozjadą się z `local_files`.
+fn wire_looks_absolute(first: &str) -> bool {
+    let mut c = first.chars();
+    first.starts_with('/')
+        || first.starts_with("\\\\")
+        || first.starts_with("//")
+        || matches!((c.next(), c.next()), (Some(a), Some(':')) if a.is_ascii_alphabetic())
 }
 
 struct Planned {
@@ -260,8 +284,15 @@ impl ClipState {
         match ev {
             ClipEvent::RemoteFormats(formats) => {
                 self.remote = RemoteFormats::from_list(&formats);
-                // Nowa zawartość zdalnego schowka unieważnia poprzednią listę plików.
+                // Nowa zawartość zdalnego schowka unieważnia poprzednią listę plików, trwające
+                // pobieranie i oczekiwaną odpowiedź (inaczej np. obraz zdekodowalibyśmy jako tekst).
                 self.remote_files.clear();
+                self.pending = None;
+                if self.download.is_some() {
+                    self.abort_download(
+                        "Schowek na serwerze się zmienił, przerwano pobieranie plików.",
+                    );
+                }
                 crate::emit(&FromWorker::ClipRemote {
                     kinds: self.remote.kinds(),
                     files: self.remote.file_list.is_some(),
@@ -450,7 +481,7 @@ impl ClipState {
             return None;
         }
         let meta = fs::symlink_metadata(&entry.path).ok()?;
-        if !meta.is_file() {
+        if !meta.is_file() || file_id(&meta) != entry.id {
             return None;
         }
         if req.flags.contains(FileContentsFlags::SIZE) {
@@ -464,6 +495,10 @@ impl ClipState {
         }
         let want = usize::try_from(req.requested_size).ok()?.min(SERVE_CHUNK);
         let mut f = File::open(&entry.path).ok()?;
+        let opened = f.metadata().ok()?;
+        if !opened.is_file() || file_id(&opened) != entry.id {
+            return None;
+        }
         f.seek(SeekFrom::Start(req.position)).ok()?;
         let mut data = Vec::with_capacity(want.min(1 << 20));
         f.take(want as u64).read_to_end(&mut data).ok()?;
@@ -478,9 +513,9 @@ impl ClipState {
         stage: &mut ActiveStage,
         out: &mut Out<'_>,
     ) -> anyhow::Result<()> {
-        if self.download.is_some() {
-            notice("Trwa już pobieranie plików.");
-            return Ok(());
+        // Nowsza kopia wygrywa: poprzednie pobieranie jest przerywane, a nie blokuje nowego.
+        if self.download.take().is_some() {
+            notice("Przerwano poprzednie pobieranie plików.");
         }
         let (plan, total, skipped) = plan_download(&dir, &self.remote_files);
         if plan.is_empty() {
@@ -499,7 +534,11 @@ impl ClipState {
                 "Pominięto {skipped} elementów o niebezpiecznych nazwach."
             ));
         }
-        fs::create_dir_all(&dir).context("katalog pobierania")?;
+        // Błąd systemu plików (np. pełny dysk) kończy tylko pobieranie, a nie całą sesję RDP.
+        if let Err(e) = fs::create_dir_all(&dir) {
+            notice(format!("Nie można utworzyć katalogu pobierania: {e}"));
+            return Ok(());
+        }
         self.download = Some(Download {
             dir,
             plan,
@@ -672,6 +711,11 @@ impl ClipState {
             self.abort_download("Serwer przysłał pustą porcję pliku.");
             return Ok(());
         }
+        // Limit sprawdzamy przed zapisem, żeby na dysk nie trafiło nic ponad niego.
+        if d.written.saturating_add(take as u64) > MAX_TOTAL_BYTES {
+            self.abort_download("Przekroczono limit rozmiaru schowka.");
+            return Ok(());
+        }
         let write = d.out.as_mut().map(|f| f.write_all(&data[..take]));
         if !matches!(write, Some(Ok(()))) {
             self.abort_download("Nie można zapisać pobieranego pliku.");
@@ -679,10 +723,6 @@ impl ClipState {
         }
         d.pos += take as u64;
         d.written += take as u64;
-        if d.written > MAX_TOTAL_BYTES {
-            self.abort_download("Przekroczono limit rozmiaru schowka.");
-            return Ok(());
-        }
         if d.pos >= d.size {
             d.out = None;
             d.cur += 1;
@@ -769,15 +809,18 @@ fn walk(
     };
     let ft = meta.file_type();
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    // Pole nazwy na łączu ma 260 jednostek UTF-16; znaki spoza BMP zajmują po dwie.
     let wire_len = if rel.is_empty() {
-        name.chars().count()
+        name.encode_utf16().count()
     } else {
-        rel.chars().count() + 1 + name.chars().count()
+        rel.encode_utf16().count() + 1 + name.encode_utf16().count()
     };
+    let first = if rel.is_empty() { name } else { rel };
     if ft.is_symlink()
         || !(ft.is_dir() || ft.is_file())
         || name.is_empty()
         || wire_len > MAX_WIRE_NAME
+        || wire_looks_absolute(first)
         || entries.len() >= MAX_ENTRIES
     {
         *skipped += 1;
@@ -796,6 +839,7 @@ fn walk(
     entries.push(LocalEntry {
         path: path.to_owned(),
         is_dir: ft.is_dir(),
+        id: file_id(&meta),
     });
     if ft.is_dir() && depth < MAX_DEPTH {
         let child_rel = if rel.is_empty() {
@@ -896,6 +940,58 @@ mod tests {
         #[cfg(unix)]
         assert!(!names.iter().any(|(n, _)| n == "link"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn names_the_library_would_drop_are_skipped_so_indexes_stay_aligned() {
+        let root = tmp("wire");
+        // Nazwa na łączu to "d1\\d2\\plik": 191 znaków, ale 380 jednostek UTF-16 (znaki spoza BMP
+        // zajmują po dwie), czyli ponad limit pola. Pojedyncza nazwa w Linuksie ma najwyżej 255 bajtów.
+        let part: String = std::iter::repeat_n('\u{1F600}', 63).collect();
+        let deep = root.join(&part).join(&part);
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join(&part), b"x").unwrap();
+        fs::create_dir_all(root.join("a:dane")).unwrap();
+        fs::write(root.join("a:dane").join("w.txt"), b"w").unwrap();
+        fs::write(root.join("ok.txt"), b"ok").unwrap();
+        let (descs, entries, skipped) = build_local_files(&[
+            root.join(&part).to_string_lossy().into_owned(),
+            root.join("a:dane").to_string_lossy().into_owned(),
+            root.join("ok.txt").to_string_lossy().into_owned(),
+        ]);
+        // Pominięte: plik z za długą nazwą na łączu i katalog "a:dane" (razem z zawartością).
+        assert_eq!(skipped, 2);
+        assert_eq!(descs.len(), entries.len());
+        let names: Vec<_> = entries
+            .iter()
+            .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, [part.clone(), part, "ok.txt".into()]);
+        assert!(wire_looks_absolute("C:"));
+        assert!(wire_looks_absolute("\\\\serwer"));
+        assert!(!wire_looks_absolute("dane"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_swapped_after_announcement_is_not_served() {
+        let root = tmp("swap");
+        fs::write(root.join("jawny.txt"), b"jawne dane").unwrap();
+        fs::write(root.join("tajny.txt"), b"tajne dane").unwrap();
+        let (_, entries, _) =
+            build_local_files(&[root.join("jawny.txt").to_string_lossy().into_owned()]);
+        let st = ClipState {
+            local_files: entries,
+            ..Default::default()
+        };
+        assert!(st.read_local(&range(0, 0, 5)).is_some());
+        fs::remove_file(root.join("jawny.txt")).unwrap();
+        std::os::unix::fs::symlink(root.join("tajny.txt"), root.join("jawny.txt")).unwrap();
+        assert!(st.read_local(&range(0, 0, 5)).is_none());
+        // Podmiana przez `rename` innego istniejącego pliku też jest odrzucana.
+        fs::remove_file(root.join("jawny.txt")).unwrap();
+        fs::rename(root.join("tajny.txt"), root.join("jawny.txt")).unwrap();
+        assert!(st.read_local(&range(0, 0, 5)).is_none());
     }
 
     #[test]

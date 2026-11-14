@@ -1,5 +1,7 @@
 /* Tokeny z design/DESIGN.md. Motyw ciemny jest domyślny, jasny przez data-theme="light". */
 :root {
+  /* Natywne kontrolki (np. lista pola wyboru w WebKitGTK) w tym samym motywie co interfejs. */
+  color-scheme: dark;
   --bg: #0F0F0F;
   --panel: #161616;
   --surface: #1C1C1C;
@@ -20,6 +22,7 @@
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 :root[data-theme='light'] {
+  color-scheme: light;
   --bg: #F3F3F3;
   --panel: #FAFAFA;
   --surface: #EFEFEF;

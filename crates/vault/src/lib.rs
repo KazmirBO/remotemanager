@@ -22,6 +22,10 @@ pub const FORMAT_VERSION: u8 = 1;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const HEADER_LEN: usize = 4 + 1 + 12 + SALT_LEN + NONCE_LEN;
+/// Górne limity parametrów Argon2id przyjmowanych z nagłówka (pamięć w KiB: 4 GiB).
+const MAX_M_COST: u32 = 4 * 1024 * 1024;
+const MAX_T_COST: u32 = 100;
+const MAX_P_COST: u32 = 64;
 /// Domyślna liczba zachowywanych kopii zapasowych.
 pub const DEFAULT_BACKUPS: usize = 5;
 
@@ -108,16 +112,20 @@ fn encode_header(kdf: KdfParams, salt: &[u8; SALT_LEN], nonce: &[u8; NONCE_LEN])
     h
 }
 
-/// Zapis atomowy: plik tymczasowy w tym samym katalogu, `fsync`, `rename`.
-fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
+fn tmp_path(path: &Path) -> PathBuf {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
+    PathBuf::from(tmp)
+}
+
+/// Pierwsza połowa zapisu atomowego: plik tymczasowy w tym samym katalogu i `fsync`.
+/// Zwraca ścieżkę pliku tymczasowego, który potem trafia na miejsce docelowe przez `rename`.
+fn write_tmp(path: &Path, data: &[u8]) -> io::Result<PathBuf> {
+    let tmp = tmp_path(path);
     let mut f = fs::File::create(&tmp)?;
     f.write_all(data)?;
     f.sync_all()?;
-    drop(f);
-    fs::rename(&tmp, path)
+    Ok(tmp)
 }
 
 fn backup_path(path: &Path, n: usize) -> PathBuf {
@@ -189,20 +197,34 @@ impl Vault {
         self.write(doc, true)
     }
 
-    /// Zmienia hasło główne: nowa sól, nowy klucz, zapis całego dokumentu.
+    /// Zmienia hasło główne: nowa sól, nowy klucz, zapis całego dokumentu. Klucz w pamięci zmienia
+    /// się dopiero po udanym zapisie, więc nieudana zmiana zostawia stare hasło w mocy.
     pub fn change_password<T: Serialize>(&mut self, new_password: &str, doc: &T) -> Result<()> {
         let salt = random::<SALT_LEN>()?;
-        self.key = derive_key(new_password.as_bytes(), &salt, self.kdf)?;
+        let key = derive_key(new_password.as_bytes(), &salt, self.kdf)?;
+        self.write_with(&key, &salt, doc, true)?;
+        self.key = key;
         self.salt = salt;
-        self.write(doc, true)
+        Ok(())
     }
 
     fn write<T: Serialize>(&self, doc: &T, rotate: bool) -> Result<()> {
+        self.write_with(&self.key, &self.salt, doc, rotate)
+    }
+
+    /// Zapis: szyfrowanie, plik tymczasowy z `fsync`, dopiero potem rotacja kopii i `rename`.
+    /// Nieudany zapis nie rusza więc ani pliku, ani kopii `.bakN`.
+    fn write_with<T: Serialize>(
+        &self,
+        key: &[u8; 32],
+        salt: &[u8; SALT_LEN],
+        doc: &T,
+        rotate: bool,
+    ) -> Result<()> {
         let plain = Zeroizing::new(serde_json::to_vec(doc)?);
         let nonce = random::<NONCE_LEN>()?;
-        let header = encode_header(self.kdf, &self.salt, &nonce);
-        let cipher = XChaCha20Poly1305::new_from_slice(self.key.as_ref())
-            .map_err(|_| Error::BadKdfParams)?;
+        let header = encode_header(self.kdf, salt, &nonce);
+        let cipher = XChaCha20Poly1305::new_from_slice(key).map_err(|_| Error::BadKdfParams)?;
         let ct = cipher
             .encrypt(
                 &XNonce::from(nonce),
@@ -214,10 +236,11 @@ impl Vault {
             .map_err(|_| Error::Decrypt)?;
         let mut out = header;
         out.extend_from_slice(&ct);
+        let tmp = write_tmp(&self.path, &out)?;
         if rotate && self.backups > 0 && self.path.exists() {
             self.rotate_backups()?;
         }
-        write_atomic(&self.path, &out)?;
+        fs::rename(&tmp, &self.path)?;
         Ok(())
     }
 
@@ -254,6 +277,11 @@ fn parse_header(data: &[u8]) -> Result<(KdfParams, [u8; SALT_LEN], [u8; NONCE_LE
         t_cost: u32_at(9),
         p_cost: u32_at(13),
     };
+    // Nagłówek jest uwierzytelniany dopiero po wyliczeniu klucza, więc parametry z niezaufanego pliku
+    // (np. z folderu synchronizacji) ograniczamy przed KDF, żeby nie alokować terabajtów pamięci.
+    if kdf.m_cost > MAX_M_COST || kdf.t_cost > MAX_T_COST || kdf.p_cost > MAX_P_COST {
+        return Err(Error::BadKdfParams);
+    }
     let salt = data[17..17 + SALT_LEN].try_into().expect("sól");
     let nonce = data[17 + SALT_LEN..HEADER_LEN].try_into().expect("nonce");
     Ok((kdf, salt, nonce))
@@ -388,6 +416,59 @@ mod tests {
         v.change_password("nowe", &doc(2)).unwrap();
         assert!(Vault::open::<Doc>(&p, "stare").is_err());
         assert_eq!(Vault::open::<Doc>(&p, "nowe").unwrap().1, doc(2));
+    }
+
+    /// Katalog w miejscu pliku tymczasowego sprawia, że zapis kończy się błędem przed `rename`.
+    fn block_tmp(p: &Path) -> PathBuf {
+        let t = tmp_path(p);
+        fs::create_dir_all(&t).unwrap();
+        t
+    }
+
+    #[test]
+    fn failed_password_change_keeps_old_password() {
+        let p = tmp("chpw-fail");
+        let mut v = Vault::create(&p, "stare", KdfParams::FAST_FOR_TESTS, &doc(1)).unwrap();
+        let blocker = block_tmp(&p);
+        assert!(v.change_password("nowe", &doc(1)).is_err());
+        fs::remove_dir(&blocker).unwrap();
+        // Kolejny zwykły zapis nadal używa starego hasła.
+        v.save(&doc(2)).unwrap();
+        assert_eq!(Vault::open::<Doc>(&p, "stare").unwrap().1, doc(2));
+        assert!(Vault::open::<Doc>(&p, "nowe").is_err());
+    }
+
+    #[test]
+    fn failed_save_does_not_rotate_backups() {
+        let p = tmp("bak-fail");
+        let mut v = Vault::create(&p, "x", KdfParams::FAST_FOR_TESTS, &doc(0)).unwrap();
+        v.set_backup_count(3);
+        v.save(&doc(1)).unwrap();
+        let blocker = block_tmp(&p);
+        for _ in 0..3 {
+            assert!(v.save(&doc(9)).is_err());
+        }
+        fs::remove_dir(&blocker).unwrap();
+        assert!(
+            !backup_file(&p, 2).exists(),
+            "nieudane zapisy nie rotują kopii"
+        );
+        let b1: Doc = open_backup(&backup_file(&p, 1), "x").unwrap();
+        assert_eq!(b1, doc(0));
+        assert_eq!(Vault::open::<Doc>(&p, "x").unwrap().1, doc(1));
+    }
+
+    #[test]
+    fn absurd_kdf_params_are_rejected_before_kdf() {
+        let p = tmp("kdf-limit");
+        Vault::create(&p, "x", KdfParams::FAST_FOR_TESTS, &doc(0)).unwrap();
+        let mut data = fs::read(&p).unwrap();
+        data[5..9].copy_from_slice(&u32::MAX.to_le_bytes());
+        fs::write(&p, &data).unwrap();
+        assert!(matches!(
+            Vault::open::<Doc>(&p, "x"),
+            Err(Error::BadKdfParams)
+        ));
     }
 
     #[test]
