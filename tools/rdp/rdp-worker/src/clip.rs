@@ -1115,13 +1115,22 @@ mod tests {
         assert!(names.contains(&("zestaw".into(), None)));
         assert!(names.contains(&("a.txt".into(), Some("zestaw".into()))));
         assert!(names.contains(&("b.txt".into(), Some("zestaw\\pod".into()))));
-        #[cfg(unix)]
-        assert_eq!(skipped, 1);
-        #[cfg(unix)]
+        // Dowiązanie powstaje tylko na Unix; na innych systemach nic nie jest pomijane.
+        assert_eq!(skipped, usize::from(cfg!(unix)));
         assert!(!names.iter().any(|(n, _)| n == "link"));
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn wire_names_that_look_absolute_are_recognised() {
+        assert!(wire_looks_absolute("C:"));
+        assert!(wire_looks_absolute("\\\\serwer"));
+        assert!(wire_looks_absolute("/etc"));
+        assert!(!wire_looks_absolute("dane"));
+    }
+
+    // Tylko Unix: Windows nie pozwala utworzyć katalogu z dwukropkiem w nazwie ani tak długiej ścieżki.
+    #[cfg(unix)]
     #[test]
     fn names_the_library_would_drop_are_skipped_so_indexes_stay_aligned() {
         let root = tmp("wire");
@@ -1147,9 +1156,6 @@ mod tests {
             .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, [part.clone(), part, "ok.txt".into()]);
-        assert!(wire_looks_absolute("C:"));
-        assert!(wire_looks_absolute("\\\\serwer"));
-        assert!(!wire_looks_absolute("dane"));
     }
 
     #[cfg(unix)]
