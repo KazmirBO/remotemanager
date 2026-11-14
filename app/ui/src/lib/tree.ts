@@ -61,9 +61,11 @@ export type InheritableKey =
 /**
  * Wartość dziedziczona dla pola, licząc od katalogu `start` w górę.
  * Hasło jest pomijane: frontend zna tylko fakt jego istnienia.
+ * Poziom z wartością `skip` jest pomijany i dziedziczenie idzie dalej (bastion wskazujący sam
+ * edytowany host, tak jak w `Tree::resolve` po stronie backendu).
  */
 export function inherited(
-  folders: FolderView[], start: Id | null, key: InheritableKey,
+  folders: FolderView[], start: Id | null, key: InheritableKey, skip?: FieldsIo[InheritableKey],
 ): { value: NonNullable<FieldsIo[InheritableKey]>; from: string } | null {
   const map = new Map(folders.map((f) => [f.id, f]));
   const seen = new Set<Id>();
@@ -71,7 +73,7 @@ export function inherited(
   while (cur && !seen.has(cur.id)) {
     seen.add(cur.id);
     const v = cur.fields[key];
-    if (v !== null && v !== undefined) return { value: v, from: cur.name };
+    if (v !== null && v !== undefined && v !== skip) return { value: v, from: cur.name };
     cur = cur.parent ? map.get(cur.parent) : undefined;
   }
   return null;

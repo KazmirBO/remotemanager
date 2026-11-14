@@ -299,6 +299,17 @@ impl Tree {
         let mut sources = Sources::default();
         // Pola ustawione na hoście mają źródło Host.
         h.fields.mark_own(&mut sources);
+        // Bastion ustawiony w katalogu obejmuje też sam bastion, jeśli leży w tym katalogu (inaczej
+        // cały katalog dostawałby cykl). Pomijany jest tylko poziom wskazujący sam ten host:
+        // dziedziczenie idzie dalej w górę, więc bastion nadal łączy się przez bramę z katalogu
+        // nadrzędnego albo z ustawień domyślnych, a dopiero bez niej bezpośrednio.
+        let without_self = |f: &Fields| {
+            let mut f = f.clone();
+            if f.jump_host == Some(host) {
+                f.jump_host = None;
+            }
+            f
+        };
         let mut seen = HashSet::new();
         let mut cur = h.folder;
         while let Some(fid) = cur {
@@ -306,16 +317,14 @@ impl Tree {
                 return Err(Error::FolderCycle);
             }
             let f = self.folder(fid).ok_or(Error::NoFolder(fid))?;
-            fields.fill_from(&f.fields, Source::Folder(fid), &mut sources);
+            fields.fill_from(&without_self(&f.fields), Source::Folder(fid), &mut sources);
             cur = f.parent;
         }
-        fields.fill_from(&self.defaults, Source::Defaults, &mut sources);
-        // Bastion ustawiony w katalogu obejmuje też sam bastion, jeśli leży w tym katalogu: on łączy
-        // się bezpośrednio (inaczej cały katalog dostawałby cykl).
-        if fields.jump_host == Some(host) && sources.jump_host != Some(Source::Host) {
-            fields.jump_host = None;
-            sources.jump_host = None;
-        }
+        fields.fill_from(
+            &without_self(&self.defaults),
+            Source::Defaults,
+            &mut sources,
+        );
         let port = fields.port.unwrap_or_else(|| h.protocol.default_port());
         Ok(Resolved {
             fields,
@@ -665,6 +674,34 @@ mod tests {
         // Bastion ustawiony jawnie na sobie samym nadal jest błędem.
         t.hosts[0].fields.jump_host = Some(b);
         assert_eq!(t.jump_chain(b), Err(Error::JumpCycle));
+    }
+
+    #[test]
+    fn bastion_in_own_folder_keeps_gateway_from_outer_folder() {
+        let mut t = Tree::default();
+        let firma = t.add_folder("Firma", None).unwrap();
+        let prod = t.add_folder("Prod", Some(firma)).unwrap();
+        let brama = t.add_host("brama", "x", Protocol::Ssh, None).unwrap();
+        let b = t
+            .add_host("bastion", "b", Protocol::Ssh, Some(prod))
+            .unwrap();
+        let web = t.add_host("web", "w", Protocol::Ssh, Some(prod)).unwrap();
+        t.folders[0].fields.jump_host = Some(brama);
+        t.folders[1].fields.jump_host = Some(b);
+        // Bastion pomija tylko poziom, który wskazuje jego samego, i dalej idzie przez bramę.
+        assert_eq!(t.jump_chain(b).unwrap(), vec![brama]);
+        assert_eq!(
+            t.resolve(b).unwrap().sources.jump_host,
+            Some(Source::Folder(firma))
+        );
+        assert_eq!(t.jump_chain(web).unwrap(), vec![brama, b]);
+        // To samo dla bramy z ustawień domyślnych.
+        t.folders[0].fields.jump_host = None;
+        t.defaults.jump_host = Some(brama);
+        assert_eq!(t.jump_chain(web).unwrap(), vec![brama, b]);
+        // Ustawienia domyślne wskazujące sam host też są pomijane.
+        t.defaults.jump_host = Some(b);
+        assert_eq!(t.jump_chain(b).unwrap(), Vec::<Id>::new());
     }
 
     #[test]

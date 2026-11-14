@@ -36,39 +36,34 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Wczytuje konfigurację. Brak pliku daje wartości domyślne. Uszkodzony plik jest odkładany jako
-    /// `config.json.bad` (żeby pierwszy zapis nie zatarł np. folderu synchronizacji), a drugi element
-    /// wyniku opisuje problem do dziennika diagnostycznego.
+    /// Wczytuje konfigurację. Brak pliku daje wartości domyślne. Plik, który istnieje, ale nie da się
+    /// go użyć (zły JSON, niepoprawny UTF-8, błąd odczytu), jest odkładany jako `config.json.bad`,
+    /// żeby pierwszy zapis nie zatarł np. folderu synchronizacji, a drugi element wyniku opisuje
+    /// problem do dziennika diagnostycznego.
     pub fn load(path: &Path) -> (Self, Option<String>) {
-        let text = match std::fs::read_to_string(path) {
-            Ok(t) => t,
+        // Odczyt bajtów, a nie tekstu: niepoprawny UTF-8 ma trafić do tej samej ścieżki co zły JSON.
+        let problem = match std::fs::read(path) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(c) => return (c, None),
+                Err(e) => format!("uszkodzona konfiguracja ({e})"),
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
-            Err(e) => {
-                return (
-                    Self::default(),
-                    Some(format!("nie można odczytać konfiguracji: {e}")),
-                );
-            }
+            Err(e) => format!("nie można odczytać konfiguracji ({e})"),
         };
-        match serde_json::from_str(&text) {
-            Ok(c) => (c, None),
-            Err(e) => {
-                let mut bad = path.as_os_str().to_owned();
-                bad.push(".bad");
-                let kept = std::fs::rename(path, PathBuf::from(&bad)).is_ok();
-                (
-                    Self::default(),
-                    Some(format!(
-                        "uszkodzona konfiguracja ({e}), użyto wartości domyślnych{}",
-                        if kept {
-                            "; poprzedni plik zachowano jako config.json.bad"
-                        } else {
-                            ""
-                        }
-                    )),
-                )
-            }
-        }
+        let mut bad = path.as_os_str().to_owned();
+        bad.push(".bad");
+        let kept = std::fs::rename(path, PathBuf::from(&bad)).is_ok();
+        (
+            Self::default(),
+            Some(format!(
+                "{problem}, użyto wartości domyślnych{}",
+                if kept {
+                    "; poprzedni plik zachowano jako config.json.bad"
+                } else {
+                    ""
+                }
+            )),
+        )
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -114,6 +109,23 @@ mod tests {
             std::fs::read(dir.join("config.json.bad")).unwrap(),
             b"{nie json"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn file_that_is_not_utf8_is_kept_aside_too() {
+        let dir = std::env::temp_dir().join(format!("mrm-cfg-utf8-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("config.json");
+        let broken = [b'{', 0xff, 0xfe, b'}'];
+        std::fs::write(&p, broken).unwrap();
+        let (loaded, warning) = Config::load(&p);
+        assert_eq!(loaded, Config::default());
+        assert!(warning.unwrap().contains("config.json.bad"));
+        assert_eq!(std::fs::read(dir.join("config.json.bad")).unwrap(), broken);
+        // Zapis wartości domyślnych nie rusza odłożonego pliku.
+        loaded.save(&p).unwrap();
+        assert_eq!(std::fs::read(dir.join("config.json.bad")).unwrap(), broken);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

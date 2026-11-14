@@ -11,7 +11,7 @@ use russh::client::{self, Handle};
 use russh::keys::agent::AgentIdentity;
 use russh::keys::agent::client::AgentClient;
 use russh::keys::{HashAlg, PublicKeyOrCertificate};
-use russh::{ChannelMsg, Disconnect};
+use russh::{AgentAuthError, ChannelMsg, Disconnect, SendError, Signer};
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroizing;
 
@@ -31,6 +31,8 @@ pub enum Error {
     Protocol(String),
     #[error("{0} nie odpowiada (przekroczono czas oczekiwania)")]
     Timeout(String),
+    #[error("agent SSH nie odpowiedział (przekroczono czas oczekiwania na potwierdzenie)")]
+    AgentTimeout,
 }
 
 impl From<russh::Error> for Error {
@@ -149,7 +151,59 @@ async fn agent(socket: Option<&std::path::Path>) -> Result<DynAgent> {
     a.map_err(|e| Error::AgentUnavailable(e.to_string()))
 }
 
-async fn authenticate<H: client::Handler>(handle: &mut Handle<H>, hop: &Hop) -> Result<()> {
+/// Najdłuższe czekanie na odpowiedź agenta, która może wymagać działania użytkownika: odblokowania
+/// agenta, potwierdzenia użycia klucza (`ssh-add -c`, 1Password, KeePassXC) albo dotknięcia klucza
+/// sprzętowego.
+pub const AGENT_USER_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Czeka na odpowiedź agenta, która może wymagać działania użytkownika. Na ten czas ustawia `asking`,
+/// więc nie liczy się on do limitu łączenia (tak samo jak pytanie o zaufanie do klucza hosta);
+/// osobny limit `AGENT_USER_TIMEOUT` chroni przed agentem, który nie odpowiada wcale.
+async fn agent_reply<F: Future>(asking: &AtomicBool, f: F) -> Option<F::Output> {
+    asking.store(true, Ordering::Relaxed);
+    let out = tokio::time::timeout(AGENT_USER_TIMEOUT, f).await.ok();
+    asking.store(false, Ordering::Relaxed);
+    out
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SignError {
+    #[error(transparent)]
+    Agent(#[from] AgentAuthError),
+    #[error(transparent)]
+    Send(#[from] SendError),
+    #[error("agent SSH nie odpowiedział")]
+    Timeout,
+}
+
+/// Podpisywanie przez agenta z wstrzymaniem limitu łączenia na czas podpisu (patrz `agent_reply`).
+struct UserSigner<'a> {
+    agent: &'a mut DynAgent,
+    asking: &'a AtomicBool,
+}
+
+impl Signer for UserSigner<'_> {
+    type Error = SignError;
+
+    async fn auth_sign(
+        &mut self,
+        key: &AgentIdentity,
+        hash_alg: Option<HashAlg>,
+        to_sign: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, SignError> {
+        let signing = self.agent.auth_sign(key, hash_alg, to_sign);
+        match agent_reply(self.asking, signing).await {
+            Some(signed) => Ok(signed?),
+            None => Err(SignError::Timeout),
+        }
+    }
+}
+
+async fn authenticate<H: client::Handler>(
+    handle: &mut Handle<H>,
+    hop: &Hop,
+    asking: &AtomicBool,
+) -> Result<()> {
     let ok = match &hop.auth {
         Auth::Password(p) => handle
             .authenticate_password(hop.username.clone(), p.as_str())
@@ -161,9 +215,10 @@ async fn authenticate<H: client::Handler>(handle: &mut Handle<H>, hop: &Hop) -> 
                 _ => None,
             };
             let mut agent = agent(socket).await?;
-            let ids = agent
-                .request_identities()
+            // Zablokowany agent może przy liście kluczy poprosić użytkownika o odblokowanie.
+            let ids = agent_reply(asking, agent.request_identities())
                 .await
+                .ok_or(Error::AgentTimeout)?
                 .map_err(|e| Error::AgentUnavailable(e.to_string()))?;
             let keys: Vec<_> = ids
                 .into_iter()
@@ -176,6 +231,10 @@ async fn authenticate<H: client::Handler>(handle: &mut Handle<H>, hop: &Hop) -> 
                 return Err(Error::NoIdentities);
             }
             let rsa_hash = handle.best_supported_rsa_hash().await?.flatten();
+            let mut signer = UserSigner {
+                agent: &mut agent,
+                asking,
+            };
             let mut success = false;
             for key in keys {
                 let hash = if key.algorithm().is_rsa() {
@@ -184,9 +243,12 @@ async fn authenticate<H: client::Handler>(handle: &mut Handle<H>, hop: &Hop) -> 
                     None
                 };
                 let res = handle
-                    .authenticate_publickey_with(hop.username.clone(), key, hash, &mut agent)
+                    .authenticate_publickey_with(hop.username.clone(), key, hash, &mut signer)
                     .await
-                    .map_err(|e| Error::Protocol(e.to_string()))?;
+                    .map_err(|e| match e {
+                        SignError::Timeout => Error::AgentTimeout,
+                        other => Error::Protocol(other.to_string()),
+                    })?;
                 if res.success() {
                     success = true;
                     break;
@@ -317,7 +379,7 @@ impl Session {
                     });
                 }
             };
-            within(authenticate(&mut handle, hop), limit, &asking)
+            within(authenticate(&mut handle, hop, &asking), limit, &asking)
                 .await
                 .unwrap_or_else(|| Err(Error::Timeout(target.clone())))
                 .map_err(|e| {

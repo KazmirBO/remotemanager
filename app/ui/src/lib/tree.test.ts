@@ -41,6 +41,10 @@ describe('inherited', () => {
     expect(inherited(f, 'b', 'username')).toEqual({ value: 'admin', from: 'Firma' });
     expect(inherited(f, 'b', 'domain')).toBeNull();
     expect(inherited(f, null, 'port')).toBeNull();
+    // Poziom z pomijaną wartością jest przeskakiwany, dziedziczenie idzie wyżej.
+    expect(inherited(f, 'b', 'port', 2200)).toEqual({ value: 2222, from: 'Firma' });
+    expect(inherited(f, 'a', 'port', 2222)).toBeNull();
+    expect(inherited(f, 'b', 'username', 'ktoś-inny')).toEqual({ value: 'admin', from: 'Firma' });
   });
   it('nie zapętla się przy cyklu', () => {
     const cyc = [folder('a', 'A', 'b'), folder('b', 'B', 'a')];

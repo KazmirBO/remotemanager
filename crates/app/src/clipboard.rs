@@ -192,8 +192,52 @@ enum Req {
     Files(Vec<PathBuf>, mpsc::Sender<()>),
 }
 
-/// Limit czasu odpowiedzi wątku schowka; po nim traktujemy schowek jak pusty.
+/// Limit czasu odpowiedzi wątku schowka. Brak odpowiedzi to brak wiedzy o schowku, a nie pusty schowek.
 const HOST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Pętla wątku obsługującego żądania. Panika w obsłudze jednego żądania (np. w bibliotece schowka
+/// na nietypowej zawartości wstawionej przez inny program) nie kończy wątku: to żądanie zostaje bez
+/// odpowiedzi, `reset` odtwarza stan, a kolejne żądania działają dalej. Bez tego jedna panika
+/// wyłączałaby schowek wszystkich sesji RDP do końca działania aplikacji.
+fn serve<R, S>(
+    rx: mpsc::Receiver<R>,
+    mut state: S,
+    handle: impl Fn(&mut S, R),
+    reset: impl Fn(&mut S),
+) {
+    for req in rx {
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(&mut state, req)));
+        if outcome.is_err() {
+            reset(&mut state);
+        }
+    }
+}
+
+fn handle_req(cb: &mut Option<arboard::Clipboard>, req: Req) {
+    if cb.is_none() {
+        *cb = arboard::Clipboard::new().ok();
+    }
+    match (req, cb.as_mut()) {
+        (Req::Snapshot(reply), Some(c)) => {
+            let _ = reply.send(read_snapshot(c));
+        }
+        (Req::Snapshot(reply), None) => {
+            let _ = reply.send(Snapshot::default());
+        }
+        (Req::Item(item, reply), Some(c)) => {
+            write_item(c, item);
+            let _ = reply.send(());
+        }
+        (Req::Files(paths, reply), Some(c)) => {
+            let _ = c.set().file_list(&paths);
+            let _ = reply.send(());
+        }
+        (Req::Item(_, reply) | Req::Files(_, reply), None) => {
+            let _ = reply.send(());
+        }
+    }
+}
 
 fn host() -> &'static Mutex<mpsc::Sender<Req>> {
     static HOST: OnceLock<Mutex<mpsc::Sender<Req>>> = OnceLock::new();
@@ -201,49 +245,62 @@ fn host() -> &'static Mutex<mpsc::Sender<Req>> {
         let (tx, rx) = mpsc::channel::<Req>();
         std::thread::Builder::new()
             .name("schowek".into())
-            .spawn(move || {
-                let mut cb: Option<arboard::Clipboard> = None;
-                for req in rx {
-                    if cb.is_none() {
-                        cb = arboard::Clipboard::new().ok();
-                    }
-                    match (req, cb.as_mut()) {
-                        (Req::Snapshot(reply), Some(c)) => {
-                            let _ = reply.send(read_snapshot(c));
-                        }
-                        (Req::Snapshot(reply), None) => {
-                            let _ = reply.send(Snapshot::default());
-                        }
-                        (Req::Item(item, reply), Some(c)) => {
-                            write_item(c, item);
-                            let _ = reply.send(());
-                        }
-                        (Req::Files(paths, reply), Some(c)) => {
-                            let _ = c.set().file_list(&paths);
-                            let _ = reply.send(());
-                        }
-                        (Req::Item(_, reply) | Req::Files(_, reply), None) => {
-                            let _ = reply.send(());
-                        }
-                    }
-                }
-            })
+            // Po panice instancja schowka jest tworzona od nowa przy następnym żądaniu.
+            .spawn(move || serve(rx, None, handle_req, |cb| *cb = None))
             .expect("wątek schowka");
         Mutex::new(tx)
     })
 }
 
-fn ask<T: Default>(make: impl FnOnce(mpsc::Sender<T>) -> Req) -> T {
+/// Wysyła żądanie do wątku schowka. `None`, gdy wątek nie odpowiedział w czasie albo żądanie
+/// zakończyło się paniką.
+fn ask<T>(make: impl FnOnce(mpsc::Sender<T>) -> Req) -> Option<T> {
     let (tx, rx) = mpsc::channel();
-    if host().lock().expect("schowek").send(make(tx)).is_err() {
-        return T::default();
-    }
-    rx.recv_timeout(HOST_TIMEOUT).unwrap_or_default()
+    host().lock().expect("schowek").send(make(tx)).ok()?;
+    rx.recv_timeout(HOST_TIMEOUT).ok()
 }
 
-/// Bieżąca zawartość schowka systemowego (blokujące).
-pub fn snapshot() -> Snapshot {
+/// Bieżąca zawartość schowka systemowego (blokujące). `None` oznacza brak odczytu.
+pub fn snapshot() -> Option<Snapshot> {
     ask(Req::Snapshot)
+}
+
+/// Co wiadomo o ostatnio widzianej zawartości lokalnego schowka.
+#[derive(Default)]
+struct Seen {
+    /// Odcisk ostatnio ogłoszonej albo wstawionej ze zdalnej sesji zawartości.
+    fp: Option<u64>,
+    /// Po wstawieniu danych ze zdalnej sesji nie udało się odczytać schowka: następny udany odczyt
+    /// jest przyjmowany jako znany bez ogłaszania, żeby dane serwera nie wróciły do niego jako echo.
+    adopt_next: bool,
+}
+
+impl Seen {
+    /// Wynik odczytu schowka; zwraca migawkę, jeśli zawartość jest nowa i trzeba ją ogłosić.
+    /// Brak odczytu niczego nie zmienia: potraktowany jak pusty schowek zastąpiłby ogłoszoną
+    /// zawartość pustą, a po chwili ogłosił ją drugi raz.
+    fn observe(&mut self, snap: Option<Snapshot>) -> Option<Snapshot> {
+        let snap = snap?;
+        let fp = snap.fingerprint();
+        let adopt = std::mem::take(&mut self.adopt_next);
+        if adopt || self.fp == Some(fp) {
+            self.fp = Some(fp);
+            return None;
+        }
+        self.fp = Some(fp);
+        Some(snap)
+    }
+
+    /// Po wstawieniu danych ze zdalnej sesji; `after` to odczyt schowka po wstawieniu.
+    fn applied(&mut self, after: Option<Snapshot>) {
+        match after {
+            Some(snap) => {
+                self.fp = Some(snap.fingerprint());
+                self.adopt_next = false;
+            }
+            None => self.adopt_next = true,
+        }
+    }
 }
 
 fn read_snapshot(c: &mut arboard::Clipboard) -> Snapshot {
@@ -302,9 +359,9 @@ fn write_item(c: &mut arboard::Clipboard, item: Item) {
 pub struct ClipSync {
     /// Czy okno sesji ma fokus: tylko wtedy ogłaszamy zmiany lokalnego schowka i przyjmujemy zdalne.
     pub watching: AtomicBool,
-    /// Odcisk ostatnio ogłoszonej albo wstawionej ze zdalnej sesji zawartości. Blokada obejmuje cały
-    /// odczyt i zapis schowka, żeby sprawdzanie zmian nie wpadło między wstawienie a zapis odcisku.
-    last: Mutex<Option<u64>>,
+    /// Ostatnio widziana zawartość schowka. Blokada obejmuje cały odczyt i zapis schowka, żeby
+    /// sprawdzanie zmian nie wpadło między wstawienie a zapis odcisku.
+    last: Mutex<Seen>,
     /// Migawka z chwili ostatniego ogłoszenia: serwer dostaje dane tylko z niej, nigdy z bieżącego
     /// schowka, więc nie odczyta niczego, co skopiowano później w innym programie.
     announced: Mutex<Option<Snapshot>>,
@@ -319,7 +376,7 @@ impl ClipSync {
     pub fn new(download_root: PathBuf) -> Self {
         Self {
             watching: AtomicBool::new(false),
-            last: Mutex::new(None),
+            last: Mutex::default(),
             announced: Mutex::new(None),
             pending_remote: Mutex::new(None),
             remote: Mutex::default(),
@@ -332,12 +389,7 @@ impl ClipSync {
     /// Ogłoszenie unieważnia odłożoną zmianę zdalną: wygrywa nowsza zmiana lokalna.
     pub fn local_announcement(&self) -> Option<ToWorker> {
         let mut last = self.last.lock().expect("clip");
-        let snap = snapshot();
-        let fp = snap.fingerprint();
-        if *last == Some(fp) {
-            return None;
-        }
-        *last = Some(fp);
+        let snap = last.observe(snapshot())?;
         let msg = snap.announcement();
         *self.announced.lock().expect("clip") = Some(snap);
         if msg.is_some() {
@@ -349,7 +401,7 @@ impl ClipSync {
     /// Zapomina ogłoszoną migawkę (np. po wyłączeniu schowka): serwer nie dostanie już tych danych.
     pub fn forget_announced(&self) {
         *self.announced.lock().expect("clip") = None;
-        *self.last.lock().expect("clip") = None;
+        *self.last.lock().expect("clip") = Seen::default();
     }
 
     /// Odpowiedź na prośbę serwera o dane: tylko ogłoszone rodzaje z ogłoszonej migawki.
@@ -386,13 +438,13 @@ impl ClipSync {
     pub fn apply(&self, item: Item) {
         let mut last = self.last.lock().expect("clip");
         ask(|tx| Req::Item(item, tx));
-        *last = Some(snapshot().fingerprint());
+        last.applied(snapshot());
     }
 
     pub fn apply_files(&self, paths: Vec<PathBuf>) {
         let mut last = self.last.lock().expect("clip");
         ask(|tx| Req::Files(paths, tx));
-        *last = Some(snapshot().fingerprint());
+        last.applied(snapshot());
     }
 
     /// Nowy katalog na pobierane pliki; poprzedni z tej sesji jest usuwany, żeby nie rosły w nieskończoność.
@@ -420,6 +472,67 @@ mod tests {
             height: 1,
             rgba: vec![1, 2, 3, 255, 4, 5, 6, 255],
         }
+    }
+
+    fn text(t: &str) -> Snapshot {
+        Snapshot {
+            text: Some(t.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn panic_in_one_request_does_not_stop_the_clipboard_thread() {
+        let (tx, rx) = mpsc::channel::<(u32, mpsc::Sender<u32>)>();
+        let worker = std::thread::spawn(move || {
+            serve(
+                rx,
+                0u32,
+                |served, (n, reply): (u32, mpsc::Sender<u32>)| {
+                    assert!(n != 13, "symulowana panika biblioteki schowka");
+                    *served += 1;
+                    let _ = reply.send(*served);
+                },
+                |served| *served = 100,
+            )
+        });
+        let ask = |n: u32| {
+            let (reply, answer) = mpsc::channel();
+            tx.send((n, reply)).unwrap();
+            answer.recv_timeout(Duration::from_secs(5)).ok()
+        };
+        assert_eq!(ask(1), Some(1));
+        assert_eq!(ask(13), None, "żądanie z paniką zostaje bez odpowiedzi");
+        assert_eq!(ask(2), Some(101), "wątek żyje, a stan został odtworzony");
+        drop(tx);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn failed_clipboard_read_is_not_an_empty_clipboard() {
+        // `Snapshot` celowo nie ma `Debug` (zawartość schowka nie trafia do logów), więc porównujemy tekst.
+        let mut seen = Seen::default();
+        let mut see = |s: Option<Snapshot>| seen.observe(s).and_then(|s| s.text);
+        assert_eq!(see(Some(text("a"))).as_deref(), Some("a"));
+        assert_eq!(see(Some(text("a"))), None, "bez zmiany");
+        // Brak odczytu (limit czasu) nie zmienia stanu: ta sama zawartość nie jest ogłaszana drugi raz.
+        assert_eq!(see(None), None);
+        assert_eq!(see(Some(text("a"))), None);
+        assert_eq!(see(Some(text("b"))).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn remote_item_is_not_echoed_even_when_read_back_fails() {
+        let mut seen = Seen::default();
+        // Odczyt po wstawieniu się udał: ta zawartość jest znana.
+        seen.applied(Some(text("ze zdalnej")));
+        assert!(seen.observe(Some(text("ze zdalnej"))).is_none());
+        // Odczyt po wstawieniu się nie udał: następny udany odczyt jest przyjmowany bez ogłaszania.
+        seen.applied(None);
+        assert!(seen.observe(None).is_none());
+        assert!(seen.observe(Some(text("ze zdalnej 2"))).is_none());
+        let announced = seen.observe(Some(text("lokalna"))).and_then(|s| s.text);
+        assert_eq!(announced.as_deref(), Some("lokalna"));
     }
 
     #[test]

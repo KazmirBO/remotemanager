@@ -2,8 +2,10 @@ import type { Settings } from './api';
 
 export interface ActionDef { id: string; label: string; default: string }
 
+/** Skróty domyślne nie mogą być samym Ctrl+litera: terminal i sesja RDP oddają aplikacji każdy klawisz
+ * pasujący do skrótu, a Ctrl+litera to klawisze sterujące powłoki (Ctrl+K wycina linię w bashu i nano). */
 export const ACTIONS: ActionDef[] = [
-  { id: 'quick_connect', label: 'Szybkie łączenie', default: 'Ctrl+K' },
+  { id: 'quick_connect', label: 'Szybkie łączenie', default: 'Ctrl+Shift+K' },
   { id: 'close_tab', label: 'Zamknij kartę', default: 'Ctrl+Shift+W' },
   { id: 'new_host', label: 'Nowy host', default: 'Ctrl+Shift+N' },
   { id: 'next_tab', label: 'Następna karta', default: 'Ctrl+PageDown' },

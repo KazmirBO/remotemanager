@@ -75,7 +75,7 @@ Ikona programu: `app-icon.svg` (jasne tło) i `app-icon-light.svg`. Ikony zasobn
 | Konflikt synchronizacji, Kreator synchronizacji | Synchronizacja przez folder |
 | Zaufanie do hosta, Zaufane klucze | Odciski SSH i certyfikaty RDP |
 | Stany sesji, Stany agenta SSH, Monit o hasło | Łączenie, błędy, brak agenta |
-| Szybkie łączenie, Połączenie z linku | Ctrl+K i linki ssh:// rdp:// |
+| Szybkie łączenie, Połączenie z linku | Ctrl+Shift+K i linki ssh:// rdp:// |
 | Skróty klawiszowe, Edycja skrótu | Ściągawka i edycja |
 | Schematy terminala | Trzy schematy w skali szarości |
 | Powiadomienia, Start i aktualizacja, O programie, Dziennik diagnostyczny | Elementy pomocnicze |

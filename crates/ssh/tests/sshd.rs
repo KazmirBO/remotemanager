@@ -387,3 +387,72 @@ async fn slow_trust_decision_does_not_time_out() {
     session.disconnect().await;
     let _ = std::fs::remove_dir_all(&env.dir);
 }
+
+async fn read_agent_msg(s: &mut tokio::net::UnixStream) -> Option<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut len = [0u8; 4];
+    s.read_exact(&mut len).await.ok()?;
+    let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
+    s.read_exact(&mut body).await.ok()?;
+    Some(body)
+}
+
+async fn write_agent_msg(s: &mut tokio::net::UnixStream, body: &[u8]) -> Option<()> {
+    use tokio::io::AsyncWriteExt;
+    s.write_all(&(body.len() as u32).to_be_bytes()).await.ok()?;
+    s.write_all(body).await.ok()
+}
+
+/// Pośrednik przed prawdziwym agentem, który opóźnia podpis, tak jak agent czekający na
+/// potwierdzenie użytkownika albo dotknięcie klucza sprzętowego.
+fn slow_agent(real: &Path, dir: &Path, delay: Duration) -> PathBuf {
+    /// SSH_AGENTC_SIGN_REQUEST z protokołu agenta.
+    const SIGN_REQUEST: u8 = 13;
+    let sock = dir.join("wolny.sock");
+    let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+    let real = real.to_owned();
+    tokio::spawn(async move {
+        while let Ok((mut client, _)) = listener.accept().await {
+            let real = real.clone();
+            tokio::spawn(async move {
+                let Ok(mut agent) = tokio::net::UnixStream::connect(&real).await else {
+                    return;
+                };
+                while let Some(req) = read_agent_msg(&mut client).await {
+                    if req.first() == Some(&SIGN_REQUEST) {
+                        tokio::time::sleep(delay).await;
+                    }
+                    if write_agent_msg(&mut agent, &req).await.is_none() {
+                        break;
+                    }
+                    let Some(resp) = read_agent_msg(&mut agent).await else {
+                        break;
+                    };
+                    if write_agent_msg(&mut client, &resp).await.is_none() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    sock
+}
+
+#[tokio::test]
+async fn slow_agent_approval_does_not_time_out() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    // Podpis trwa dłużej niż limit łączenia: czas czekania na agenta nie może się do niego liczyć.
+    let sock = slow_agent(&env.good_agent, &env.dir, Duration::from_secs(3));
+    let (verifier, _) = accept_all();
+    let session = Session::connect_with_timeout(
+        &[hop(&env, Auth::AgentSocket(sock))],
+        verifier,
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+    session.disconnect().await;
+    let _ = std::fs::remove_dir_all(&env.dir);
+}

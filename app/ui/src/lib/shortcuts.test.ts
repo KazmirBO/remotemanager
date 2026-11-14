@@ -41,15 +41,15 @@ describe('validCombo', () => {
 
 describe('bindings', () => {
   it('używa domyślnych i nadpisanych', () => {
-    expect(binding(settings({}), 'quick_connect')).toBe('Ctrl+K');
+    expect(binding(settings({}), 'quick_connect')).toBe('Ctrl+Shift+K');
     expect(binding(settings({ quick_connect: 'Ctrl+P' }), 'quick_connect')).toBe('Ctrl+P');
-    expect(binding(settings({ quick_connect: '' }), 'quick_connect')).toBe('Ctrl+K');
+    expect(binding(settings({ quick_connect: '' }), 'quick_connect')).toBe('Ctrl+Shift+K');
   });
   it('rozpoznaje akcję i konflikty', () => {
     const s = settings({ lock: 'Alt+Shift+L' });
     expect(matchAction(s, ev('KeyL', { altKey: true, shiftKey: true }))).toBe('lock');
     expect(matchAction(s, ev('KeyL', { ctrlKey: true, shiftKey: true }))).toBeNull();
-    expect(findConflict(s, 'lock', 'Ctrl+K')).toBe('quick_connect');
+    expect(findConflict(s, 'lock', 'Ctrl+Shift+K')).toBe('quick_connect');
     expect(findConflict(s, 'lock', 'Alt+Shift+L')).toBeNull();
   });
   it('AltGr nie uruchamia skrótu, nawet zapisanego wcześniej jako Ctrl+Alt', () => {
@@ -66,5 +66,11 @@ describe('bindings', () => {
     const seen = new Set(ACTIONS.map((a) => a.default));
     expect(seen.size).toBe(ACTIONS.length);
     for (const a of ACTIONS) expect(validCombo(a.default), a.id).toBe(true);
+  });
+  it('domyślne skróty nie zabierają klawiszy sterujących powłoki', () => {
+    // Ctrl+litera trafia do zdalnej powłoki (np. Ctrl+K w bashu i nano), więc nie może być domyślnym skrótem.
+    for (const a of ACTIONS) expect(a.default, a.id).not.toMatch(/^Ctrl\+[A-Z]$/);
+    expect(matchAction(settings({}), ev('KeyK', { ctrlKey: true }))).toBeNull();
+    expect(matchAction(settings({}), ev('KeyK', { ctrlKey: true, shiftKey: true }))).toBe('quick_connect');
   });
 });

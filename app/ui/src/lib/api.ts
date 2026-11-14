@@ -59,6 +59,8 @@ export interface BackupInfo { n: number; modified: number; size: number }
 export interface LocalConfig { log_sessions: boolean; rdp_clipboard: boolean; logs_dir: string }
 export interface LinkView {
   protocol: Protocol; host: string; port: number | null; username: string | null;
+  /** Port z linku albo domyślny dla protokołu (rozstrzyga backend). */
+  resolved_port: number;
   domain: string | null; matching_host: Id | null;
 }
 

@@ -52,8 +52,9 @@
     term.open(el);
     fit.fit();
 
-    // xterm zatrzymuje zdarzenia klawiszy, które dają dane (np. Ctrl+K, Ctrl+PageDown), więc skróty
-    // aplikacji trzeba przepuścić jawnie: `false` oznacza, że xterm nie wyśle ich do serwera.
+    // xterm zatrzymuje zdarzenia klawiszy, które dają dane (np. Ctrl+PageDown), więc skróty aplikacji
+    // trzeba przepuścić jawnie: `false` oznacza, że xterm nie wyśle ich do serwera. Dlatego skróty
+    // domyślne omijają klawisze sterujące powłoki (patrz `ACTIONS`).
     term.attachCustomKeyEventHandler((e) => !matchAction(ui.doc?.settings, e));
     term.onData((s) => sessionId && void sshWrite(sessionId, encoder.encode(s)));
     term.onBinary((s) => sessionId && void sshWrite(sessionId, Uint8Array.from(s, (c) => c.charCodeAt(0))));

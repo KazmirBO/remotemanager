@@ -20,7 +20,7 @@
   import Terminal from './lib/Terminal.svelte';
   import TrustDialog from './lib/TrustDialog.svelte';
   import Unlock from './lib/Unlock.svelte';
-  import { allowedWithModal, matchAction } from './lib/shortcuts';
+  import { allowedWithModal, binding, matchAction } from './lib/shortcuts';
   import { api } from './lib/api';
   import { applyTheme, closeTab, host as hostById, init, lockVault, modalOpen, notify, onLocked, openHost, refreshSync, ui } from './lib/store.svelte';
 
@@ -77,8 +77,7 @@
       // Link nigdy nie łączy sam: pokazujemy pasujący host w drzewie i pytamy.
       if (existing) {
         ui.reveal = existing.id;
-        const port = l.port ?? (l.protocol === 'rdp' ? 3389 : 22);
-        dialog = { kind: 'link', host: existing, target: `${l.host}:${port}` };
+        dialog = { kind: 'link', host: existing, target: `${l.host}:${l.resolved_port}` };
         return;
       }
       dialog = {
@@ -179,7 +178,7 @@
         {#if ui.tabs.length === 0}
           <div class="welcome muted">
             <Icon name="terminal" size={28} />
-            <p>Kliknij dwukrotnie hosta w panelu albo naciśnij <kbd>Ctrl</kbd>+<kbd>K</kbd>, aby połączyć.</p>
+            <p>Kliknij dwukrotnie hosta w panelu albo naciśnij <kbd>{binding(ui.doc?.settings, 'quick_connect')}</kbd>, aby połączyć.</p>
           </div>
         {/if}
       </div>

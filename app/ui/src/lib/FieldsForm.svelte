@@ -101,11 +101,14 @@
       {#each jumpCandidates as h (h.id)}<option value={h.id}>{h.name} ({h.address})</option>{/each}
     </select>
     {#if fields.jump_host === null && hint('jump_host')}
-      {@const v = inherited(folders, startFolder, 'jump_host')}
-      {#if v?.value === selfId}
-        <span class="hint"><Icon name="route" size={12} /> Katalog „{v?.from}” wskazuje ten host jako bastion, więc on sam łączy się bezpośrednio.</span>
+      {@const own = inherited(folders, startFolder, 'jump_host')}
+      {@const v = inherited(folders, startFolder, 'jump_host', selfId ?? undefined)}
+      {#if v}
+        <span class="hint">
+          <Icon name="route" size={12} /> Dziedziczone z „{v.from}”: {hosts.find((h) => h.id === v.value)?.name ?? '?'}{own?.value === selfId ? ` (katalog „${own.from}” wskazuje ten host, więc jest pomijany)` : ''}
+        </span>
       {:else}
-        <span class="hint"><Icon name="route" size={12} /> Dziedziczone z „{v?.from}”: {hosts.find((h) => h.id === v?.value)?.name ?? '?'}</span>
+        <span class="hint"><Icon name="route" size={12} /> Katalog „{own?.from}” wskazuje ten host jako bastion, więc on sam łączy się bezpośrednio.</span>
       {/if}
     {/if}
   </div>

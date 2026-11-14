@@ -176,7 +176,9 @@ const handlers: Record<string, Handler> = {
     const m = /^(ssh|rdp):\/\/(?:([^@/]+)@)?([^:/?]+)(?::(\d+))?/i.exec(url);
     if (!m) throw 'Nieprawidłowy link: nieobsługiwany schemat (oczekiwano ssh:// albo rdp://).';
     const host = doc.hosts.find((h) => h.protocol === m[1].toLowerCase() && h.address === m[3]);
-    return { protocol: m[1].toLowerCase(), host: m[3], port: m[4] ? Number(m[4]) : null, username: m[2] ?? null, domain: null, matching_host: host?.id ?? null };
+    const port = m[4] ? Number(m[4]) : null;
+    const resolved_port = port ?? (m[1].toLowerCase() === 'rdp' ? 3389 : 22);
+    return { protocol: m[1].toLowerCase(), host: m[3], port, resolved_port, username: m[2] ?? null, domain: null, matching_host: host?.id ?? null };
   },
   take_pending_link: () => params.get('link'),
   ssh_resize: () => {},

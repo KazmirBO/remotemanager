@@ -203,13 +203,15 @@ pub async fn connect_rdp(
                         body.extend_from_slice(&v.to_le_bytes());
                     }
                     body.extend_from_slice(&img.rgba);
-                    let sent = body.len() as u64;
+                    // Liczymy przed wysłaniem: potwierdzenie z interfejsu może przyjść, zanim ta
+                    // pętla wróci do pracy, a odjęte od licznika bez tej ramki zostałoby obcięte
+                    // do zera i jej bajty zalegałyby w oknie na stałe.
+                    flow.sent(body.len() as u64);
                     if on_event.send(InvokeResponseBody::Raw(body)).is_err() {
                         break;
                     }
                     // Po przekroczeniu okna czekamy na potwierdzenia z interfejsu; koniec sesji
                     // (zamknięcie karty, blokada pliku) przerywa czekanie.
-                    flow.sent(sent);
                     let alive = || {
                         app.state::<AppState>()
                             .rdp

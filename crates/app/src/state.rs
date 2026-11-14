@@ -86,26 +86,26 @@ impl AppState {
     }
 
     /// Przed zapisem: czy plik jest zsynchronizowany, więc po zapisie można go wysłać automatycznie.
-    pub fn sync_pre(&self) -> Option<PathBuf> {
-        let (folder, base) = {
-            let c = self.config.lock().expect("config");
-            (c.sync_folder.clone()?, c.sync_base.clone())
-        };
-        matches!(
-            sync::status(&self.path, &folder, base.as_deref()),
-            Ok(sync::Status::InSync)
-        )
-        .then_some(folder)
+    /// Zwraca folder i wspólny skrót obu stron. To on jest bazą dla wysyłki po zapisie, a nie
+    /// `sync_base` z konfiguracji, które bywa puste albo nieaktualne (ustawienie folderu je zeruje),
+    /// przez co zwykły zapis wyglądałby jak konflikt i wysyłka cicho by ustała.
+    pub fn sync_pre(&self) -> Option<(PathBuf, String)> {
+        let folder = self.config.lock().expect("config").sync_folder.clone()?;
+        if !folder.is_dir() {
+            return None;
+        }
+        let local = sync::file_hash(&self.path).ok()??;
+        let remote = sync::file_hash(&sync::remote_path(&folder)).ok()??;
+        (local == remote).then_some((folder, local))
     }
 
     /// Po zapisie: wysyła plik, jeśli przed zapisem był zsynchronizowany. Stan sprawdzamy ponownie,
     /// bo w trakcie zapisu zdalny plik mógł się zmienić (np. Syncthing dostarczył wersję z innej
     /// maszyny); wtedy nie wysyłamy, a użytkownik zobaczy konflikt w oknie synchronizacji.
     /// Błąd trafia tylko do dziennika.
-    pub fn sync_post(&self, pre: Option<PathBuf>) {
-        let Some(folder) = pre else { return };
-        let base = self.config.lock().expect("config").sync_base.clone();
-        match sync::status(&self.path, &folder, base.as_deref()) {
+    pub fn sync_post(&self, pre: Option<(PathBuf, String)>) {
+        let Some((folder, base)) = pre else { return };
+        match sync::status(&self.path, &folder, Some(&base)) {
             Ok(sync::Status::LocalChanged) => {}
             Ok(st) => {
                 self.log(format!(
@@ -120,7 +120,7 @@ impl AppState {
                 return;
             }
         }
-        match sync::push(&self.path, &folder, base.as_deref()) {
+        match sync::push(&self.path, &folder, Some(&base)) {
             Ok(hash) => {
                 self.config.lock().expect("config").sync_base = Some(hash);
                 self.save_config();
@@ -277,6 +277,46 @@ mod tests {
                 .iter()
                 .all(|l| !l.contains("zmiana z innej maszyny"))
         );
+    }
+
+    #[tokio::test]
+    async fn autosync_works_without_stored_base() {
+        let state = unlocked("autosync-nobase").await;
+        let remote = state.data_dir.join("remote");
+        std::fs::create_dir_all(&remote).unwrap();
+        // Folder ma już identyczny plik, a bazy nie ma (tak jest po ustawieniu folderu).
+        std::fs::copy(&state.path, sync::remote_path(&remote)).unwrap();
+        state.config.lock().unwrap().sync_folder = Some(remote.clone());
+        assert_eq!(state.config.lock().unwrap().sync_base, None);
+        state
+            .mutate(|d| {
+                d.tree
+                    .add_folder("A", None)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&state.path).unwrap(),
+            std::fs::read(sync::remote_path(&remote)).unwrap(),
+            "zapis został wysłany mimo braku bazy"
+        );
+        assert_eq!(
+            state.config.lock().unwrap().sync_base,
+            sync::file_hash(&state.path).unwrap()
+        );
+        let konflikty = std::fs::read_dir(&remote)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".konflikt-")
+            })
+            .count();
+        assert_eq!(konflikty, 0);
     }
 
     #[tokio::test]

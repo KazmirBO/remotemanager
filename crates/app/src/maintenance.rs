@@ -272,6 +272,9 @@ pub struct LinkView {
     protocol: model::Protocol,
     host: String,
     port: Option<u16>,
+    /// Port po rozstrzygnięciu: z linku albo domyślny dla protokołu. Jedno źródło dla dopasowania
+    /// hosta i dla tekstu pytania w interfejsie.
+    resolved_port: u16,
     username: Option<String>,
     domain: Option<String>,
     /// Zapisany host o tym samym adresie, protokole i porcie (link bez portu oznacza port
@@ -299,6 +302,7 @@ fn link_view(doc: &Document, link: Link) -> LinkView {
         protocol: link.protocol,
         host: link.host,
         port: link.port,
+        resolved_port: port,
         username: link.username,
         domain: link.domain,
         matching_host,
@@ -339,6 +343,13 @@ mod tests {
         assert_eq!(link("ssh://srv"), None, "port domyślny 22 to inny host");
         assert_eq!(link("ssh://srv:2222"), Some(h));
         assert_eq!(link("rdp://srv:2222"), None, "inny protokół");
+        let view = |u: &str| link_view(&doc, parse_link(u).unwrap());
+        assert_eq!(
+            (view("ssh://srv").port, view("ssh://srv").resolved_port),
+            (None, 22)
+        );
+        assert_eq!(view("rdp://srv").resolved_port, 3389);
+        assert_eq!(view("ssh://srv:2222").resolved_port, 2222);
     }
 
     #[test]
