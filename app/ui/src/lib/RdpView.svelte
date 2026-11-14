@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { connectRdp, rdpClipboardFocus, rdpClose, rdpSend, type Id } from './api';
   import Icon from './Icon.svelte';
+  import { desktopSize } from './rdpSize';
   import { scancodeFor } from './scancodes';
   import { matchAction } from './shortcuts';
   import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsPassword, notify, reconnect, requestPassword, ui } from './store.svelte';
@@ -99,10 +100,17 @@
     buttons.clear();
   }
 
+  // Obraz jest zawsze rysowany 1:1, bez skalowania. Za rozmiarem okna podąża rozdzielczość zdalnego
+  // pulpitu (prośba do serwera po chwili spokoju). Dopóki serwer jej nie zmieni albo gdy zmiany nie
+  // obsługuje, mniejszy pulpit zostaje w lewym górnym rogu, a większy da się przewijać.
   function resizeCanvas(w: number, h: number) {
     canvas.width = w;
     canvas.height = h;
   }
+
+  /** Miejsce na pulpit w oknie. Wymiary zewnętrzne, razem z paskami przewijania: liczone bez nich
+   * dałyby mniejszy pulpit, po którego ustawieniu paski znikają i trzeba by prosić serwer drugi raz. */
+  const room = () => ({ width: stage.offsetWidth, height: stage.offsetHeight });
 
   let fullscreen = $state(false);
   async function toggleFullscreen() {
@@ -124,10 +132,29 @@
   onMount(() => {
     let disposed = false;
     const ctx = canvas.getContext('2d', { alpha: false })!;
-    // Rozmiar pulpitu dopasowany do dostępnego miejsca (wielokrotność 4).
-    const width = Math.max(200, Math.floor(stage.clientWidth / 4) * 4);
-    const height = Math.max(200, Math.floor(stage.clientHeight / 4) * 4);
+    // Rozmiar pulpitu dopasowany do dostępnego miejsca.
+    const first = room();
+    const { width, height } = desktopSize(first.width, first.height);
     resizeCanvas(width, height);
+
+    // Prośba do serwera o pulpit pasujący do miejsca, po chwili spokoju. Ten sam rozmiar nie jest
+    // wysyłany drugi raz: serwer, który go nie przyjął albo przyciął do własnego limitu, odpowiadałby
+    // w kółko tą samą reaktywacją sesji.
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+    let requested = `${width}x${height}`;
+    const scheduleResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        const box = room();
+        // Ukryta karta albo okno w trakcie zwijania nie mają wymiarów.
+        if (status !== 'connected' || !box.width || !box.height) return;
+        const want = desktopSize(box.width, box.height);
+        const key = `${want.width}x${want.height}`;
+        if (key === requested || (want.width === canvas.width && want.height === canvas.height)) return;
+        requested = key;
+        send({ t: 'resize', ...want });
+      }, 400);
+    };
 
     const attempt = (password: string | null): Promise<string> =>
       connectRdp(
@@ -137,6 +164,8 @@
           if (c.t === 'connected' || c.t === 'resized') {
             resizeCanvas(c.width, c.height);
             status = 'connected';
+            // Okno mogło zmienić rozmiar w trakcie łączenia albo reaktywacji sesji.
+            scheduleResize();
             if (active) queueMicrotask(() => !modalOpen() && canvas?.focus());
           } else if (c.t === 'notice') {
             notify(c.message);
@@ -168,16 +197,7 @@
       });
 
     // Zmiana rozmiaru okna: po chwili spokoju prosimy serwer o pulpit pasujący do miejsca.
-    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
-    const observer = new ResizeObserver(() => {
-      clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => {
-        if (status !== 'connected' || !stage.clientWidth) return;
-        const w = Math.max(200, Math.floor(stage.clientWidth / 4) * 4);
-        const h = Math.max(200, Math.floor(stage.clientHeight / 4) * 4);
-        if (w !== canvas.width || h !== canvas.height) send({ t: 'resize', width: w, height: h });
-      }, 400);
-    });
+    const observer = new ResizeObserver(scheduleResize);
     observer.observe(stage);
 
     return () => {
@@ -246,8 +266,10 @@
 <style>
   .wrap { position: absolute; inset: 0; background: var(--terminal); }
   .wrap.hidden { visibility: hidden; pointer-events: none; }
-  .stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-  canvas { max-width: 100%; max-height: 100%; outline-offset: -2px; background: #000; cursor: default; }
+  /* Pulpit większy od okna (serwer bez zmiany rozdzielczości) da się przewijać, zamiast go zmniejszać. */
+  .stage { position: absolute; inset: 0; overflow: auto; }
+  /* Bez `max-width`: obraz jest zawsze 1:1. */
+  canvas { display: block; outline-offset: -2px; background: #000; cursor: default; }
   .bar { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; padding: 4px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-control); opacity: 0.35; transition: opacity 0.15s; }
   .bar:hover, .bar:focus-within { opacity: 1; }
   .overlay { position: absolute; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--terminal) 80%, transparent); }

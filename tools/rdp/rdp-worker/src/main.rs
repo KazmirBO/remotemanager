@@ -38,10 +38,20 @@ type Framed = ironrdp_blocking::Framed<Tls>;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(15);
 const FLUSH_EVERY: Duration = Duration::from_millis(16);
+/// Ile czekamy, aż serwer otworzy kanał Display Control i zgłosi swoje możliwości, zanim uznamy,
+/// że zmiany rozdzielczości w trakcie sesji nie obsługuje.
+const RESIZE_WAIT: Duration = Duration::from_secs(5);
 
 pub(crate) fn emit(ev: &FromWorker) {
     let mut out = io::stdout().lock();
     let _ = rdp_proto::write_json(&mut out, ev);
+}
+
+/// Wpis do dziennika diagnostycznego aplikacji. Nigdy z treścią schowka, hasłem ani nazwami plików.
+pub(crate) fn log(message: impl Into<String>) {
+    emit(&FromWorker::Log {
+        message: message.into(),
+    });
 }
 
 pub(crate) fn emit_clip(kind: ClipKind, data: &[u8]) {
@@ -55,6 +65,10 @@ fn emit_image(img: &Image) {
 }
 
 fn main() {
+    // Pierwsza wiadomość: wersja protokołu, po której aplikacja rozpoznaje niezgodny (stary) proces.
+    emit(&FromWorker::Hello {
+        protocol: rdp_proto::PROTOCOL,
+    });
     let (tx, rx) = mpsc::channel::<ToWorker>();
     std::thread::spawn(move || {
         let mut stdin = io::stdin().lock();
@@ -134,6 +148,9 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
     let mut input = Database::new();
     let mut dirty = Dirty::default();
     let mut last_flush = Instant::now();
+    // Prośba o zmianę rozdzielczości czekająca na gotowość kanału (rozmiar i chwila zgłoszenia).
+    let mut pending_resize: Option<(u32, u32, Instant)> = None;
+    let mut resize_refused = false;
     loop {
         loop {
             match rx.try_recv() {
@@ -153,9 +170,8 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
                         u32::from(width.clamp(200, 8192) & !1),
                         u32::from(height.clamp(200, 8192)),
                     );
-                    if let Some(Ok(frame)) = stage.encode_resize(w, h, None, None) {
-                        framed.write_all(&frame).context("zapis zmiany rozmiaru")?;
-                    }
+                    // Nowsza prośba zastępuje czekającą; wysyłka niżej, gdy kanał jest gotowy.
+                    pending_resize = Some((w, h, Instant::now()));
                 }
                 Ok(cmd) => {
                     if clip.on_command(&cmd, &mut stage, &mut |b| framed.write_all(b))? {
@@ -169,6 +185,31 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
                     }
                 }
                 Err(TryRecvError::Empty) => break,
+            }
+        }
+
+        if let Some((w, h, since)) = pending_resize {
+            let sent = match resize_step(display_control_ready(&mut stage), since.elapsed()) {
+                ResizeStep::Wait => None,
+                ResizeStep::GiveUp => Some(false),
+                ResizeStep::Send => match stage.encode_resize(w, h, None, None) {
+                    Some(Ok(frame)) => {
+                        framed.write_all(&frame).context("zapis zmiany rozmiaru")?;
+                        Some(true)
+                    }
+                    _ => Some(false),
+                },
+            };
+            if sent.is_some() {
+                pending_resize = None;
+            }
+            // Brak obsługi zgłaszamy raz na sesję, żeby okno nie zalewało powiadomieniami przy każdej
+            // zmianie rozmiaru.
+            if sent == Some(false) && !resize_refused {
+                resize_refused = true;
+                emit(&FromWorker::Notice {
+                    message: "Serwer nie obsługuje zmiany rozdzielczości w trakcie sesji. Pulpit zostaje w rozmiarze z chwili połączenia.".into(),
+                });
             }
         }
 
@@ -220,6 +261,36 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
             flush(&image, &mut dirty);
             last_flush = Instant::now();
         }
+    }
+}
+
+/// Czy serwer otworzył kanał Display Control i przysłał swoje możliwości. Prośba o zmianę rozmiaru
+/// wysłana wcześniej jest wbrew MS-RDPEDISP (klient ma czekać na możliwości serwera) i serwer może
+/// ją pominąć, a biblioteka sama tego nie sprawdza.
+fn display_control_ready(stage: &mut ActiveStage) -> bool {
+    stage
+        .get_dvc::<DisplayControlClient>()
+        .filter(|dvc| dvc.channel_id().is_some())
+        .and_then(|dvc| dvc.channel_processor_downcast_ref::<DisplayControlClient>())
+        .is_some_and(DisplayControlClient::ready)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ResizeStep {
+    Send,
+    Wait,
+    GiveUp,
+}
+
+/// Co zrobić z czekającą prośbą o zmianę rozdzielczości: wysłać, gdy kanał jest gotowy, poczekać
+/// chwilę na serwer (kanał otwiera się krótko po połączeniu), a potem uznać, że serwer jej nie obsługuje.
+fn resize_step(ready: bool, waited: Duration) -> ResizeStep {
+    if ready {
+        ResizeStep::Send
+    } else if waited >= RESIZE_WAIT {
+        ResizeStep::GiveUp
+    } else {
+        ResizeStep::Wait
     }
 }
 
@@ -671,6 +742,18 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_waits_for_display_control_then_gives_up() {
+        assert_eq!(resize_step(true, Duration::ZERO), ResizeStep::Send);
+        assert_eq!(resize_step(true, RESIZE_WAIT * 2), ResizeStep::Send);
+        assert_eq!(resize_step(false, Duration::ZERO), ResizeStep::Wait);
+        assert_eq!(
+            resize_step(false, RESIZE_WAIT - Duration::from_millis(1)),
+            ResizeStep::Wait
+        );
+        assert_eq!(resize_step(false, RESIZE_WAIT), ResizeStep::GiveUp);
+    }
 
     #[test]
     fn dirty_rectangles_are_merged() {

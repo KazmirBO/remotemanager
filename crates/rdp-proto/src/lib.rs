@@ -14,6 +14,12 @@ use serde::{Deserialize, Serialize};
 
 /// Górny limit ramki, żeby uszkodzony strumień nie powodował ogromnej alokacji.
 pub const MAX_FRAME: usize = 64 * 1024 * 1024;
+
+/// Wersja protokołu między aplikacją a procesem RDP. Proces podaje ją w pierwszej wiadomości
+/// (`FromWorker::Hello`), a aplikacja odrzuca proces, który jej nie podał albo podał inną. Zwiększaj
+/// przy każdej zmianie `ToWorker`, `FromWorker` albo ramek: stary proces obok nowej aplikacji działał
+/// po cichu bez nowszych funkcji (np. bez schowka), co wyglądało jak błąd w aplikacji.
+pub const PROTOCOL: u32 = 1;
 const KIND_JSON: u8 = 1;
 const KIND_IMAGE: u8 = 2;
 const KIND_CLIP: u8 = 3;
@@ -183,8 +189,17 @@ pub enum FromWorker {
     ClipFilesDone {
         paths: Vec<String>,
     },
+    /// Pierwsza wiadomość procesu: wersja protokołu (`PROTOCOL`).
+    Hello {
+        protocol: u32,
+    },
     /// Informacja dla użytkownika (np. błąd przenoszenia plików).
     Notice {
+        message: String,
+    },
+    /// Wpis do dziennika diagnostycznego aplikacji (np. etapy inicjalizacji schowka). Nie trafia do
+    /// interfejsu i nie może zawierać treści schowka ani haseł.
+    Log {
         message: String,
     },
     Error {
@@ -489,6 +504,10 @@ mod tests {
             FromWorker::Notice {
                 message: "zażółć".into(),
             },
+            FromWorker::Log {
+                message: "schowek: kanał zainicjowany".into(),
+            },
+            FromWorker::Hello { protocol: PROTOCOL },
         ] {
             assert_eq!(
                 parse_json::<FromWorker>(&serde_json::to_vec(&ev).unwrap()).unwrap(),

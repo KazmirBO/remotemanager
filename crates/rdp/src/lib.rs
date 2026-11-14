@@ -36,7 +36,8 @@ pub enum Event {
     },
 }
 
-/// Szuka procesu: zmienna `MRM_RDP_WORKER`, potem katalog pliku wykonywalnego aplikacji.
+/// Szuka procesu: zmienna `MRM_RDP_WORKER`, potem plik obok aplikacji albo (w wersji deweloperskiej)
+/// świeżo zbudowany proces z workspace `tools/rdp`; kolejność tych dwóch ustala `pick_worker`.
 pub fn find_worker() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("MRM_RDP_WORKER").map(PathBuf::from)
         && p.is_file()
@@ -45,24 +46,43 @@ pub fn find_worker() -> Option<PathBuf> {
     }
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    let sibling = dir.join(WORKER_NAME);
-    if sibling.is_file() {
-        return Some(sibling);
-    }
+    let sibling = Some(dir.join(WORKER_NAME)).filter(|p| p.is_file());
     // Tryb deweloperski: aplikacja w `target/<profil>/`, proces w osobnym workspace `tools/rdp`.
-    if cfg!(debug_assertions) {
-        let profile = dir.file_name()?;
-        let dev = dir
+    let dev = (|| {
+        let name = if cfg!(windows) {
+            "rdp-worker.exe"
+        } else {
+            "rdp-worker"
+        };
+        let path = dir
             .parent()?
             .parent()?
             .join("tools/rdp/target")
-            .join(profile)
-            .join("rdp-worker");
-        if dev.is_file() {
-            return Some(dev);
-        }
-    }
-    None
+            .join(dir.file_name()?)
+            .join(name);
+        path.is_file().then_some(path)
+    })();
+    pick_worker(sibling, dev, cfg!(debug_assertions))
+}
+
+/// Wybór procesu spośród kandydatów. W wersji deweloperskiej pierwszeństwo ma proces zbudowany
+/// w `tools/rdp/target`: plik obok aplikacji jest tam kopią sidecara z `crates/app/binaries`, którą
+/// budowa aplikacji przenosi bez odświeżania, więc po zmianach procesu zostawała stara wersja
+/// i aplikacja po cichu działała bez nowszych funkcji. W wydaniu liczy się tylko plik obok aplikacji.
+fn pick_worker(sibling: Option<PathBuf>, dev: Option<PathBuf>, debug: bool) -> Option<PathBuf> {
+    if debug { dev.or(sibling) } else { sibling }
+}
+
+/// Czy pierwsza wiadomość procesu to powitanie ze zgodną wersją protokołu.
+fn greeting_ok(first: &FromWorker) -> bool {
+    matches!(first, FromWorker::Hello { protocol } if *protocol == rdp_proto::PROTOCOL)
+}
+
+fn mismatch_message(worker: &Path) -> String {
+    format!(
+        "Proces RDP ({}) jest w innej wersji niż aplikacja. Zbuduj go ponownie: cargo build --manifest-path tools/rdp/Cargo.toml (pakiet: scripts/build-release.sh).",
+        worker.display()
+    )
 }
 
 struct Inner {
@@ -112,14 +132,26 @@ impl RdpClient {
 
         // Wątek trzyma tylko słabą referencję, żeby zwolnienie ostatniego `RdpClient` kończyło proces.
         let inner = Arc::downgrade(&inner);
+        let worker = worker.to_owned();
         std::thread::spawn(move || {
             let mut finished = false;
+            // Pierwsza wiadomość musi być powitaniem ze zgodną wersją protokołu; inaczej sesja kończy
+            // się czytelnym błędem, zanim niezgodny proces zacznie po cichu pomijać polecenia.
+            let mut greeted = false;
             loop {
                 match rdp_proto::read_message(&mut stdout) {
                     Ok(Some(rdp_proto::Message::Json(bytes))) => match rdp_proto::parse_json::<
                         FromWorker,
                     >(&bytes)
                     {
+                        Ok(ev) if !greeted && greeting_ok(&ev) => greeted = true,
+                        Ok(_) | Err(_) if !greeted => {
+                            finished = true;
+                            let message = mismatch_message(&worker);
+                            let _ =
+                                events.blocking_send(Event::Worker(FromWorker::Error { message }));
+                            break;
+                        }
                         Ok(ev) => {
                             finished |=
                                 matches!(ev, FromWorker::Closed { .. } | FromWorker::Error { .. });
@@ -211,5 +243,37 @@ impl Drop for Inner {
             let _ = c.kill();
             let _ = c.wait();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn development_build_prefers_freshly_built_worker_over_stale_sidecar_copy() {
+        let sibling = || Some(PathBuf::from("target/debug/multiremotemanager-rdp-worker"));
+        let dev = || Some(PathBuf::from("tools/rdp/target/debug/rdp-worker"));
+        assert_eq!(pick_worker(sibling(), dev(), true), dev());
+        assert_eq!(pick_worker(sibling(), None, true), sibling());
+        // Wydanie: tylko plik obok aplikacji, nigdy katalog deweloperski.
+        assert_eq!(pick_worker(sibling(), dev(), false), sibling());
+        assert_eq!(pick_worker(None, dev(), false), None);
+    }
+
+    #[test]
+    fn worker_must_greet_with_matching_protocol() {
+        assert!(greeting_ok(&FromWorker::Hello {
+            protocol: rdp_proto::PROTOCOL
+        }));
+        assert!(!greeting_ok(&FromWorker::Hello {
+            protocol: rdp_proto::PROTOCOL + 1
+        }));
+        // Stary proces zaczynał od certyfikatu, bez powitania.
+        assert!(!greeting_ok(&FromWorker::Cert {
+            fingerprint: "aa".into(),
+            subject: String::new(),
+        }));
+        assert!(mismatch_message(Path::new("/x/rdp-worker")).contains("/x/rdp-worker"));
     }
 }

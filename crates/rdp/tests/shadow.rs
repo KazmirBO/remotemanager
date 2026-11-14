@@ -289,3 +289,51 @@ async fn rejected_certificate_stops_before_credentials() {
     };
     assert!(message.contains("odrzucony"), "{message}");
 }
+
+#[tokio::test]
+async fn resize_request_is_answered_and_never_silent() {
+    let (Some(worker), Some(server)) = (worker(), start_server()) else {
+        return eprintln!(
+            "pominięto: brak procesu rdp-worker, freerdp-shadow-cli, openssl albo DISPLAY"
+        );
+    };
+    let (tx, mut rx) = channel(rdp::EVENT_QUEUE);
+    let client = RdpClient::spawn(&worker, params(&server, &server.password), tx).unwrap();
+    assert!(matches!(
+        next(&mut rx).await,
+        Event::Worker(FromWorker::Cert { .. })
+    ));
+    client.send(&ToWorker::Trust { accept: true }).unwrap();
+    loop {
+        match next(&mut rx).await {
+            Event::Worker(FromWorker::Connected { .. }) => break,
+            Event::Worker(FromWorker::Error { message }) => panic!("błąd procesu: {message}"),
+            _ => {}
+        }
+    }
+    client
+        .send(&ToWorker::Resize {
+            width: 320,
+            height: 240,
+        })
+        .unwrap();
+    // Serwer albo zmienia rozdzielczość (`Resized`), albo proces zgłasza, że serwer tego nie
+    // obsługuje (`Notice`). Cisza zostawiałaby użytkownika bez wyjaśnienia.
+    let answer = loop {
+        match next(&mut rx).await {
+            Event::Worker(FromWorker::Resized { width, height }) => {
+                break format!("serwer zmienił rozdzielczość na {width}x{height}");
+            }
+            Event::Worker(FromWorker::Notice { message }) => {
+                assert!(message.contains("rozdzielczości"), "{message}");
+                break message;
+            }
+            // Wpisy diagnostyczne procesu (np. etapy inicjalizacji schowka) są tylko wypisywane.
+            Event::Worker(FromWorker::Log { message }) => eprintln!("dziennik: {message}"),
+            Event::Worker(FromWorker::Error { message }) => panic!("błąd procesu: {message}"),
+            _ => {}
+        }
+    };
+    eprintln!("odpowiedź na prośbę o zmianę rozdzielczości: {answer}");
+    client.close();
+}

@@ -43,6 +43,10 @@ pub type Out<'a> = dyn FnMut(&[u8]) -> io::Result<()> + 'a;
 
 /// Zdarzenia z kanału schowka do pętli głównej (backend nie ma dostępu do połączenia).
 pub enum ClipEvent {
+    /// Serwer zgłosił gotowość (Monitor Ready) i czeka na możliwości oraz listę formatów klienta.
+    InitRequested,
+    /// Serwer przyjął pierwszą listę formatów: kanał jest zainicjowany.
+    Ready,
     RemoteFormats(Vec<ClipboardFormat>),
     DataRequest(ClipboardFormatId),
     /// `None` oznacza odmowę serwera.
@@ -73,8 +77,12 @@ impl CliprdrBackend for ClipBackend {
             | ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
             | ClipboardGeneralCapabilityFlags::FILECLIP_NO_FILE_PATHS
     }
-    fn on_ready(&mut self) {}
-    fn on_request_format_list(&mut self) {}
+    fn on_ready(&mut self) {
+        let _ = self.tx.send(ClipEvent::Ready);
+    }
+    fn on_request_format_list(&mut self) {
+        let _ = self.tx.send(ClipEvent::InitRequested);
+    }
     fn on_process_negotiated_capabilities(&mut self, _: ClipboardGeneralCapabilityFlags) {}
     fn on_remote_copy(&mut self, formats: &[ClipboardFormat]) {
         let _ = self.tx.send(ClipEvent::RemoteFormats(formats.to_vec()));
@@ -150,6 +158,53 @@ impl RemoteFormats {
     }
 }
 
+/// Etap inicjalizacji kanału schowka (MS-RDPECLIP 3.2.5.1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Phase {
+    /// Serwer nie zgłosił jeszcze gotowości: wszystko, co byśmy wysłali, przepadnie.
+    #[default]
+    Waiting,
+    /// Wysłaliśmy możliwości i pierwszą listę formatów, czekamy na potwierdzenie.
+    Initializing,
+    Ready,
+}
+
+/// Ostatnie ogłoszenie lokalnego schowka od aplikacji.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Announced {
+    Formats(Vec<ClipKind>),
+    Files(Vec<String>),
+}
+
+/// Czy ogłoszenie można już wysłać serwerowi. Przed zgłoszeniem gotowości serwer niczego nie
+/// odbiera, a lista plików wymaga zainicjowanego kanału (biblioteka ją wcześniej odrzuca).
+fn can_send(phase: Phase, files: bool) -> bool {
+    match phase {
+        Phase::Waiting => false,
+        Phase::Initializing => !files,
+        Phase::Ready => true,
+    }
+}
+
+fn kinds_label(kinds: &[ClipKind], files: bool) -> String {
+    let mut names: Vec<&str> = kinds
+        .iter()
+        .map(|k| match k {
+            ClipKind::Text => "tekst",
+            ClipKind::Html => "HTML",
+            ClipKind::Image => "obraz",
+        })
+        .collect();
+    if files {
+        names.push("pliki");
+    }
+    if names.is_empty() {
+        "nic".into()
+    } else {
+        names.join(", ")
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pending {
     Data(ClipKind),
@@ -208,6 +263,12 @@ struct Download {
 
 #[derive(Default)]
 pub struct ClipState {
+    phase: Phase,
+    /// Ostatnie ogłoszenie od aplikacji. Trzymane, bo zwykle przychodzi, zanim serwer jest gotowy,
+    /// a aplikacja nie powtarza ogłoszenia tej samej zawartości.
+    announced: Option<Announced>,
+    /// Czy serwer dostał bieżące ogłoszenie.
+    in_sync: bool,
     remote: RemoteFormats,
     pending: Option<Pending>,
     local_files: Vec<LocalEntry>,
@@ -282,6 +343,26 @@ impl ClipState {
         out: &mut Out<'_>,
     ) -> anyhow::Result<()> {
         match ev {
+            ClipEvent::InitRequested => {
+                // Odpowiedź na gotowość serwera kończy inicjalizację: biblioteka dokłada do pierwszej
+                // listy formatów możliwości klienta. Bez niej schowek nie działa w żadną stronę.
+                self.phase = Phase::Initializing;
+                let kinds = match &self.announced {
+                    Some(Announced::Formats(kinds)) => kinds.clone(),
+                    _ => Vec::new(),
+                };
+                self.send_formats(&kinds, stage, out)?;
+                self.in_sync = !matches!(self.announced, Some(Announced::Files(_)));
+                crate::log(format!(
+                    "schowek: serwer gotowy, wysłano listę formatów ({})",
+                    kinds_label(&kinds, false)
+                ));
+            }
+            ClipEvent::Ready => {
+                self.phase = Phase::Ready;
+                crate::log("schowek: kanał zainicjowany");
+                self.flush_announcement(stage, out)?;
+            }
             ClipEvent::RemoteFormats(formats) => {
                 self.remote = RemoteFormats::from_list(&formats);
                 // Nowa zawartość zdalnego schowka unieważnia poprzednią listę plików, trwające
@@ -293,13 +374,23 @@ impl ClipState {
                         "Schowek na serwerze się zmienił, przerwano pobieranie plików.",
                     );
                 }
+                crate::log(format!(
+                    "schowek: serwer ogłosił: {}",
+                    kinds_label(&self.remote.kinds(), self.remote.file_list.is_some())
+                ));
                 crate::emit(&FromWorker::ClipRemote {
                     kinds: self.remote.kinds(),
                     files: self.remote.file_list.is_some(),
                 });
             }
             ClipEvent::DataRequest(id) => match kind_of_format(id) {
-                Some(kind) => crate::emit(&FromWorker::ClipRequest { kind }),
+                Some(kind) => {
+                    crate::log(format!(
+                        "schowek: serwer prosi o dane: {}",
+                        kinds_label(&[kind], false)
+                    ));
+                    crate::emit(&FromWorker::ClipRequest { kind });
+                }
                 None => self.respond_format(stage, out, FormatDataResponse::new_error())?,
             },
             ClipEvent::DataResponse(data) => self.on_data_response(data),
@@ -330,42 +421,14 @@ impl ClipState {
     ) -> anyhow::Result<bool> {
         match cmd {
             ToWorker::ClipAnnounce { kinds } => {
-                let formats: Vec<ClipboardFormat> = kinds
-                    .iter()
-                    .map(|k| match k {
-                        ClipKind::Text => ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
-                        ClipKind::Html => ClipboardFormat::new(ClipboardFormatId(HTML_FORMAT_ID))
-                            .with_name(ClipboardFormatName::HTML),
-                        ClipKind::Image => ClipboardFormat::new(ClipboardFormatId::CF_DIB),
-                    })
-                    .collect();
-                self.local_files.clear();
-                if let Some(Ok(msgs)) = stage
-                    .get_svc_processor_mut::<Cliprdr<Client>>()
-                    .map(|c| c.initiate_copy(&formats))
-                {
-                    send(stage, out, msgs)?;
-                }
+                self.announced = Some(Announced::Formats(kinds.clone()));
+                self.in_sync = false;
+                self.flush_announcement(stage, out)?;
             }
             ToWorker::ClipAnnounceFiles { paths } => {
-                let (descs, entries, skipped) = build_local_files(paths);
-                if skipped > 0 {
-                    notice(format!(
-                        "Pominięto {skipped} elementów (dowiązania, zbyt długie nazwy albo limit {MAX_ENTRIES})."
-                    ));
-                }
-                if descs.is_empty() {
-                    return Ok(true);
-                }
-                self.local_files = entries;
-                if let Some(Ok(msgs)) = stage
-                    .get_svc_processor_mut::<Cliprdr<Client>>()
-                    .map(|c| c.initiate_file_copy(descs))
-                {
-                    send(stage, out, msgs)?;
-                } else {
-                    notice("Serwer nie obsługuje przesyłania plików przez schowek.");
-                }
+                self.announced = Some(Announced::Files(paths.clone()));
+                self.in_sync = false;
+                self.flush_announcement(stage, out)?;
             }
             ToWorker::ClipFetch { kind } => {
                 let id = match kind {
@@ -410,6 +473,92 @@ impl ClipState {
         Ok(true)
     }
 
+    /// Wysyła serwerowi bieżące ogłoszenie, jeśli jeszcze go nie dostał i kanał jest na to gotowy.
+    /// Wołane po każdym ogłoszeniu od aplikacji i po zakończeniu inicjalizacji kanału.
+    fn flush_announcement(
+        &mut self,
+        stage: &mut ActiveStage,
+        out: &mut Out<'_>,
+    ) -> anyhow::Result<()> {
+        if self.in_sync {
+            return Ok(());
+        }
+        let Some(announced) = self.announced.clone() else {
+            return Ok(());
+        };
+        if !can_send(self.phase, matches!(announced, Announced::Files(_))) {
+            return Ok(());
+        }
+        self.in_sync = true;
+        match announced {
+            Announced::Formats(kinds) => {
+                crate::log(format!(
+                    "schowek: ogłoszono serwerowi: {}",
+                    kinds_label(&kinds, false)
+                ));
+                self.send_formats(&kinds, stage, out)
+            }
+            Announced::Files(paths) => self.send_files(&paths, stage, out),
+        }
+    }
+
+    fn send_formats(
+        &mut self,
+        kinds: &[ClipKind],
+        stage: &mut ActiveStage,
+        out: &mut Out<'_>,
+    ) -> anyhow::Result<()> {
+        let formats: Vec<ClipboardFormat> = kinds
+            .iter()
+            .map(|k| match k {
+                ClipKind::Text => ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+                ClipKind::Html => ClipboardFormat::new(ClipboardFormatId(HTML_FORMAT_ID))
+                    .with_name(ClipboardFormatName::HTML),
+                ClipKind::Image => ClipboardFormat::new(ClipboardFormatId::CF_DIB),
+            })
+            .collect();
+        self.local_files.clear();
+        if let Some(Ok(msgs)) = stage
+            .get_svc_processor_mut::<Cliprdr<Client>>()
+            .map(|c| c.initiate_copy(&formats))
+        {
+            send(stage, out, msgs)?;
+        }
+        Ok(())
+    }
+
+    fn send_files(
+        &mut self,
+        paths: &[String],
+        stage: &mut ActiveStage,
+        out: &mut Out<'_>,
+    ) -> anyhow::Result<()> {
+        let (descs, entries, skipped) = build_local_files(paths);
+        if skipped > 0 {
+            notice(format!(
+                "Pominięto {skipped} elementów (dowiązania, zbyt długie nazwy albo limit {MAX_ENTRIES})."
+            ));
+        }
+        if descs.is_empty() {
+            // Nic do pokazania serwerowi: ogłaszamy pusty schowek zamiast zostawiać poprzednią listę.
+            return self.send_formats(&[], stage, out);
+        }
+        crate::log(format!(
+            "schowek: ogłoszono serwerowi pliki ({})",
+            descs.len()
+        ));
+        self.local_files = entries;
+        if let Some(Ok(msgs)) = stage
+            .get_svc_processor_mut::<Cliprdr<Client>>()
+            .map(|c| c.initiate_file_copy(descs))
+        {
+            send(stage, out, msgs)?;
+        } else {
+            notice("Serwer nie obsługuje przesyłania plików przez schowek.");
+        }
+        Ok(())
+    }
+
     /// Wywoływane w każdym obiegu pętli: pilnuje limitu czasu pobierania plików.
     pub fn tick(&mut self) {
         if self
@@ -441,8 +590,17 @@ impl ClipState {
             return;
         };
         let Some(bytes) = data.filter(|d| d.len() <= DATA_LIMIT) else {
+            crate::log(format!(
+                "schowek: serwer nie przysłał danych ({}) albo przekroczyły limit",
+                kinds_label(&[kind], false)
+            ));
             return;
         };
+        crate::log(format!(
+            "schowek: pobrano z serwera: {}, {} B",
+            kinds_label(&[kind], false),
+            bytes.len()
+        ));
         let payload = match kind {
             ClipKind::Text => utf16le_to_string(&bytes).into_bytes(),
             ClipKind::Html => match clipfmt::cf_html_to_html(&bytes) {
@@ -876,6 +1034,28 @@ mod tests {
             requested_size: size,
             data_id: None,
         }
+    }
+
+    #[test]
+    fn announcements_wait_for_the_server_and_files_for_a_ready_channel() {
+        // Przed zgłoszeniem gotowości serwera nic nie jest wysyłane (wcześniej przepadało).
+        assert!(!can_send(Phase::Waiting, false));
+        assert!(!can_send(Phase::Waiting, true));
+        // W trakcie inicjalizacji można ogłosić formaty, ale nie listę plików.
+        assert!(can_send(Phase::Initializing, false));
+        assert!(!can_send(Phase::Initializing, true));
+        assert!(can_send(Phase::Ready, false));
+        assert!(can_send(Phase::Ready, true));
+        assert_eq!(ClipState::new().phase, Phase::Waiting);
+    }
+
+    #[test]
+    fn log_labels_name_kinds_without_content() {
+        assert_eq!(kinds_label(&[], false), "nic");
+        assert_eq!(
+            kinds_label(&[ClipKind::Text, ClipKind::Image], true),
+            "tekst, obraz, pliki"
+        );
     }
 
     #[test]

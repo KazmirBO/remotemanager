@@ -129,6 +129,8 @@ pub async fn connect_rdp(
     let worker = rdp::find_worker().ok_or(
         "Nie znaleziono procesu RDP (multiremotemanager-rdp-worker). Zbuduj go: cargo build --manifest-path tools/rdp/Cargo.toml, albo ustaw MRM_RDP_WORKER.",
     )?;
+    // Ścieżka procesu w dzienniku pozwala od razu zobaczyć, która binarka obsługuje sesję.
+    state.log(format!("RDP: proces {}", worker.display()));
     let (tx, mut rx) = channel(rdp::EVENT_QUEUE);
     let client = RdpClient::spawn(&worker, params, tx)
         .map_err(|e| format!("Nie można uruchomić procesu RDP: {e}"))?;
@@ -243,6 +245,11 @@ pub async fn connect_rdp(
                         .await;
                         let _ = client.send(&ToWorker::Trust { accept });
                     });
+                }
+                // Wpisy diagnostyczne procesu zostają w dzienniku aplikacji, frontend ich nie dostaje.
+                Event::Worker(FromWorker::Log { message }) => {
+                    app.state::<AppState>()
+                        .log(format!("RDP {host}: {message}"));
                 }
                 // Schowek obsługujemy po stronie backendu, frontend widzi tylko powiadomienia.
                 Event::Worker(
