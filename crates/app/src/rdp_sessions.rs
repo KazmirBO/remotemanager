@@ -40,11 +40,21 @@ impl Flow {
 
     /// Interfejs odebrał `bytes` bajtów obrazu. Nadmiarowe potwierdzenie zeruje licznik.
     pub fn ack(&self, bytes: u64) {
-        let _ = self
-            .outstanding
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_sub(bytes))
-            });
+        // Odejmowanie z nasyceniem w pętli `compare_exchange`: działa na każdej wersji kompilatora
+        // (`fetch_update` jest przestarzałe od Rust 1.100, a jego następcy nie ma w starszych).
+        let mut current = self.outstanding.load(Ordering::Relaxed);
+        loop {
+            let next = current.saturating_sub(bytes);
+            match self.outstanding.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(seen) => current = seen,
+            }
+        }
         self.acked.notify_one();
     }
 
