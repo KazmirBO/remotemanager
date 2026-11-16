@@ -213,7 +213,10 @@ impl Vault {
     }
 
     /// Zapis: szyfrowanie, plik tymczasowy z `fsync`, dopiero potem rotacja kopii i `rename`.
-    /// Nieudany zapis nie rusza więc ani pliku, ani kopii `.bakN`.
+    /// Błąd przed rotacją (szyfrowanie, plik tymczasowy) nie rusza ani pliku, ani kopii `.bakN`.
+    /// Błąd samego `rename` następuje już po rotacji: plik zostaje bez zmian, ale kopie są
+    /// przesunięte, a `.bak1` jest kopią bieżącego pliku, więc powtarzane niepowodzenia
+    /// wypełniają kopie tą samą wersją.
     fn write_with<T: Serialize>(
         &self,
         key: &[u8; 32],
@@ -258,6 +261,14 @@ impl Vault {
         fs::copy(&self.path, backup_path(&self.path, 1))?;
         Ok(())
     }
+}
+
+/// Sprawdza bez hasła, że plik ma strukturę pliku MRMV w obsługiwanej wersji: magic, wersję,
+/// kompletny nagłówek z parametrami KDF w dozwolonych granicach i szyfrogram co najmniej
+/// długości znacznika uwierzytelnienia. Nie sprawdza, czy hasło pasuje.
+pub fn validate_file(path: &Path) -> Result<()> {
+    let data = fs::read(path)?;
+    parse_header(&data).map(|_| ())
 }
 
 fn parse_header(data: &[u8]) -> Result<(KdfParams, [u8; SALT_LEN], [u8; NONCE_LEN])> {
@@ -456,6 +467,28 @@ mod tests {
         let b1: Doc = open_backup(&backup_file(&p, 1), "x").unwrap();
         assert_eq!(b1, doc(0));
         assert_eq!(Vault::open::<Doc>(&p, "x").unwrap().1, doc(1));
+    }
+
+    #[test]
+    fn validate_file_checks_structure_without_password() {
+        let p = tmp("validate");
+        Vault::create(&p, "x", KdfParams::FAST_FOR_TESTS, &doc(0)).unwrap();
+        validate_file(&p).unwrap();
+        let data = fs::read(&p).unwrap();
+        fs::write(&p, &data[..30]).unwrap();
+        assert!(matches!(validate_file(&p), Err(Error::Truncated)));
+        fs::write(&p, &data[..HEADER_LEN + 15]).unwrap();
+        assert!(matches!(validate_file(&p), Err(Error::Truncated)));
+        fs::write(&p, b"nie mrmv, ale dluzszy niz naglowek i znacznik").unwrap();
+        assert!(matches!(validate_file(&p), Err(Error::BadMagic)));
+        let mut bad = data.clone();
+        bad[4] = 9;
+        fs::write(&p, &bad).unwrap();
+        assert!(matches!(
+            validate_file(&p),
+            Err(Error::UnsupportedVersion(9))
+        ));
+        assert!(validate_file(&p.with_extension("brak")).is_err());
     }
 
     #[test]

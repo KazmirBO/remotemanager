@@ -92,9 +92,73 @@ pub async fn sync_set_folder(
     Ok(sync_view(&state))
 }
 
+/// Wynik `sync_pull_locked`.
+struct SyncOutcome {
+    status: sync::Status,
+    new_base: Option<String>,
+    pulled: bool,
+}
+
+/// Czy dany stan i rozstrzygnięcie kończą się pobraniem zdalnej wersji.
+fn pulls(st: sync::Status, keep: Option<sync::Keep>) -> bool {
+    matches!(
+        (st, keep),
+        (sync::Status::RemoteChanged, _) | (sync::Status::Conflict, Some(sync::Keep::Remote))
+    )
+}
+
+/// Właściwa synchronizacja na `AppState`, bez `AppHandle` (dzięki temu da się ją testować).
+/// Zdalny plik, który nie jest poprawnym plikiem MRMV, nie jest pobierany (błąd, lokalny plik
+/// i konfiguracja bez zmian); poprawny plik z innym hasłem jest legalny. Po pobraniu klucz
+/// znika z pamięci pod tą samą blokadą dokumentu, co operacja na pliku (współbieżny `mutate`
+/// nie nadpisze pobranego pliku starym dokumentem), potem anulowane są pytania o zaufanie.
+/// Zamknięcie sesji i zdarzenie `vault-locked` robi wywołujący przez `lock_all`.
+async fn sync_pull_locked(
+    state: &AppState,
+    folder: &std::path::Path,
+    base: Option<&str>,
+    keep: Option<sync::Keep>,
+) -> Result<SyncOutcome, String> {
+    // Blokada dokumentu na czas operacji na pliku, żeby zapis z interfejsu się nie wtrącił.
+    let mut guard = state.inner.lock().await;
+    let planned = sync::status(&state.path, folder, base).map_err(err)?;
+    if pulls(planned, keep)
+        && let Err(e) = vault::validate_file(&sync::remote_path(folder))
+    {
+        state.log(format!("synchronizacja: odmowa pobrania, zdalny plik: {e}"));
+        return Err(format!(
+            "Zdalny plik nie wygląda na poprawny plik z hostami ({e}). Nie pobrano go, lokalny plik zostaje bez zmian."
+        ));
+    }
+    let (status, new_base) = sync::sync(&state.path, folder, base, keep).map_err(|e| match e {
+        sync::Error::Conflict => "Konflikt: wybierz, którą wersję zachować.".to_string(),
+        other => other.to_string(),
+    })?;
+    let pulled = pulls(status, keep);
+    if pulled {
+        *guard = None;
+    }
+    drop(guard);
+    if pulled {
+        state.cancel_trust();
+        state.log(
+            "synchronizacja: poprzednia lokalna wersja zachowana w pliku z końcówką .przed-pobraniem",
+        );
+    }
+    Ok(SyncOutcome {
+        status,
+        new_base,
+        pulled,
+    })
+}
+
 /// Synchronizuje zgodnie ze stanem. W konflikcie wymaga `keep` ("local" albo "remote").
 #[tauri::command]
-pub async fn sync_run(state: State<'_, AppState>, keep: Option<String>) -> Result<SyncRun, String> {
+pub async fn sync_run(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    keep: Option<String>,
+) -> Result<SyncRun, String> {
     let keep = match keep.as_deref() {
         None => None,
         Some("local") => Some(sync::Keep::Local),
@@ -110,27 +174,18 @@ pub async fn sync_run(state: State<'_, AppState>, keep: Option<String>) -> Resul
             c.sync_base.clone(),
         )
     };
-    // Blokada dokumentu na czas operacji na pliku, żeby zapis z interfejsu się nie wtrącił.
-    let mut guard = state.inner.lock().await;
-    let (st, new_base) =
-        sync::sync(&state.path, &folder, base.as_deref(), keep).map_err(|e| match e {
-            sync::Error::Conflict => "Konflikt: wybierz, którą wersję zachować.".to_string(),
-            other => other.to_string(),
-        })?;
-    let pulled = matches!(
-        (st, keep),
-        (sync::Status::RemoteChanged, _) | (sync::Status::Conflict, Some(sync::Keep::Remote))
-    );
-    if pulled {
-        *guard = None;
+    let out = sync_pull_locked(&state, &folder, base.as_deref(), keep).await?;
+    if out.pulled {
+        // Klucz już zniknął pod blokadą; `lock_all` dokańcza resztę (zaufanie, sesje, zdarzenie).
+        crate::commands::lock_all(&app, &state, "synchronizacja: plik zablokowany po pobraniu")
+            .await;
     }
-    drop(guard);
-    state.config.lock().expect("config").sync_base = new_base;
+    state.config.lock().expect("config").sync_base = out.new_base;
     state.save_config();
     state.log(format!(
         "synchronizacja: {}{}",
-        status_name(st),
-        if pulled {
+        status_name(out.status),
+        if out.pulled {
             ", pobrano zdalną wersję"
         } else {
             ""
@@ -138,7 +193,7 @@ pub async fn sync_run(state: State<'_, AppState>, keep: Option<String>) -> Resul
     ));
     Ok(SyncRun {
         view: sync_view(&state),
-        locked: pulled,
+        locked: out.pulled,
     })
 }
 
@@ -370,5 +425,91 @@ mod tests {
         // Blokada konfiguracji jest wolna po odczycie.
         assert!(state.config.try_lock().is_ok());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    use crate::state::Unlocked;
+    use tokio::sync::oneshot;
+    use uuid::Uuid;
+    use vault::{KdfParams, Vault};
+
+    fn dirs(name: &str) -> (PathBuf, PathBuf) {
+        let d = std::env::temp_dir().join(format!("mrm-maint-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let remote = d.join("remote");
+        std::fs::create_dir_all(&remote).unwrap();
+        (d.join("hosts.mrm"), remote)
+    }
+
+    fn doc_with(name: &str) -> Document {
+        let mut d = Document::default();
+        d.tree.add_folder(name, None).unwrap();
+        d
+    }
+
+    /// Stan z odblokowanym plikiem i jednym oczekującym pytaniem o zaufanie.
+    async fn unlocked(path: PathBuf) -> (AppState, oneshot::Receiver<crate::state::TrustAnswer>) {
+        let doc = doc_with("Lokalny");
+        let vault = Vault::create(&path, "haslo", KdfParams::FAST_FOR_TESTS, &doc).unwrap();
+        let state = AppState::new(path);
+        *state.inner.lock().await = Some(Unlocked { vault, doc });
+        let (tx, rx) = oneshot::channel();
+        state.trust.lock().unwrap().insert(Uuid::new_v4(), tx);
+        (state, rx)
+    }
+
+    #[tokio::test]
+    async fn pull_locks_cancels_trust_and_keeps_previous_local_version() {
+        let (path, remote) = dirs("pull");
+        let (state, rx) = unlocked(path.clone()).await;
+        let (_, base) = sync::sync(&path, &remote, None, None).unwrap();
+        // Zdalna wersja zaszyfrowana innym hasłem (zmiana hasła głównego na innej maszynie).
+        let other = remote.join("inne.mrm");
+        Vault::create(
+            &other,
+            "nowe",
+            KdfParams::FAST_FOR_TESTS,
+            &doc_with("Zdalny"),
+        )
+        .unwrap();
+        std::fs::copy(&other, sync::remote_path(&remote)).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let out = sync_pull_locked(&state, &remote, base.as_deref(), None)
+            .await
+            .unwrap();
+        assert!(out.pulled);
+        assert!(state.inner.lock().await.is_none(), "plik zablokowany");
+        assert!(state.trust.lock().unwrap().is_empty());
+        assert!(rx.await.is_err(), "pytanie o zaufanie anulowane");
+        assert_eq!(
+            std::fs::read(sync::pre_pull_copy(&path)).unwrap(),
+            before,
+            "poprzednia lokalna wersja leży w kopii"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            std::fs::read(sync::remote_path(&remote)).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn truncated_remote_is_refused_and_local_file_is_untouched() {
+        let (path, remote) = dirs("trunc");
+        let (state, _rx) = unlocked(path.clone()).await;
+        let (_, base) = sync::sync(&path, &remote, None, None).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let remote_file = sync::remote_path(&remote);
+        let full = std::fs::read(&remote_file).unwrap();
+        std::fs::write(&remote_file, &full[..30]).unwrap();
+
+        let err = sync_pull_locked(&state, &remote, base.as_deref(), None)
+            .await
+            .err()
+            .expect("odmowa");
+        assert!(err.contains("Nie pobrano"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!sync::pre_pull_copy(&path).exists());
+        assert!(state.inner.lock().await.is_some(), "plik nadal odblokowany");
+        assert_eq!(state.trust.lock().unwrap().len(), 1);
     }
 }
