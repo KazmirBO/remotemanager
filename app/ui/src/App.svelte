@@ -20,7 +20,7 @@
   import Terminal from './lib/Terminal.svelte';
   import TrustDialog from './lib/TrustDialog.svelte';
   import Unlock from './lib/Unlock.svelte';
-  import { allowedWithModal, binding, matchAction } from './lib/shortcuts';
+  import { allowedWithModal, binding, matchAppAction } from './lib/shortcuts';
   import { api } from './lib/api';
   import { applyTheme, closeTab, host as hostById, init, lockVault, modalOpen, notify, onLocked, openHost, refreshSync, ui } from './lib/store.svelte';
 
@@ -115,7 +115,7 @@
     if (ui.phase !== 'unlocked') return;
     // Okno przechwytujące skrót (ustawianie skrótów) obsługuje klawisze samo.
     if (dialog?.kind === 'shortcuts') return;
-    const action = matchAction(ui.doc?.settings, e);
+    const action = matchAppAction(ui.doc?.settings, e);
     if (!action) return;
     // Przy otwartym oknie modalnym działa tylko blokada pliku.
     if (modalOpen() && !allowedWithModal(action)) return;

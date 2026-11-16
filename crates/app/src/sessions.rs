@@ -1,6 +1,7 @@
 //! Sesje SSH: łączenie, strumień danych do frontendu i decyzje o zaufaniu do kluczy hostów.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use model::{Id, Protocol, TrustedKey};
@@ -13,6 +14,7 @@ use zeroize::Zeroizing;
 
 use std::io::Write as _;
 
+use crate::flow::{Flow, SSH_WINDOW};
 use crate::session_log;
 use crate::state::{AppState, Live, TrustAnswer};
 
@@ -191,6 +193,15 @@ fn hop_for(doc: &model::Document, id: Id) -> Result<Hop, String> {
     })
 }
 
+/// Komunikat dla połączenia przerwanego blokadą pliku albo przeładowaniem interfejsu.
+pub fn interrupted_message(locked: bool) -> &'static str {
+    if locked {
+        "Plik z hostami został zablokowany w trakcie łączenia."
+    } else {
+        "Interfejs został przeładowany w trakcie łączenia."
+    }
+}
+
 fn control(json: &str) -> InvokeResponseBody {
     InvokeResponseBody::Json(json.to_owned())
 }
@@ -205,6 +216,9 @@ pub async fn connect_ssh(
     password: Option<String>,
     on_event: Channel<InvokeResponseBody>,
 ) -> Result<Uuid, String> {
+    // Licznik przeładowań musi być odczytany przed pierwszym `await`, inaczej przeładowanie
+    // w czasie czekania na blokadę dokumentu uszłoby uwadze kontroli po wstawieniu sesji.
+    let reloads = state.reloads.load(Ordering::SeqCst);
     let (hops, host_name) = state
         .read(|doc| {
             let host = doc.tree.host(host_id).ok_or("Nie ma takiego hosta")?;
@@ -267,16 +281,26 @@ pub async fn connect_ssh(
         .lock()
         .expect("sessions")
         .insert(id, Arc::new(Live { session, shell }));
+    let flow = Arc::new(Flow::new(SSH_WINDOW));
+    state
+        .ssh_flow
+        .lock()
+        .expect("flow")
+        .insert(id, flow.clone());
     // Blokada pliku najpierw ustawia `inner` na `None`, a potem opróżnia mapę sesji. Sesja wstawiona
     // przed blokadą zostanie zamknięta przez nią, a ta wstawiona po blokadzie widzi `None` i zamyka
     // się tutaj, zanim zostanie zwrócona do interfejsu.
-    if state.inner.lock().await.is_none() {
+    // Przeładowanie interfejsu w trakcie łączenia (`reset_after_reload`) działa tak samo: nowy
+    // interfejs nie ma karty tej sesji.
+    let locked = state.inner.lock().await.is_none();
+    if locked || state.reloads.load(Ordering::SeqCst) != reloads {
+        state.ssh_flow.lock().expect("flow").remove(&id);
         let l = state.sessions.lock().expect("sessions").remove(&id);
         if let Some(l) = l {
             let _ = l.shell.close().await;
             l.session.disconnect().await;
         }
-        return Err("Plik z hostami został zablokowany w trakcie łączenia.".into());
+        return Err(interrupted_message(locked).into());
     }
 
     let app3 = app.clone();
@@ -297,6 +321,7 @@ pub async fn connect_ssh(
     };
     tokio::spawn(async move {
         while let Some(ev) = rx.recv().await {
+            let mut counted = false;
             let body = match ev {
                 ShellEvent::Data(d) => {
                     if let Some(f) = session_log.as_mut()
@@ -309,6 +334,10 @@ pub async fn connect_ssh(
                         ));
                         session_log = None;
                     }
+                    // Liczymy przed wysłaniem: potwierdzenie z interfejsu może przyjść, zanim ta
+                    // pętla wróci do pracy (jak przy obrazie RDP).
+                    flow.sent(d.len() as u64);
+                    counted = true;
                     InvokeResponseBody::Raw(d)
                 }
                 ShellEvent::Exit(code) => control(&format!(r#"{{"t":"exit","code":{code}}}"#)),
@@ -317,7 +346,27 @@ pub async fn connect_ssh(
             if on_event.send(body).is_err() {
                 break;
             }
+            // Po przekroczeniu okna przestajemy odbierać zdarzenia z crate'a `ssh`: jego kolejka
+            // się zapełnia i czytnik kanału staje, a z nim odbiór z sieci. Koniec sesji (zamknięcie
+            // karty, blokada pliku) przerywa czekanie.
+            if counted {
+                let alive = || {
+                    app3.state::<AppState>()
+                        .sessions
+                        .lock()
+                        .expect("sessions")
+                        .contains_key(&id)
+                };
+                if !flow.wait(alive).await {
+                    break;
+                }
+            }
         }
+        app3.state::<AppState>()
+            .ssh_flow
+            .lock()
+            .expect("flow")
+            .remove(&id);
         let live = app3
             .state::<AppState>()
             .sessions
@@ -344,8 +393,11 @@ fn live(state: &AppState, id: Uuid) -> Result<Arc<Live>, String> {
 }
 
 /// Dane z klawiatury jako surowe bajty; identyfikator sesji w nagłówku `x-session`.
+/// Komenda jest synchroniczna celowo (jak `rdp_send`): Tauri wykonuje takie wywołania po kolei,
+/// a `write` tylko wstawia bajty do kolejki sesji, z której jedno zadanie pisarza wysyła je do
+/// kanału SSH. Komenda `async` byłaby uruchamiana jako osobne zadania i zamieniała porcje miejscami.
 #[tauri::command]
-pub async fn ssh_write(state: State<'_, AppState>, request: Request<'_>) -> Result<(), String> {
+pub fn ssh_write(state: State<'_, AppState>, request: Request<'_>) -> Result<(), String> {
     let InvokeBody::Raw(data) = request.body() else {
         return Err("Oczekiwano surowych danych.".into());
     };
@@ -358,12 +410,22 @@ pub async fn ssh_write(state: State<'_, AppState>, request: Request<'_>) -> Resu
     live(&state, id)?
         .shell
         .write(data.clone())
-        .await
         .map_err(|e| e.to_string())
 }
 
+/// Potwierdzenie z interfejsu: tyle bajtów wyjścia terminala zostało przetworzonych (patrz `Flow`).
+/// Synchroniczna jak `ssh_write`: tylko odejmuje od licznika.
 #[tauri::command]
-pub async fn ssh_resize(
+pub fn ssh_ack(state: State<'_, AppState>, id: Uuid, bytes: u64) {
+    let flow = state.ssh_flow.lock().expect("flow").get(&id).cloned();
+    if let Some(flow) = flow {
+        flow.ack(bytes);
+    }
+}
+
+/// Zmiana rozmiaru idzie tą samą kolejką co dane, więc nie wyprzedza bajtów wysłanych przed nią.
+#[tauri::command]
+pub fn ssh_resize(
     state: State<'_, AppState>,
     id: Uuid,
     cols: u32,
@@ -372,7 +434,6 @@ pub async fn ssh_resize(
     live(&state, id)?
         .shell
         .resize(cols, rows)
-        .await
         .map_err(|e| e.to_string())
 }
 
@@ -383,6 +444,7 @@ pub async fn ssh_close(state: State<'_, AppState>, id: Uuid) -> Result<(), Strin
         let _ = l.shell.close().await;
         l.session.disconnect().await;
     }
+    state.ssh_flow.lock().expect("flow").remove(&id);
     Ok(())
 }
 

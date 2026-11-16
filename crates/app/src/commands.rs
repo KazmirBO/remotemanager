@@ -2,7 +2,7 @@ use model::{Document, Id, Settings};
 use tauri::State;
 use vault::{KdfParams, Vault};
 
-use crate::dto::{DocView, FieldsIo, FolderInput, FolderView, HostInput, HostView, ResolvedView};
+use crate::dto::{DocView, FolderInput, FolderView, HostInput, HostView};
 use crate::state::{AppState, Unlocked};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -14,6 +14,22 @@ fn vault_err(e: vault::Error) -> String {
     match e {
         vault::Error::Decrypt => "Nieprawidłowe hasło główne albo uszkodzony plik.".into(),
         other => other.to_string(),
+    }
+}
+
+/// Błąd odblokowania; przy błędzie odszyfrowania, gdy obok pliku leży kopia sprzed ostatniego
+/// pobrania przy synchronizacji, komunikat wskazuje jej pełną ścieżkę.
+fn unlock_err(e: vault::Error, path: &std::path::Path) -> String {
+    let decrypt = matches!(e, vault::Error::Decrypt);
+    let msg = vault_err(e);
+    let copy = sync::pre_pull_copy(path);
+    if decrypt && copy.exists() {
+        format!(
+            "{msg} Wersja sprzed ostatniego pobrania przy synchronizacji leży w pliku: {}",
+            copy.display()
+        )
+    } else {
+        msg
     }
 }
 
@@ -52,7 +68,7 @@ pub async fn unlock(state: State<'_, AppState>, password: String) -> Result<(), 
         tokio::task::spawn_blocking(move || Vault::open::<Document>(path, &password))
             .await
             .map_err(err)?
-            .map_err(vault_err)?;
+            .map_err(|e| unlock_err(e, &state.path))?;
     *state.inner.lock().await = Some(Unlocked { vault, doc });
     state.log("odblokowano plik z hostami");
     Ok(())
@@ -64,14 +80,27 @@ pub async fn lock(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(
     Ok(())
 }
 
-/// Blokada pliku z dowolnego miejsca (komenda, zasobnik): zamyka sesje SSH i RDP, usuwa klucz
-/// z pamięci i emituje `vault-locked`, żeby interfejs schował drzewo i karty.
+/// Blokada pliku z dowolnego miejsca (komenda, zasobnik): usuwa klucz z pamięci, zamyka sesje SSH
+/// i RDP wraz z pytaniami o zaufanie, a na końcu emituje `vault-locked`, żeby interfejs schował
+/// drzewo i karty.
 pub async fn lock_all(app: &tauri::AppHandle, state: &AppState, log: &str) {
     use tauri::Emitter;
-    // Kolejność jest celowa: najpierw znika klucz w pamięci, potem anulowane są pytania o zaufanie.
-    // Połączenie, które skończy się po opróżnieniu map, zobaczy już zablokowany plik.
+    // Kolejność jest celowa: najpierw znika klucz w pamięci, potem anulowane są pytania o zaufanie
+    // i zamykane sesje. Połączenie, które skończy się po opróżnieniu map, zobaczy już zablokowany plik.
     *state.inner.lock().await = None;
+    close_all_sessions(state).await;
+    state.log(log);
+    let _ = app.emit("vault-locked", ());
+}
+
+/// Anuluje pytania o zaufanie i zamyka wszystkie sesje SSH i RDP, nie ruszając blokady pliku.
+/// Sesje są najpierw wyjmowane z map, a dopiero potem zamykane: pętle sesji kończą się przez brak
+/// wpisu w mapie. Zwraca liczbę zamkniętych sesji.
+pub async fn close_all_sessions(state: &AppState) -> usize {
     state.cancel_trust();
+    // Przechwytywanie klawiszy należy do sesji RDP: musi zniknąć razem z nimi (na Windows
+    // zapomniany hak zatrzymywałby całą klawiaturę, dopóki okno jest na pierwszym planie).
+    state.keys.release_all();
     let ssh: Vec<_> = state
         .sessions
         .lock()
@@ -86,6 +115,7 @@ pub async fn lock_all(app: &tauri::AppHandle, state: &AppState, log: &str) {
         .drain()
         .map(|(_, c)| c)
         .collect();
+    let count = ssh.len() + rdp.len();
     for c in rdp {
         c.close();
     }
@@ -93,8 +123,22 @@ pub async fn lock_all(app: &tauri::AppHandle, state: &AppState, log: &str) {
         let _ = l.shell.close().await;
         l.session.disconnect().await;
     }
-    state.log(log);
-    let _ = app.emit("vault-locked", ());
+    count
+}
+
+/// Początek ładowania strony w głównym oknie. Po przeładowaniu (F5, Ctrl+R, menu WebView) nowy
+/// interfejs nie ma uchwytów do działających sesji, więc zostałyby osierocone. Plik zostaje
+/// odblokowany. Pierwsze ładowanie przy starcie nie ma sesji i nie ma skutków ubocznych.
+pub async fn reset_after_reload(state: &AppState) {
+    use std::sync::atomic::Ordering;
+    // Najpierw licznik, potem mapy: połączenie w toku widzi zmianę po wstawieniu sesji do mapy.
+    state.reloads.fetch_add(1, Ordering::SeqCst);
+    let closed = close_all_sessions(state).await;
+    if closed > 0 {
+        state.log(format!(
+            "przeładowano interfejs: zamknięto sesje ({closed})"
+        ));
+    }
 }
 
 #[tauri::command]
@@ -295,20 +339,6 @@ pub async fn set_favorite(
                 .ok_or("Nie ma takiego hosta")?
                 .favorite = favorite;
             Ok(())
-        })
-        .await
-}
-
-#[tauri::command]
-pub async fn resolve_host(state: State<'_, AppState>, id: Id) -> Result<ResolvedView, String> {
-    state
-        .read(|doc| {
-            let r = doc.tree.resolve(id).map_err(err)?;
-            Ok(ResolvedView {
-                fields: FieldsIo::view(&r.fields),
-                sources: r.sources,
-                port: r.port,
-            })
         })
         .await
 }

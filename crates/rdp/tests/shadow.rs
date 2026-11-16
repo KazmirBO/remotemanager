@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use rdp::{ConnectParams, Event, FromWorker, RdpClient, ToWorker};
+use rdp::{ConnectParams, Event, FromWorker, LinkProfile, RdpClient, ToWorker};
 use tokio::sync::mpsc::{Receiver, channel};
 
 struct Server {
@@ -150,6 +150,10 @@ fn start_server() -> Option<Server> {
 }
 
 fn params(s: &Server, password: &str) -> ConnectParams {
+    params_with(s, password, LinkProfile::Fast)
+}
+
+fn params_with(s: &Server, password: &str, profile: LinkProfile) -> ConnectParams {
     ConnectParams {
         host: "127.0.0.1".into(),
         port: s.port,
@@ -160,6 +164,7 @@ fn params(s: &Server, password: &str) -> ConnectParams {
         kdc: None,
         width: 200,
         height: 200,
+        profile,
     }
 }
 
@@ -200,7 +205,7 @@ async fn nla_login_delivers_frames_and_accepts_input() {
             }
             Event::Worker(FromWorker::Error { message }) => panic!("błąd procesu: {message}"),
             Event::Image(img) => pixels += img.rgba.len(),
-            Event::Worker(_) | Event::Clip { .. } => {}
+            Event::Worker(_) | Event::Clip { .. } | Event::Pointer(_) => {}
         }
     }
     client.send(&ToWorker::MouseMove { x: 10, y: 10 }).unwrap();
@@ -336,4 +341,83 @@ async fn resize_request_is_answered_and_never_silent() {
     };
     eprintln!("odpowiedź na prośbę o zmianę rozdzielczości: {answer}");
     client.close();
+}
+
+/// Profil wolnego łącza: sesja łączy się i dostarcza obraz, a komunikaty wskaźnika (jeśli serwer je
+/// przysyła) mają poprawne wymiary.
+#[tokio::test]
+async fn slow_profile_connects_and_delivers_frames() {
+    let (Some(worker), Some(server)) = (worker(), start_server()) else {
+        return eprintln!(
+            "pominięto: brak procesu rdp-worker, freerdp-shadow-cli, openssl albo DISPLAY"
+        );
+    };
+    let (tx, mut rx) = channel(rdp::EVENT_QUEUE);
+    let client = RdpClient::spawn(
+        &worker,
+        params_with(&server, &server.password, LinkProfile::Slow),
+        tx,
+    )
+    .unwrap();
+    assert!(matches!(
+        next(&mut rx).await,
+        Event::Worker(FromWorker::Cert { .. })
+    ));
+    client.send(&ToWorker::Trust { accept: true }).unwrap();
+    let (mut connected, mut pixels) = (false, 0usize);
+    // Wskaźnik: kształty, domyślny i ukryty (serwer testowy może nie przysyłać żadnego).
+    let (mut shapes, mut defaults, mut hidden) = (0, 0, 0);
+    while !(connected && pixels > 0) {
+        match next(&mut rx).await {
+            Event::Worker(FromWorker::Connected { width, height }) => {
+                assert!(width > 0 && height > 0);
+                connected = true;
+            }
+            Event::Worker(FromWorker::Error { message }) => panic!("błąd procesu: {message}"),
+            Event::Worker(FromWorker::PointerDefault) => defaults += 1,
+            Event::Worker(FromWorker::PointerHidden) => hidden += 1,
+            Event::Pointer(p) => {
+                assert!(p.is_valid(), "{p:?}");
+                shapes += 1;
+            }
+            Event::Image(img) => pixels += img.rgba.len(),
+            Event::Worker(_) | Event::Clip { .. } => {}
+        }
+    }
+    // Ruch myszy bywa potrzebny, żeby serwer zaczął przysyłać kształty; obserwujemy 1,5 s.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+    for step in 0..10u16 {
+        client
+            .send(&ToWorker::MouseMove {
+                x: 20 + step * 10,
+                y: 30 + step * 5,
+            })
+            .unwrap();
+        let until = (tokio::time::Instant::now() + Duration::from_millis(150)).min(deadline);
+        while let Ok(Some(ev)) = tokio::time::timeout_at(until, rx.recv()).await {
+            match ev {
+                Event::Worker(FromWorker::PointerDefault) => defaults += 1,
+                Event::Worker(FromWorker::PointerHidden) => hidden += 1,
+                Event::Pointer(p) => {
+                    assert!(p.is_valid(), "{p:?}");
+                    shapes += 1;
+                }
+                Event::Worker(FromWorker::Error { message }) => panic!("błąd procesu: {message}"),
+                _ => {}
+            }
+        }
+    }
+    eprintln!(
+        "wskaźnik od serwera testowego: kształty {shapes}, domyślny {defaults}, ukryty {hidden}"
+    );
+    client.send(&ToWorker::Close).unwrap();
+    loop {
+        match next(&mut rx).await {
+            Event::Worker(FromWorker::Closed { .. }) => break,
+            Event::Worker(FromWorker::Error { message }) => {
+                panic!("błąd przy zamykaniu: {message}")
+            }
+            _ => {}
+        }
+    }
 }

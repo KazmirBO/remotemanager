@@ -5,6 +5,8 @@ mod clipboard;
 mod commands;
 mod config;
 mod dto;
+mod flow;
+mod keys;
 mod maintenance;
 mod rdp_sessions;
 mod session_log;
@@ -57,6 +59,19 @@ fn main() {
             tray::setup(app.handle())?;
             Ok(())
         })
+        .on_page_load(|webview, payload| {
+            use tauri::{Manager, webview::PageLoadEvent};
+            if webview.label() != "main" || !matches!(payload.event(), PageLoadEvent::Started) {
+                return;
+            }
+            let app = webview.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // Przy pierwszym ładowaniu stan może jeszcze nie istnieć (`setup`): nie ma wtedy sesji.
+                if let Some(state) = app.try_state::<state::AppState>() {
+                    commands::reset_after_reload(&state).await;
+                }
+            });
+        })
         .invoke_handler(tauri::generate_handler![
             commands::vault_state,
             commands::create_vault,
@@ -71,11 +86,11 @@ fn main() {
             commands::move_host,
             commands::move_folder,
             commands::set_favorite,
-            commands::resolve_host,
             commands::save_settings,
             sessions::connect_ssh,
             sessions::ssh_write,
             sessions::ssh_resize,
+            sessions::ssh_ack,
             sessions::ssh_close,
             maintenance::sync_status,
             maintenance::sync_set_folder,
@@ -95,6 +110,7 @@ fn main() {
             rdp_sessions::rdp_ack,
             rdp_sessions::rdp_close,
             rdp_sessions::rdp_clipboard_focus,
+            keys::rdp_grab_keys,
         ])
         .run(tauri::generate_context!())
         .expect("błąd uruchamiania aplikacji");

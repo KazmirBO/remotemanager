@@ -1,0 +1,229 @@
+//! Limit pamięci procesu. Biblioteki IronRDP składają fragmenty kanałów statycznych i dynamicznych
+//! bez górnej granicy, więc złośliwy serwer mógłby dowolnie zwiększać pamięć procesu. Globalny
+//! alokator liczy bieżącą sumę przydzielonych bajtów: po przekroczeniu progu twardego alokacja
+//! zwraca null (proces kończy się standardową ścieżką błędu alokacji), a próg miękki sprawdza
+//! pętla główna (`check_soft`), żeby zakończyć sesję czytelnym błędem. To jedyny moduł z `unsafe`
+//! (wymaga go `GlobalAlloc`).
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Twardy próg: powyżej niego alokacja się nie udaje.
+pub const HARD_LIMIT: usize = 2 << 30;
+/// Miękki próg: powyżej niego pętla główna kończy sesję błędem. Bufor składany z fragmentów
+/// rośnie przez podwajanie, więc z rozmiaru tuż pod progiem miękkim skacze do dwukrotności;
+/// ta musi zmieścić się pod progiem twardym razem z resztą pamięci procesu (`HEADROOM`),
+/// inaczej proces kończyłby się błędem alokacji, zanim pętla zdąży zgłosić czytelny błąd.
+pub const SOFT_LIMIT: usize = 896 << 20;
+/// Zapas na pozostałą pamięć procesu przy podwojeniu największego bufora.
+const HEADROOM: usize = 256 << 20;
+const _: () = assert!(2 * SOFT_LIMIT + HEADROOM <= HARD_LIMIT);
+
+/// Czy do bieżącej sumy `current` można dołożyć `request` bajtów bez przekroczenia `limit`.
+pub fn admit(current: usize, request: usize, limit: usize) -> bool {
+    current.checked_add(request).is_some_and(|t| t <= limit)
+}
+
+/// Alokator zliczający bajty nad alokatorem `A`.
+pub struct Counting<A> {
+    inner: A,
+    used: AtomicUsize,
+    limit: usize,
+}
+
+impl<A> Counting<A> {
+    pub const fn new(inner: A, limit: usize) -> Self {
+        Self {
+            inner,
+            used: AtomicUsize::new(0),
+            limit,
+        }
+    }
+
+    /// Bieżąca suma przydzielonych bajtów.
+    pub fn used(&self) -> usize {
+        self.used.load(Ordering::Relaxed)
+    }
+
+    /// Rezerwuje `n` bajtów w liczniku; false, gdy przekroczyłoby to twardy próg.
+    fn reserve(&self, n: usize) -> bool {
+        // Pętla `compare_exchange` zamiast `fetch_update`: działa na każdej wersji kompilatora
+        // (`fetch_update` jest przestarzałe od Rust 1.100, a jego następcy nie ma w starszych).
+        let mut current = self.used.load(Ordering::Relaxed);
+        loop {
+            if !admit(current, n, self.limit) {
+                return false;
+            }
+            match self.used.compare_exchange_weak(
+                current,
+                current + n,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(seen) => current = seen,
+            }
+        }
+    }
+
+    fn release(&self, n: usize) {
+        self.used.fetch_sub(n, Ordering::Relaxed);
+    }
+}
+
+// SAFETY: każda metoda deleguje do `A` z niezmienionym układem pamięci, a licznik nie wpływa na
+// poprawność zwracanych bloków; przy odmowie zwracany jest null, co `GlobalAlloc` dopuszcza.
+unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if !self.reserve(layout.size()) {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: `layout` pochodzi od wywołującego i spełnia kontrakt `GlobalAlloc::alloc`.
+        let p = unsafe { self.inner.alloc(layout) };
+        if p.is_null() {
+            self.release(layout.size());
+        }
+        p
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        if !self.reserve(layout.size()) {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: `layout` pochodzi od wywołującego i spełnia kontrakt `alloc_zeroed`.
+        let p = unsafe { self.inner.alloc_zeroed(layout) };
+        if p.is_null() {
+            self.release(layout.size());
+        }
+        p
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` i `layout` pochodzą z wcześniejszej alokacji tego alokatora (kontrakt `dealloc`).
+        unsafe { self.inner.dealloc(ptr, layout) };
+        self.release(layout.size());
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let old = layout.size();
+        if new_size > old && !self.reserve(new_size - old) {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: `ptr` i `layout` pochodzą z tego alokatora, a `new_size` spełnia kontrakt `realloc`.
+        let p = unsafe { self.inner.realloc(ptr, layout, new_size) };
+        if p.is_null() {
+            // Stary blok pozostaje ważny, więc cofamy tylko rezerwację dodatkowych bajtów.
+            if new_size > old {
+                self.release(new_size - old);
+            }
+        } else if new_size < old {
+            self.release(old - new_size);
+        }
+        p
+    }
+}
+
+#[global_allocator]
+static ALLOC: Counting<System> = Counting::new(System, HARD_LIMIT);
+
+/// Błąd, gdy proces przekroczył miękki próg pamięci (sprawdzane w pętli głównej).
+pub fn check_soft() -> anyhow::Result<()> {
+    soft_check(ALLOC.used(), SOFT_LIMIT)
+}
+
+fn soft_check(used: usize, soft: usize) -> anyhow::Result<()> {
+    if used > soft {
+        anyhow::bail!(
+            "proces RDP zużył za dużo pamięci ({} MiB), sesja zakończona: serwer przysyła nadmiar danych",
+            used >> 20
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admit_decides_on_sum_and_limit() {
+        assert!(admit(0, 100, 100));
+        assert!(!admit(1, 100, 100));
+        assert!(admit(40, 60, 100));
+        assert!(!admit(usize::MAX, 1, usize::MAX));
+        assert!(!admit(10, usize::MAX, usize::MAX));
+    }
+
+    #[test]
+    fn soft_threshold_is_below_hard_and_reports_in_polish() {
+        const { assert!(SOFT_LIMIT < HARD_LIMIT) };
+        assert!(soft_check(SOFT_LIMIT, SOFT_LIMIT).is_ok());
+        let e = soft_check(SOFT_LIMIT + 1, SOFT_LIMIT).unwrap_err();
+        assert!(e.to_string().contains("za dużo pamięci"));
+    }
+
+    /// Bufor rosnący przez podwajanie (jak `Vec` składany z fragmentów kanału) zawsze trafia
+    /// w próg miękki, zanim kolejne podwojenie przekroczy próg twardy, niezależnie od rozmiaru
+    /// fragmentu. Między podwojeniami pętla główna wraca do `check_soft`.
+    #[test]
+    fn doubling_buffer_hits_soft_limit_before_hard() {
+        for chunk in [1usize, 100, 1024, 1200, 1592, 2048, 4096, 65000, 1 << 20] {
+            let other = HEADROOM;
+            let mut cap = chunk;
+            loop {
+                if soft_check(other + cap, SOFT_LIMIT).is_err() {
+                    break;
+                }
+                let next = cap * 2;
+                // `realloc` rezerwuje w liczniku tylko przyrost, więc liczy się nowa pojemność.
+                assert!(
+                    admit(other + cap, next - cap, HARD_LIMIT),
+                    "fragment {chunk} B: podwojenie z {cap} B przekracza próg twardy przed miękkim"
+                );
+                cap = next;
+            }
+        }
+    }
+
+    #[test]
+    fn counter_tracks_alloc_zeroed_realloc_and_dealloc() {
+        let a = Counting::new(System, 1000);
+        let l = |n| Layout::from_size_align(n, 8).unwrap();
+        // SAFETY: układy są poprawne, a każdy wskaźnik jest zwalniany z układem o aktualnym rozmiarze.
+        unsafe {
+            let p = a.alloc(l(100));
+            assert!(!p.is_null());
+            assert_eq!(a.used(), 100);
+            let p = a.realloc(p, l(100), 400);
+            assert!(!p.is_null());
+            assert_eq!(a.used(), 400);
+            let p = a.realloc(p, l(400), 50);
+            assert!(!p.is_null());
+            assert_eq!(a.used(), 50);
+            let z = a.alloc_zeroed(l(200));
+            assert!(!z.is_null());
+            assert_eq!(*z, 0);
+            assert_eq!(a.used(), 250);
+            a.dealloc(p, l(50));
+            a.dealloc(z, l(200));
+        }
+        assert_eq!(a.used(), 0);
+    }
+
+    #[test]
+    fn hard_limit_returns_null_without_changing_counter() {
+        let a = Counting::new(System, 1000);
+        let l = |n| Layout::from_size_align(n, 8).unwrap();
+        // SAFETY: układy są poprawne; nieudane wywołania nie zwracają pamięci do zwolnienia.
+        unsafe {
+            let p = a.alloc(l(600));
+            assert!(!p.is_null());
+            assert!(a.alloc(l(500)).is_null());
+            assert!(a.alloc_zeroed(l(500)).is_null());
+            assert!(a.realloc(p, l(600), 1001).is_null());
+            assert_eq!(a.used(), 600);
+            a.dealloc(p, l(600));
+        }
+        assert_eq!(a.used(), 0);
+    }
+}

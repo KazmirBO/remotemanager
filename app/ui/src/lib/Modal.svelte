@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import Icon from './Icon.svelte';
+  import { initialFocusIndex } from './focus';
 
   let {
     title, onclose, children, footer, width = 520, dismissible = true,
@@ -14,8 +15,11 @@
 
   $effect(() => {
     previous = document.activeElement;
-    const first = dialog.querySelector<HTMLElement>('input:not([type=hidden]), select, textarea, button.primary');
-    (first ?? dialog).focus();
+    // Wyłączone elementy (np. przycisk główny okna zaufania przez pierwsze 500 ms) są pomijane;
+    // bez aktywnego kandydata fokus dostaje samo okno, żeby Escape i Tab działały od razu.
+    const found = [...dialog.querySelectorAll<HTMLElement>('input:not([type=hidden]), select, textarea, button.primary')];
+    const i = initialFocusIndex(found.map((el) => ({ disabled: (el as HTMLButtonElement).disabled })));
+    (i === null ? dialog : found[i]).focus();
     return () => {
       // Fokus wraca tylko wtedy, gdy nikt inny go nie przejął (np. terminal po nawiązaniu połączenia).
       const a = document.activeElement;
@@ -34,7 +38,10 @@
       );
       if (!items.length) return;
       const first = items[0], last = items[items.length - 1];
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      // Fokus na samym oknie (np. przy wyłączonym przycisku głównym): Tab wchodzi na pierwszy element,
+      // Shift+Tab na ostatni, zamiast wyjść poza okno.
+      if (document.activeElement === dialog) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+      else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     }
   }

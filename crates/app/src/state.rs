@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use model::Document;
@@ -39,7 +40,14 @@ pub struct AppState {
     pub rdp: Mutex<HashMap<Uuid, rdp::RdpClient>>,
     pub rdp_clip: Mutex<HashMap<Uuid, Arc<crate::clipboard::ClipSync>>>,
     /// Kontrola przepływu obrazu sesji RDP (potwierdzenia z interfejsu).
-    pub rdp_flow: Mutex<HashMap<Uuid, Arc<crate::rdp_sessions::Flow>>>,
+    pub rdp_flow: Mutex<HashMap<Uuid, Arc<crate::flow::Flow>>>,
+    /// Kontrola przepływu wyjścia terminala sesji SSH (potwierdzenia z interfejsu).
+    pub ssh_flow: Mutex<HashMap<Uuid, Arc<crate::flow::Flow>>>,
+    /// Przechwytywanie klawiszy systemowych przez sesję RDP (najwyżej jedno naraz).
+    pub keys: crate::keys::Grabs,
+    /// Licznik przeładowań interfejsu. Połączenie, które zaczęło się przed przeładowaniem, a skończyło
+    /// po nim, nie ma karty w nowym interfejsie i zamyka się samo (jak przy blokadzie pliku).
+    pub reloads: AtomicU64,
 }
 
 impl AppState {
@@ -58,6 +66,9 @@ impl AppState {
             rdp: Mutex::new(HashMap::new()),
             rdp_clip: Mutex::new(HashMap::new()),
             rdp_flow: Mutex::new(HashMap::new()),
+            ssh_flow: Mutex::new(HashMap::new()),
+            keys: crate::keys::Grabs::default(),
+            reloads: AtomicU64::new(0),
         };
         if let Some(w) = warning {
             state.log(w);
@@ -394,6 +405,105 @@ mod tests {
         state.cancel_trust();
         assert!(state.trust.lock().unwrap().is_empty());
         assert!(rx.await.is_err());
+    }
+
+    /// Wstawia do mapy RDP prawdziwego klienta z atrapą procesu (bez sieci). Atrapa kończy się
+    /// dopiero po zamknięciu jej wejścia, więc zdarzenie końca na zwróconym odbiorniku dowodzi,
+    /// że klient został zamknięty. Poza Unix atrapy nie ma (`None`).
+    #[cfg(unix)]
+    fn insert_fake_rdp(state: &AppState) -> Option<tokio::sync::mpsc::Receiver<rdp::Event>> {
+        // Prawdziwy klient RDP z atrapą procesu (bez sieci): kończy się dopiero po zamknięciu
+        // jego wejścia, więc zdarzenie końca procesu dowodzi, że `close` zostało wywołane.
+        let worker = tmp("reload-worker").with_file_name("rdp-worker");
+        std::fs::write(&worker, "#!/bin/sh\ncat > /dev/null\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let (etx, erx) = tokio::sync::mpsc::channel(rdp::EVENT_QUEUE);
+        let params = rdp::ConnectParams {
+            host: "127.0.0.1".into(),
+            port: 3389,
+            username: "u".into(),
+            domain: None,
+            password: "p".into(),
+            kerberos: false,
+            kdc: None,
+            width: 800,
+            height: 600,
+            profile: rdp::LinkProfile::Fast,
+        };
+        let mut attempts = 0;
+        let client = loop {
+            match rdp::RdpClient::spawn(&worker, params.clone(), etx.clone()) {
+                Ok(c) => break c,
+                // Świeżo zapisany skrypt bywa chwilowo zajęty (ETXTBSY) przy równoległych testach.
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => panic!("atrapa procesu: {e}"),
+            }
+        };
+        drop(etx);
+        state.rdp.lock().unwrap().insert(Uuid::new_v4(), client);
+        Some(erx)
+    }
+
+    #[cfg(not(unix))]
+    fn insert_fake_rdp(_state: &AppState) -> Option<tokio::sync::mpsc::Receiver<rdp::Event>> {
+        None
+    }
+
+    #[tokio::test]
+    async fn reload_closes_sessions_and_trust_but_keeps_file_unlocked() {
+        let state = unlocked("reload").await;
+        *state.pending_link.lock().unwrap() = Some("ssh://srv".into());
+        let (tx, rx) = oneshot::channel::<TrustAnswer>();
+        state.trust.lock().unwrap().insert(Uuid::new_v4(), tx);
+        let erx = insert_fake_rdp(&state);
+        crate::commands::reset_after_reload(&state).await;
+        assert!(state.sessions.lock().unwrap().is_empty());
+        assert!(state.rdp.lock().unwrap().is_empty(), "wpis RDP usunięty");
+        if let Some(mut erx) = erx {
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(10), erx.recv())
+                    .await
+                    .is_ok(),
+                "klient RDP nie został zamknięty"
+            );
+        }
+        assert!(state.trust.lock().unwrap().is_empty());
+        assert!(rx.await.is_err());
+        // Plik zostaje odblokowany, a link czekający na odblokowanie nie ginie.
+        assert!(state.read(|_| Ok(())).await.is_ok());
+        assert_eq!(
+            state.pending_link.lock().unwrap().as_deref(),
+            Some("ssh://srv")
+        );
+        assert_eq!(state.reloads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Zamknięta sesja zostawia wpis w dzienniku (na Windows atrapy nie ma, więc brak wpisu).
+        let logged = state.diag.lock().unwrap().len();
+        assert_eq!(logged, usize::from(cfg!(unix)));
+    }
+
+    #[tokio::test]
+    async fn reload_and_close_release_key_grab() {
+        let state = unlocked("keys").await;
+        let released = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let r = released.clone();
+        state.keys.set(
+            Uuid::new_v4(),
+            Box::new(move || {
+                r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }),
+        );
+        // `lock_all` i `reset_after_reload` zamykają sesje przez `close_all_sessions`.
+        crate::commands::reset_after_reload(&state).await;
+        assert_eq!(released.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Drugi raz nie ma czego zwalniać.
+        crate::commands::close_all_sessions(&state).await;
+        assert_eq!(released.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

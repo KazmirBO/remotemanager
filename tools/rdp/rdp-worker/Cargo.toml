@@ -13,6 +13,10 @@ ironrdp-blocking = "0.10"
 ironrdp-graphics = "0.9"
 rdp-proto = { path = "../../../crates/rdp-proto" }
 sha2 = "0.11.1"
+socket2 = "0.6"
 sspi = { version = "0.21", features = ["network_client"] }
 tokio-rustls = "0.26"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+socket2 = { version = "0.6", features = ["all"] }

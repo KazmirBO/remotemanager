@@ -151,8 +151,17 @@ pub fn push(local: &Path, folder: &Path, base: Option<&str>) -> Result<String> {
     Ok(local_hash)
 }
 
+/// Kopia lokalnej wersji sprzed pobrania. Jest jedna i nadpisywana przy kolejnym pobraniu;
+/// to nie jest kopia konfliktu.
+pub fn pre_pull_copy(local: &Path) -> PathBuf {
+    let mut name = local.as_os_str().to_owned();
+    name.push(".przed-pobraniem");
+    PathBuf::from(name)
+}
+
 /// Pobiera zdalny plik na miejsce lokalnego. Lokalna wersja, jeśli zawiera zmiany spoza bazy,
-/// zostaje jako `*.konflikt-*`. Zwraca nowy skrót bazowy.
+/// zostaje jako `*.konflikt-*`. Niezależnie od tego bieżąca lokalna wersja trafia (atomowo)
+/// do `pre_pull_copy`, bo zdalny plik mógł okazać się bezużyteczny. Zwraca nowy skrót bazowy.
 pub fn pull(local: &Path, folder: &Path, base: Option<&str>) -> Result<String> {
     let remote = remote_path(folder);
     let remote_hash = file_hash(&remote)?.ok_or(Error::RemoteMissing)?;
@@ -161,6 +170,9 @@ pub fn pull(local: &Path, folder: &Path, base: Option<&str>) -> Result<String> {
         && Some(lh.as_str()) != base
     {
         copy_atomic(local, &conflict_copy(local))?;
+    }
+    if local.exists() {
+        copy_atomic(local, &pre_pull_copy(local))?;
     }
     copy_atomic(&remote, local)?;
     Ok(remote_hash)
@@ -273,6 +285,21 @@ mod tests {
         // Zwykła wysyłka i zwykłe pobranie nie zostawiają kopii konfliktu po żadnej stronie.
         assert_eq!(d.conflicts(&d.root), 0);
         assert_eq!(d.conflicts(&d.folder), 0);
+    }
+
+    #[test]
+    fn pull_keeps_one_overwritten_copy_of_the_local_version() {
+        let d = Dirs::new("prepull");
+        fs::write(&d.local, b"v1").unwrap();
+        let (_, base) = sync(&d.local, &d.folder, None, None).unwrap();
+        fs::write(d.remote(), b"v2-remote").unwrap();
+        let (_, base) = sync(&d.local, &d.folder, base.as_deref(), None).unwrap();
+        assert_eq!(fs::read(pre_pull_copy(&d.local)).unwrap(), b"v1");
+        fs::write(d.remote(), b"v3-remote").unwrap();
+        sync(&d.local, &d.folder, base.as_deref(), None).unwrap();
+        // Kopia jest jedna i dotyczy ostatnio nadpisanej wersji; to nie kopia konfliktu.
+        assert_eq!(fs::read(pre_pull_copy(&d.local)).unwrap(), b"v2-remote");
+        assert_eq!(d.conflicts(&d.root), 0);
     }
 
     #[test]

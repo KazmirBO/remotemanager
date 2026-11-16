@@ -346,13 +346,8 @@ impl ClipState {
             ClipEvent::InitRequested => {
                 // Odpowiedź na gotowość serwera kończy inicjalizację: biblioteka dokłada do pierwszej
                 // listy formatów możliwości klienta. Bez niej schowek nie działa w żadną stronę.
-                self.phase = Phase::Initializing;
-                let kinds = match &self.announced {
-                    Some(Announced::Formats(kinds)) => kinds.clone(),
-                    _ => Vec::new(),
-                };
+                let kinds = self.begin_init();
                 self.send_formats(&kinds, stage, out)?;
-                self.in_sync = !matches!(self.announced, Some(Announced::Files(_)));
                 crate::log(format!(
                     "schowek: serwer gotowy, wysłano listę formatów ({})",
                     kinds_label(&kinds, false)
@@ -410,6 +405,19 @@ impl ClipState {
             }
         }
         Ok(())
+    }
+
+    /// Odpowiedź na gotowość serwera: przechodzi do `Initializing` i zwraca formaty do pierwszej
+    /// listy (puste, gdy aplikacja jeszcze niczego nie ogłosiła albo ogłosiła pliki, które idą
+    /// dopiero po `Ready`).
+    fn begin_init(&mut self) -> Vec<ClipKind> {
+        self.phase = Phase::Initializing;
+        let kinds = match &self.announced {
+            Some(Announced::Formats(kinds)) => kinds.clone(),
+            _ => Vec::new(),
+        };
+        self.in_sync = !matches!(self.announced, Some(Announced::Files(_)));
+        kinds
     }
 
     /// Polecenie od aplikacji. Zwraca `true`, jeśli dotyczyło schowka.
@@ -480,16 +488,9 @@ impl ClipState {
         stage: &mut ActiveStage,
         out: &mut Out<'_>,
     ) -> anyhow::Result<()> {
-        if self.in_sync {
-            return Ok(());
-        }
-        let Some(announced) = self.announced.clone() else {
+        let Some(announced) = self.take_unsent_announcement() else {
             return Ok(());
         };
-        if !can_send(self.phase, matches!(announced, Announced::Files(_))) {
-            return Ok(());
-        }
-        self.in_sync = true;
         match announced {
             Announced::Formats(kinds) => {
                 crate::log(format!(
@@ -500,6 +501,20 @@ impl ClipState {
             }
             Announced::Files(paths) => self.send_files(&paths, stage, out),
         }
+    }
+
+    /// Zwraca ogłoszenie, które serwer jeszcze nie dostał, jeśli kanał jest już na nie gotowy, i
+    /// oznacza je jako wysłane.
+    fn take_unsent_announcement(&mut self) -> Option<Announced> {
+        if self.in_sync {
+            return None;
+        }
+        let announced = self.announced.clone()?;
+        if !can_send(self.phase, matches!(announced, Announced::Files(_))) {
+            return None;
+        }
+        self.in_sync = true;
+        Some(announced)
     }
 
     fn send_formats(
@@ -671,6 +686,12 @@ impl ClipState {
         stage: &mut ActiveStage,
         out: &mut Out<'_>,
     ) -> anyhow::Result<()> {
+        let first = self.begin_download(dir);
+        self.send_request(first, stage, out)
+    }
+
+    /// Planuje pobieranie i zwraca pierwsze żądanie do serwera (`None`, gdy nic nie ma być pobrane).
+    fn begin_download(&mut self, dir: PathBuf) -> Option<FileContentsRequest> {
         // Nowsza kopia wygrywa: poprzednie pobieranie jest przerywane, a nie blokuje nowego.
         if self.download.take().is_some() {
             notice("Przerwano poprzednie pobieranie plików.");
@@ -678,14 +699,14 @@ impl ClipState {
         let (plan, total, skipped) = plan_download(&dir, &self.remote_files);
         if plan.is_empty() {
             notice("Brak plików do pobrania.");
-            return Ok(());
+            return None;
         }
         if plan.len() > MAX_ENTRIES || total > MAX_TOTAL_BYTES {
             notice(format!(
                 "Zbyt dużo danych w schowku (limit {} MiB i {MAX_ENTRIES} elementów).",
                 MAX_TOTAL_BYTES / (1024 * 1024)
             ));
-            return Ok(());
+            return None;
         }
         if skipped > 0 {
             notice(format!(
@@ -695,7 +716,7 @@ impl ClipState {
         // Błąd systemu plików (np. pełny dysk) kończy tylko pobieranie, a nie całą sesję RDP.
         if let Err(e) = fs::create_dir_all(&dir) {
             notice(format!("Nie można utworzyć katalogu pobierania: {e}"));
-            return Ok(());
+            return None;
         }
         self.download = Some(Download {
             dir,
@@ -709,7 +730,7 @@ impl ClipState {
             written: 0,
             last: Instant::now(),
         });
-        self.advance(stage, out)
+        self.advance_step()
     }
 
     fn abort_download(&mut self, message: &str) {
@@ -735,28 +756,37 @@ impl ClipState {
         crate::emit(&FromWorker::ClipFilesDone { paths: tops });
     }
 
-    fn request(
+    /// Buduje żądanie zawartości pliku dla bieżącego elementu planu i zapisuje numer strumienia.
+    fn prepare_request(
         &mut self,
-        stage: &mut ActiveStage,
-        out: &mut Out<'_>,
         flags: FileContentsFlags,
         position: u64,
         size: u32,
-    ) -> anyhow::Result<()> {
+    ) -> Option<FileContentsRequest> {
         self.next_stream = self.next_stream.wrapping_add(1);
         let stream = self.next_stream;
-        let Some(d) = self.download.as_mut() else {
-            return Ok(());
-        };
+        let d = self.download.as_mut()?;
         d.stream = stream;
         d.last = Instant::now();
-        let req = FileContentsRequest {
+        Some(FileContentsRequest {
             stream_id: stream,
             index: d.plan[d.cur].index,
             flags,
             position,
             requested_size: size,
             data_id: None,
+        })
+    }
+
+    /// Wysyła żądanie, jeśli maszyna pobierania jakieś zwróciła.
+    fn send_request(
+        &mut self,
+        req: Option<FileContentsRequest>,
+        stage: &mut ActiveStage,
+        out: &mut Out<'_>,
+    ) -> anyhow::Result<()> {
+        let Some(req) = req else {
+            return Ok(());
         };
         match stage
             .get_svc_processor_mut::<Cliprdr<Client>>()
@@ -770,15 +800,13 @@ impl ClipState {
         }
     }
 
-    /// Przechodzi do następnego elementu planu i wysyła pierwsze żądanie; kończy, gdy plan się skończył.
-    fn advance(&mut self, stage: &mut ActiveStage, out: &mut Out<'_>) -> anyhow::Result<()> {
+    /// Przechodzi do następnego elementu planu i zwraca pierwsze żądanie; kończy, gdy plan się skończył.
+    fn advance_step(&mut self) -> Option<FileContentsRequest> {
         loop {
-            let Some(d) = self.download.as_mut() else {
-                return Ok(());
-            };
+            let d = self.download.as_mut()?;
             if d.cur >= d.plan.len() {
                 self.finish_download();
-                return Ok(());
+                return None;
             }
             let (is_dir, dest, size) = {
                 let p = &d.plan[d.cur];
@@ -787,7 +815,7 @@ impl ClipState {
             if is_dir {
                 if let Err(e) = fs::create_dir_all(&dest) {
                     self.abort_download(&format!("Nie można utworzyć katalogu: {e}"));
-                    return Ok(());
+                    return None;
                 }
                 d.cur += 1;
                 continue;
@@ -801,14 +829,14 @@ impl ClipState {
                 Ok(f) => d.out = Some(f),
                 Err(e) => {
                     self.abort_download(&format!("Nie można utworzyć pliku: {e}"));
-                    return Ok(());
+                    return None;
                 }
             }
             d.pos = 0;
             match size {
                 None => {
                     d.awaiting_size = true;
-                    return self.request(stage, out, FileContentsFlags::SIZE, 0, 8);
+                    return self.prepare_request(FileContentsFlags::SIZE, 0, 8);
                 }
                 Some(0) => {
                     d.out = None;
@@ -818,7 +846,7 @@ impl ClipState {
                     d.size = s;
                     d.awaiting_size = false;
                     let n = u32::try_from(s.min(u64::from(FILE_CHUNK))).unwrap_or(FILE_CHUNK);
-                    return self.request(stage, out, FileContentsFlags::RANGE, 0, n);
+                    return self.prepare_request(FileContentsFlags::RANGE, 0, n);
                 }
             }
         }
@@ -832,65 +860,75 @@ impl ClipState {
         stage: &mut ActiveStage,
         out: &mut Out<'_>,
     ) -> anyhow::Result<()> {
-        let Some(d) = self.download.as_mut() else {
-            return Ok(());
-        };
+        let next = self.file_response_step(stream_id, data, error);
+        self.send_request(next, stage, out)
+    }
+
+    /// Przetwarza odpowiedź serwera na żądanie pliku i zwraca kolejne żądanie (albo `None`, gdy
+    /// pobieranie się skończyło lub zostało przerwane).
+    fn file_response_step(
+        &mut self,
+        stream_id: u32,
+        data: &[u8],
+        error: bool,
+    ) -> Option<FileContentsRequest> {
+        let d = self.download.as_mut()?;
         if d.stream != stream_id {
-            return Ok(());
+            return None;
         }
         if error {
             self.abort_download("Serwer odrzucił odczyt pliku.");
-            return Ok(());
+            return None;
         }
         d.last = Instant::now();
         if d.awaiting_size {
             let Ok(raw) = <[u8; 8]>::try_from(data) else {
                 self.abort_download("Serwer przysłał niepoprawny rozmiar pliku.");
-                return Ok(());
+                return None;
             };
             let size = u64::from_le_bytes(raw);
             if size > MAX_TOTAL_BYTES.saturating_sub(d.written) {
                 self.abort_download("Plik przekracza limit rozmiaru schowka.");
-                return Ok(());
+                return None;
             }
             d.size = size;
             d.awaiting_size = false;
             if size == 0 {
                 d.out = None;
                 d.cur += 1;
-                return self.advance(stage, out);
+                return self.advance_step();
             }
             let n = u32::try_from(size.min(u64::from(FILE_CHUNK))).unwrap_or(FILE_CHUNK);
-            return self.request(stage, out, FileContentsFlags::RANGE, 0, n);
+            return self.prepare_request(FileContentsFlags::RANGE, 0, n);
         }
         let remaining = d.size.saturating_sub(d.pos);
         let take = usize::try_from(remaining.min(data.len() as u64)).unwrap_or(0);
         if take == 0 {
             self.abort_download("Serwer przysłał pustą porcję pliku.");
-            return Ok(());
+            return None;
         }
         // Limit sprawdzamy przed zapisem, żeby na dysk nie trafiło nic ponad niego.
         if d.written.saturating_add(take as u64) > MAX_TOTAL_BYTES {
             self.abort_download("Przekroczono limit rozmiaru schowka.");
-            return Ok(());
+            return None;
         }
         let write = d.out.as_mut().map(|f| f.write_all(&data[..take]));
         if !matches!(write, Some(Ok(()))) {
             self.abort_download("Nie można zapisać pobieranego pliku.");
-            return Ok(());
+            return None;
         }
         d.pos += take as u64;
         d.written += take as u64;
         if d.pos >= d.size {
             d.out = None;
             d.cur += 1;
-            self.advance(stage, out)
+            self.advance_step()
         } else {
             let (pos, n) = (
                 d.pos,
                 u32::try_from((d.size - d.pos).min(u64::from(FILE_CHUNK))).unwrap_or(FILE_CHUNK),
             );
-            self.request(stage, out, FileContentsFlags::RANGE, pos, n)
+            self.prepare_request(FileContentsFlags::RANGE, pos, n)
         }
     }
 }
@@ -1263,5 +1301,363 @@ mod tests {
                 dir: false
             }
         );
+    }
+
+    // ---- maszyna faz kanału (Phase) ----
+
+    fn announced_state(announced: Option<Announced>) -> ClipState {
+        ClipState {
+            announced,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn init_request_without_announcement_answers_with_empty_format_list() {
+        let mut st = ClipState::new();
+        assert!(st.begin_init().is_empty());
+        assert_eq!(st.phase, Phase::Initializing);
+        assert!(
+            st.in_sync,
+            "pusta lista formatów jest już wysłanym ogłoszeniem"
+        );
+        assert!(st.take_unsent_announcement().is_none());
+    }
+
+    #[test]
+    fn formats_announced_before_server_ready_wait_and_go_with_init_response() {
+        let mut st = announced_state(Some(Announced::Formats(vec![ClipKind::Text])));
+        st.in_sync = false;
+        // Serwer nie jest gotowy: ogłoszenie czeka.
+        assert!(st.take_unsent_announcement().is_none());
+        assert!(!st.in_sync);
+        // Odpowiedź na inicjalizację niesie zapamiętane formaty i uznaje ogłoszenie za wysłane.
+        assert_eq!(st.begin_init(), vec![ClipKind::Text]);
+        assert!(st.in_sync);
+        st.phase = Phase::Ready;
+        assert!(st.take_unsent_announcement().is_none());
+    }
+
+    #[test]
+    fn file_announcement_waits_for_ready_and_is_sent_once() {
+        let files = Announced::Files(vec!["/tmp/a".into()]);
+        let mut st = announced_state(Some(files.clone()));
+        st.in_sync = false;
+        assert!(st.take_unsent_announcement().is_none());
+        // Inicjalizacja idzie pustą listą formatów, a pliki zostają w kolejce.
+        assert!(st.begin_init().is_empty());
+        assert!(!st.in_sync);
+        assert!(st.take_unsent_announcement().is_none());
+        // Po `Ready` lista plików wychodzi raz.
+        st.phase = Phase::Ready;
+        assert_eq!(st.take_unsent_announcement(), Some(files));
+        assert!(st.in_sync);
+        assert!(st.take_unsent_announcement().is_none());
+    }
+
+    #[test]
+    fn new_announcement_in_ready_phase_goes_out_immediately() {
+        let mut st = ClipState {
+            phase: Phase::Ready,
+            in_sync: true,
+            ..Default::default()
+        };
+        st.announced = Some(Announced::Formats(vec![ClipKind::Html]));
+        st.in_sync = false;
+        assert_eq!(
+            st.take_unsent_announcement(),
+            Some(Announced::Formats(vec![ClipKind::Html]))
+        );
+    }
+
+    // ---- pobieranie plików z serwera ----
+
+    fn emitted() -> Vec<FromWorker> {
+        crate::EMITTED.with(|e| std::mem::take(&mut *e.borrow_mut()))
+    }
+
+    fn notices() -> Vec<String> {
+        emitted()
+            .into_iter()
+            .filter_map(|e| match e {
+                FromWorker::Notice { message } => Some(message),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn remote_file(rel: Option<&str>, name: &str, size: Option<u64>) -> FileDescriptor {
+        let mut d = FileDescriptor::new(name);
+        if let Some(r) = rel {
+            d = d.with_relative_path(r);
+        }
+        if let Some(s) = size {
+            d = d.with_file_size(s);
+        }
+        d
+    }
+
+    fn state_with(files: Vec<FileDescriptor>) -> ClipState {
+        ClipState {
+            remote_files: files,
+            ..Default::default()
+        }
+    }
+
+    /// Żądanie pobrania ma wskazywać element planu o danym indeksie, rodzaj i zakres.
+    fn expect(
+        req: &Option<FileContentsRequest>,
+        index: i32,
+        flags: FileContentsFlags,
+        pos: u64,
+        n: u32,
+    ) -> u32 {
+        let r = req.as_ref().expect("oczekiwano żądania do serwera");
+        assert_eq!(
+            (r.index, r.flags, r.position, r.requested_size),
+            (index, flags, pos, n)
+        );
+        r.stream_id
+    }
+
+    #[test]
+    fn download_of_several_files_runs_to_completion() {
+        let dir = tmp("dl-ok");
+        let big = u64::from(FILE_CHUNK) + 10;
+        let mut st = state_with(vec![
+            FileDescriptor::new("k").with_attributes(ClipboardFileAttributes::DIRECTORY),
+            remote_file(Some("k"), "a.txt", Some(3)),
+            remote_file(None, "b.txt", None),
+            remote_file(None, "pusty.txt", Some(0)),
+            remote_file(None, "duzy.bin", Some(big)),
+        ]);
+        let _ = emitted();
+        // Katalog jest tworzony od razu, pierwsze żądanie dotyczy a.txt.
+        let req = st.begin_download(dir.clone());
+        assert!(dir.join("k").is_dir());
+        let id = expect(&req, 1, FileContentsFlags::RANGE, 0, 3);
+        // a.txt: jedna porcja, potem b.txt o nieznanym rozmiarze: najpierw pytanie o rozmiar.
+        let req = st.file_response_step(id, b"abc", false);
+        let id = expect(&req, 2, FileContentsFlags::SIZE, 0, 8);
+        let req = st.file_response_step(id, &5u64.to_le_bytes(), false);
+        let id = expect(&req, 2, FileContentsFlags::RANGE, 0, 5);
+        // b.txt skończony, pusty.txt pomijany bez żądania, duzy.bin idzie w dwóch porcjach.
+        let req = st.file_response_step(id, b"hello", false);
+        let id = expect(&req, 4, FileContentsFlags::RANGE, 0, FILE_CHUNK);
+        let req = st.file_response_step(id, &vec![7u8; FILE_CHUNK as usize], false);
+        let id = expect(&req, 4, FileContentsFlags::RANGE, u64::from(FILE_CHUNK), 10);
+        assert!(st.file_response_step(id, &[8u8; 10], false).is_none());
+        assert!(
+            st.download.is_none(),
+            "po ostatnim pliku pobieranie się kończy"
+        );
+
+        assert_eq!(fs::read(dir.join("k/a.txt")).unwrap(), b"abc");
+        assert_eq!(fs::read(dir.join("b.txt")).unwrap(), b"hello");
+        assert_eq!(fs::read(dir.join("pusty.txt")).unwrap().len(), 0);
+        assert_eq!(fs::read(dir.join("duzy.bin")).unwrap().len() as u64, big);
+        let done: Vec<_> = emitted()
+            .into_iter()
+            .filter_map(|e| match e {
+                FromWorker::ClipFilesDone { paths } => Some(paths),
+                _ => None,
+            })
+            .collect();
+        let tops = |names: &[&str]| -> Vec<String> {
+            names
+                .iter()
+                .map(|n| dir.join(n).to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(done, vec![tops(&["k", "b.txt", "pusty.txt", "duzy.bin"])]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn download_over_total_size_limit_is_refused_before_any_request() {
+        let dir = tmp("dl-total");
+        let half = MAX_TOTAL_BYTES / 2 + 1;
+        let mut st = state_with(vec![
+            remote_file(None, "a", Some(half)),
+            remote_file(None, "b", Some(half)),
+        ]);
+        let _ = emitted();
+        assert!(st.begin_download(dir.join("cel")).is_none());
+        assert!(st.download.is_none());
+        assert!(
+            !dir.join("cel").exists(),
+            "katalog nie powstaje przy odrzuconym planie"
+        );
+        assert!(notices().iter().any(|n| n.starts_with("Zbyt dużo danych")));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn download_over_entry_limit_is_refused() {
+        let dir = tmp("dl-count");
+        let files = (0..=MAX_ENTRIES)
+            .map(|i| remote_file(None, &format!("p{i}"), Some(1)))
+            .collect();
+        let mut st = state_with(files);
+        let _ = emitted();
+        assert!(st.begin_download(dir.join("cel")).is_none());
+        assert!(st.download.is_none());
+        assert!(notices().iter().any(|n| n.starts_with("Zbyt dużo danych")));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn download_with_exactly_max_entries_is_accepted() {
+        let dir = tmp("dl-count-ok");
+        // Katalogi nie wymagają żądań do serwera, więc cały plan przechodzi bez odpowiedzi.
+        let files = (0..MAX_ENTRIES)
+            .map(|i| {
+                FileDescriptor::new(format!("d{i}"))
+                    .with_attributes(ClipboardFileAttributes::DIRECTORY)
+            })
+            .collect();
+        let mut st = state_with(files);
+        let _ = emitted();
+        assert!(st.begin_download(dir.clone()).is_none());
+        assert!(st.download.is_none());
+        assert!(dir.join("d0").is_dir() && dir.join(format!("d{}", MAX_ENTRIES - 1)).is_dir());
+        assert!(!notices().iter().any(|n| n.starts_with("Zbyt dużo danych")));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn names_rejected_by_safe_relative_path_are_skipped_with_notice() {
+        let dir = tmp("dl-names");
+        let mut st = state_with(vec![
+            remote_file(Some("..\\poza"), "zly.txt", Some(1)),
+            remote_file(None, "dobry.txt", Some(2)),
+        ]);
+        let _ = emitted();
+        let req = st.begin_download(dir.clone());
+        // Indeks na liście serwera zostaje 1, mimo że element 0 wypadł z planu.
+        expect(&req, 1, FileContentsFlags::RANGE, 0, 2);
+        assert!(
+            notices()
+                .iter()
+                .any(|n| n.contains("niebezpiecznych nazwach"))
+        );
+        assert!(!dir.parent().unwrap().join("poza").exists());
+
+        // Gdy wszystkie nazwy są odrzucone, nie ma czego pobierać.
+        let mut st = state_with(vec![remote_file(None, "..", None)]);
+        let _ = emitted();
+        assert!(st.begin_download(dir.clone()).is_none());
+        assert!(st.download.is_none());
+        assert!(notices().contains(&"Brak plików do pobrania.".to_string()));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    fn started(name: &str, files: Vec<FileDescriptor>) -> (ClipState, PathBuf, u32) {
+        let dir = tmp(name);
+        let mut st = state_with(files);
+        let req = st.begin_download(dir.clone());
+        let id = req.as_ref().expect("pierwsze żądanie").stream_id;
+        let _ = emitted();
+        (st, dir, id)
+    }
+
+    #[test]
+    fn server_sending_more_than_declared_is_truncated_to_the_declared_size() {
+        let (mut st, dir, id) = started("dl-more", vec![remote_file(None, "a.txt", Some(3))]);
+        assert!(st.file_response_step(id, b"abcdefghij", false).is_none());
+        assert!(st.download.is_none());
+        assert_eq!(fs::read(dir.join("a.txt")).unwrap(), b"abc");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn server_sending_less_than_declared_gets_a_request_for_the_rest() {
+        let (mut st, dir, id) = started("dl-less", vec![remote_file(None, "a.txt", Some(10))]);
+        let req = st.file_response_step(id, b"abcd", false);
+        expect(&req, 0, FileContentsFlags::RANGE, 4, 6);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn empty_chunk_malformed_size_and_oversized_size_abort_the_download() {
+        let (mut st, dir, id) = started("dl-bad", vec![remote_file(None, "a.txt", Some(10))]);
+        assert!(st.file_response_step(id, b"", false).is_none());
+        assert!(st.download.is_none());
+        assert!(notices().iter().any(|n| n.contains("pustą porcję")));
+
+        let mut st = state_with(vec![remote_file(None, "b.txt", None)]);
+        let id = st.begin_download(dir.clone()).unwrap().stream_id;
+        let _ = emitted();
+        // Odpowiedź o rozmiarze innym niż 8 bajtów.
+        assert!(st.file_response_step(id, &[1, 2, 3], false).is_none());
+        assert!(st.download.is_none());
+        assert!(notices().iter().any(|n| n.contains("niepoprawny rozmiar")));
+
+        // Rozmiar ponad pozostały budżet łączny (bez zapisywania gigabajtów: ustawiamy licznik).
+        let mut st = state_with(vec![remote_file(None, "c.txt", None)]);
+        let id = st.begin_download(dir.clone()).unwrap().stream_id;
+        st.download.as_mut().unwrap().written = MAX_TOTAL_BYTES - 10;
+        let _ = emitted();
+        assert!(
+            st.file_response_step(id, &11u64.to_le_bytes(), false)
+                .is_none()
+        );
+        assert!(st.download.is_none());
+        assert!(notices().iter().any(|n| n.contains("przekracza limit")));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn total_budget_is_enforced_across_files_before_writing() {
+        let (mut st, dir, id) = started("dl-budget", vec![remote_file(None, "a.txt", Some(5))]);
+        st.download.as_mut().unwrap().written = MAX_TOTAL_BYTES - 2;
+        assert!(st.file_response_step(id, b"abcde", false).is_none());
+        assert!(st.download.is_none());
+        assert!(
+            notices()
+                .iter()
+                .any(|n| n.contains("limit rozmiaru schowka"))
+        );
+        assert_eq!(
+            fs::read(dir.join("a.txt")).unwrap().len(),
+            0,
+            "nic ponad limit nie trafia na dysk"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stale_stream_is_ignored_and_server_error_aborts() {
+        let (mut st, dir, id) = started("dl-stream", vec![remote_file(None, "a.txt", Some(3))]);
+        assert!(
+            st.file_response_step(id.wrapping_add(1), b"abc", false)
+                .is_none()
+        );
+        assert!(
+            st.download.is_some(),
+            "odpowiedź z cudzego strumienia nic nie zmienia"
+        );
+        assert_eq!(st.download.as_ref().unwrap().written, 0);
+        assert!(st.file_response_step(id, b"", true).is_none());
+        assert!(st.download.is_none());
+        assert!(notices().iter().any(|n| n.contains("odrzucił odczyt")));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn download_times_out_after_silence() {
+        let (mut st, dir, _) = started("dl-timeout", vec![remote_file(None, "a.txt", Some(3))]);
+        st.tick();
+        assert!(st.download.is_some());
+        // Na maszynie uruchomionej krócej niż limit czasu zegar monotoniczny nie sięga tak daleko wstecz.
+        let Some(past) = Instant::now().checked_sub(FILE_TIMEOUT + Duration::from_secs(1)) else {
+            let _ = fs::remove_dir_all(dir);
+            return;
+        };
+        st.download.as_mut().unwrap().last = past;
+        st.tick();
+        assert!(st.download.is_none());
+        assert!(notices().iter().any(|n| n.contains("Przekroczono czas")));
+        let _ = fs::remove_dir_all(dir);
     }
 }

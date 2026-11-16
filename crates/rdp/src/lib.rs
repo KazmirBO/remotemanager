@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc::Sender;
 
-pub use rdp_proto::{ClipKind, ConnectParams, FromWorker, Image, RemoteFile, ToWorker, clipfmt};
+pub use rdp_proto::{
+    ClipKind, ConnectParams, FromWorker, Image, LinkProfile, Pointer, RemoteFile, ToWorker, clipfmt,
+};
 
 /// Pojemność kolejki zdarzeń między wątkiem czytającym stdout procesu a odbiorcą. Kolejka jest
 /// ograniczona celowo: gdy odbiorca nie nadąża (np. interfejs wolno rysuje obraz), wątek czeka,
@@ -29,6 +31,9 @@ pub const WORKER_NAME: &str = if cfg!(windows) {
 pub enum Event {
     Worker(FromWorker),
     Image(Image),
+    /// Bitmapa wskaźnika myszy z serwera (lokalny kursor); wskaźnik domyślny i ukryty przychodzą
+    /// jako `Worker(PointerDefault)` i `Worker(PointerHidden)`.
+    Pointer(Pointer),
     /// Dane zdalnego schowka (odpowiedź na `ClipFetch`).
     Clip {
         kind: rdp_proto::ClipKind,
@@ -163,6 +168,11 @@ impl RdpClient {
                     },
                     Ok(Some(rdp_proto::Message::Clip { kind, data })) => {
                         if events.blocking_send(Event::Clip { kind, data }).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Some(rdp_proto::Message::Pointer(p))) => {
+                        if events.blocking_send(Event::Pointer(p)).is_err() {
                             break;
                         }
                     }

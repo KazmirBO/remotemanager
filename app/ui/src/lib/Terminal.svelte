@@ -2,9 +2,10 @@
   import { onMount } from 'svelte';
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
+  import { WebglAddon } from '@xterm/addon-webgl';
   import { api, connectSsh, sshWrite, type Id } from './api';
   import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsPassword, reconnect, requestPassword, ui } from './store.svelte';
-  import { matchAction } from './shortcuts';
+  import { matchAppAction } from './shortcuts';
   import { inherited } from './tree';
   import { terminalTheme } from './terminalThemes';
   import Icon from './Icon.svelte';
@@ -52,10 +53,21 @@
     term.open(el);
     fit.fit();
 
+    // Renderer WebGL jest szybszy od DOM. Gdy się nie uda (brak WebGL2) albo kontekst zostanie utracony,
+    // dodatek jest usuwany, a xterm wraca do renderera DOM.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch {
+      // zostaje renderer DOM
+    }
+
     // xterm zatrzymuje zdarzenia klawiszy, które dają dane (np. Ctrl+PageDown), więc skróty aplikacji
     // trzeba przepuścić jawnie: `false` oznacza, że xterm nie wyśle ich do serwera. Dlatego skróty
-    // domyślne omijają klawisze sterujące powłoki (patrz `ACTIONS`).
-    term.attachCustomKeyEventHandler((e) => !matchAction(ui.doc?.settings, e));
+    // domyślne omijają klawisze sterujące powłoki (patrz `ACTIONS`). Akcje kontekstowe (zwolnienie
+    // klawiszy RDP) tu nic nie znaczą i idą do powłoki.
+    term.attachCustomKeyEventHandler((e) => !matchAppAction(ui.doc?.settings, e));
     term.onData((s) => sessionId && void sshWrite(sessionId, encoder.encode(s)));
     term.onBinary((s) => sessionId && void sshWrite(sessionId, Uint8Array.from(s, (c) => c.charCodeAt(0))));
 
@@ -68,7 +80,8 @@
         term!.cols,
         term!.rows,
         password,
-        (bytes) => term?.write(bytes),
+        // Wywołanie zwrotne potwierdza backendowi przetworzone bajty (kontrola przepływu).
+        (bytes, done) => term?.write(bytes, done),
         (c) => {
           // Po `exit` zawsze przychodzi jeszcze `closed`; komunikat z kodem wyjścia zostaje.
           if (c.t !== 'exit' && status === 'closed') return;

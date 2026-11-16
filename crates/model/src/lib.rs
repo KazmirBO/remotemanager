@@ -3,7 +3,7 @@
 //! Kolejność rozwiązywania pola: host -> katalog -> katalog nadrzędny -> ... -> ustawienia domyślne
 //! -> wartość wbudowana. Pole puste (`None`) oznacza dziedziczenie.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 pub mod link;
 
@@ -53,6 +53,30 @@ pub enum Source {
     Defaults,
     /// Żadna warstwa nie ustawiła pola (wartość wbudowana albo brak).
     Builtin,
+}
+
+/// Profil łącza sesji RDP: dobór ustawień wydajności (tapeta, animacje, motywy).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkProfile {
+    /// Sieć lokalna albo szybkie łącze.
+    #[default]
+    Fast,
+    /// Wolne łącze: bez tapety, animacji i motywów.
+    Slow,
+}
+
+/// Kiedy sesja RDP przechwytuje klawisze systemowe (Win, Alt+Tab itp.).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RdpKeys {
+    /// Nigdy: klawisze systemowe obsługuje system lokalny.
+    #[default]
+    Never,
+    /// Tylko w trybie pełnoekranowym.
+    Fullscreen,
+    /// Zawsze, gdy sesja ma fokus.
+    Always,
 }
 
 macro_rules! fields {
@@ -115,6 +139,7 @@ fields! {
     rdp_multimon: bool,
     rdp_kerberos: bool,
     rdp_kdc: String,
+    rdp_profile: LinkProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -351,55 +376,6 @@ impl Tree {
         chain.reverse();
         Ok(chain)
     }
-
-    /// Ścieżka katalogów od korzenia do hosta (nazwy), do wyświetlania.
-    pub fn path_of(&self, host: Id) -> Result<Vec<String>> {
-        let h = self.host(host).ok_or(Error::NoHost(host))?;
-        let mut names = Vec::new();
-        let mut seen = HashSet::new();
-        let mut cur = h.folder;
-        while let Some(fid) = cur {
-            if !seen.insert(fid) {
-                return Err(Error::FolderCycle);
-            }
-            let f = self.folder(fid).ok_or(Error::NoFolder(fid))?;
-            names.push(f.name.clone());
-            cur = f.parent;
-        }
-        names.reverse();
-        Ok(names)
-    }
-
-    /// Wyszukiwanie po nazwie, adresie i notatkach (bez rozróżniania wielkości liter).
-    pub fn search(&self, query: &str) -> Vec<Id> {
-        let q = query.to_lowercase();
-        self.hosts
-            .iter()
-            .filter(|h| {
-                h.name.to_lowercase().contains(&q)
-                    || h.address.to_lowercase().contains(&q)
-                    || h.notes.to_lowercase().contains(&q)
-            })
-            .map(|h| h.id)
-            .collect()
-    }
-
-    /// Liczba hostów w katalogu i jego podkatalogach.
-    pub fn host_counts(&self) -> HashMap<Id, usize> {
-        let mut counts: HashMap<Id, usize> = HashMap::new();
-        for h in &self.hosts {
-            let mut cur = h.folder;
-            let mut seen = HashSet::new();
-            while let Some(fid) = cur {
-                if !seen.insert(fid) {
-                    break;
-                }
-                *counts.entry(fid).or_default() += 1;
-                cur = self.folder(fid).and_then(|f| f.parent);
-            }
-        }
-        counts
-    }
 }
 
 /// Zaufany klucz hosta SSH albo certyfikat RDP.
@@ -425,6 +401,12 @@ pub struct Settings {
     /// Nadpisane skróty: id akcji -> kombinacja, np. "quick_connect" -> "Ctrl+K".
     #[serde(default)]
     pub shortcuts: BTreeMap<String, String>,
+    /// Domyślny profil łącza RDP, gdy żaden poziom drzewa go nie ustawia.
+    #[serde(default)]
+    pub rdp_profile: LinkProfile,
+    /// Przechwytywanie klawiszy systemowych w sesji RDP.
+    #[serde(default)]
+    pub rdp_keys: RdpKeys,
 }
 
 fn default_terminal_scheme() -> String {
@@ -438,6 +420,8 @@ impl Default for Settings {
             terminal_font_size: 13,
             terminal_scheme: default_terminal_scheme(),
             shortcuts: BTreeMap::new(),
+            rdp_profile: LinkProfile::default(),
+            rdp_keys: RdpKeys::default(),
         }
     }
 }
@@ -572,13 +556,73 @@ mod tests {
     }
 
     #[test]
-    fn search_and_counts() {
-        let (t, root, sub, _, _) = tree_with_chain();
-        assert_eq!(t.search("SRV").len(), 1);
-        assert_eq!(t.search("10.0.").len(), 1);
-        assert!(t.search("nie ma").is_empty());
-        let c = t.host_counts();
-        assert_eq!((c[&root], c[&sub]), (1, 1));
+    fn remove_host_clears_bastion_refs_on_folders_defaults_and_hosts() {
+        let mut t = Tree::default();
+        let dir = t.add_folder("Dir", None).unwrap();
+        let brama = t.add_host("brama", "b", Protocol::Ssh, None).unwrap();
+        let inny = t.add_host("inny", "i", Protocol::Ssh, None).unwrap();
+        let web = t.add_host("web", "w", Protocol::Ssh, Some(dir)).unwrap();
+        t.defaults.jump_host = Some(brama);
+        t.folders[0].fields.jump_host = Some(brama);
+        t.hosts[1].fields.jump_host = Some(brama);
+        t.hosts[2].fields.jump_host = Some(inny);
+        t.remove_host(brama).unwrap();
+        assert_eq!(t.defaults.jump_host, None);
+        assert_eq!(t.folders[0].fields.jump_host, None);
+        assert_eq!(t.host(inny).unwrap().fields.jump_host, None);
+        // Odwołanie do innego, istniejącego hosta zostaje.
+        assert_eq!(t.host(web).unwrap().fields.jump_host, Some(inny));
+        assert_eq!(t.remove_host(brama), Err(Error::NoHost(brama)));
+    }
+
+    #[test]
+    fn orphaned_host_folder_survives_serde_and_fails_on_resolve() {
+        let (mut t, _, _, h, _) = tree_with_chain();
+        let missing = Uuid::new_v4();
+        t.hosts[0].folder = Some(missing);
+        let back: Tree = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back, t);
+        assert_eq!(back.resolve(h).unwrap_err(), Error::NoFolder(missing));
+        assert_eq!(back.jump_chain(h).unwrap_err(), Error::NoFolder(missing));
+    }
+
+    #[test]
+    fn orphaned_folder_parent_fails_on_resolve_but_folder_can_still_be_removed() {
+        let (mut t, _, sub, h, _) = tree_with_chain();
+        let missing = Uuid::new_v4();
+        t.folders.iter_mut().find(|f| f.id == sub).unwrap().parent = Some(missing);
+        let back: Tree = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back.resolve(h).unwrap_err(), Error::NoFolder(missing));
+        // Usunięcie osieroconego katalogu nadal działa i zabiera jego hosty.
+        let mut t = back;
+        assert_eq!(t.remove_folder(sub).unwrap().len(), 1);
+        assert!(t.hosts.is_empty());
+    }
+
+    #[test]
+    fn document_reads_missing_and_empty_sections() {
+        let d: Document = serde_json::from_str("{}").unwrap();
+        assert_eq!(d, Document::default());
+        let d: Document = serde_json::from_str(r#"{"tree":{},"trusted_keys":[]}"#).unwrap();
+        assert_eq!(d, Document::default());
+        // Obecne zachowanie: sekcja `settings`, jeśli jest, musi mieć `theme` i `terminal_font_size`
+        // (pozostałe pola mają wartości domyślne); pusty obiekt jest odrzucany.
+        assert!(serde_json::from_str::<Document>(r#"{"settings":{}}"#).is_err());
+        let d: Document =
+            serde_json::from_str(r#"{"settings":{"theme":"dark","terminal_font_size":14}}"#)
+                .unwrap();
+        assert_eq!(d.settings.theme, "dark");
+        let d: Document = serde_json::from_str(r#"{"tree":{"hosts":[]}}"#).unwrap();
+        assert!(d.tree.folders.is_empty() && d.trusted_keys.is_empty());
+    }
+
+    #[test]
+    fn move_host_to_missing_folder_is_refused_and_changes_nothing() {
+        let (mut t, _, sub, h, _) = tree_with_chain();
+        let missing = Uuid::new_v4();
+        assert_eq!(t.move_host(h, Some(missing)), Err(Error::NoFolder(missing)));
+        assert_eq!(t.host(h).unwrap().folder, Some(sub));
+        assert_eq!(t.move_host(missing, None), Err(Error::NoHost(missing)));
     }
 
     #[test]
@@ -648,6 +692,54 @@ mod tests {
             serde_json::from_str(r#"{"theme":"dark","terminal_font_size":14}"#).unwrap();
         assert_eq!(old.terminal_scheme, "domyslny");
         assert!(old.shortcuts.is_empty());
+    }
+
+    #[test]
+    fn new_settings_default_roundtrip_and_old_documents() {
+        let old: Settings =
+            serde_json::from_str(r#"{"theme":"dark","terminal_font_size":14}"#).unwrap();
+        assert_eq!(old.rdp_profile, LinkProfile::Fast);
+        assert_eq!(old.rdp_keys, RdpKeys::Never);
+        // Cały stary dokument (bez nowych pól w ustawieniach i w polach drzewa) dalej się czyta.
+        let doc: Document = serde_json::from_str(
+            r#"{"tree":{"folders":[],"hosts":[]},"settings":{"theme":"dark","terminal_font_size":14}}"#,
+        )
+        .unwrap();
+        assert_eq!(doc.settings.rdp_keys, RdpKeys::Never);
+        let st = Settings {
+            rdp_profile: LinkProfile::Slow,
+            rdp_keys: RdpKeys::Fullscreen,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&st).unwrap();
+        assert!(
+            json.contains(r#""rdp_profile":"slow""#) && json.contains(r#""rdp_keys":"fullscreen""#)
+        );
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), st);
+        assert_eq!(
+            serde_json::from_str::<RdpKeys>(r#""always""#).unwrap(),
+            RdpKeys::Always
+        );
+    }
+
+    #[test]
+    fn rdp_profile_is_inherited_host_folder_none() {
+        let mut t = Tree::default();
+        let f = t.add_folder("F", None).unwrap();
+        let h = t.add_host("h", "h", Protocol::Rdp, Some(f)).unwrap();
+        // Nikt nie ustawia: brak wartości i brak źródła.
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.rdp_profile, None);
+        assert_eq!(r.sources.rdp_profile, None);
+        t.folders[0].fields.rdp_profile = Some(LinkProfile::Slow);
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.rdp_profile, Some(LinkProfile::Slow));
+        assert_eq!(r.sources.rdp_profile, Some(Source::Folder(f)));
+        // Host nadpisuje katalog.
+        t.hosts[0].fields.rdp_profile = Some(LinkProfile::Fast);
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.rdp_profile, Some(LinkProfile::Fast));
+        assert_eq!(r.sources.rdp_profile, Some(Source::Host));
     }
 
     #[test]

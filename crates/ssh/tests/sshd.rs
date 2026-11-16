@@ -235,12 +235,12 @@ async fn agent_auth_shell_roundtrip_and_fingerprint() {
     .await
     .unwrap();
     let (shell, mut rx) = session.open_shell(100, 30).await.unwrap();
-    shell.write(b"echo hello-$USER\n".to_vec()).await.unwrap();
+    shell.write(b"echo hello-$USER\n".to_vec()).unwrap();
     read_until(&mut rx, &format!("hello-{}", env.user)).await;
-    shell.resize(120, 40).await.unwrap();
-    shell.write(b"stty size\n".to_vec()).await.unwrap();
+    shell.resize(120, 40).unwrap();
+    shell.write(b"stty size\n".to_vec()).unwrap();
     read_until(&mut rx, "40 120").await;
-    shell.write(b"exit\n".to_vec()).await.unwrap();
+    shell.write(b"exit\n".to_vec()).unwrap();
     let mut closed = false;
     while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
         if matches!(ev, ShellEvent::Closed) {
@@ -326,7 +326,7 @@ async fn proxy_jump_through_bastion() {
         .await
         .unwrap();
     let (shell, mut rx) = session.open_shell(80, 24).await.unwrap();
-    shell.write(b"echo via-$USER\n".to_vec()).await.unwrap();
+    shell.write(b"echo via-$USER\n".to_vec()).unwrap();
     read_until(&mut rx, &format!("via-{}", env.user)).await;
     assert_eq!(
         seen.lock().unwrap().len(),
@@ -453,6 +453,110 @@ async fn slow_agent_approval_does_not_time_out() {
     )
     .await
     .unwrap();
+    session.disconnect().await;
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+/// Wiele wywołań `write` (i `resize`) wykonanych po kolei z jednego zadania, bez czekania na sieć,
+/// z dużym blokiem pośrodku, musi dotrzeć do zdalnej powłoki w kolejności wywołań i bez przeplotu
+/// bloku z krótkimi zapisami. To test kontraktu kolejki w warstwie `ssh`. Kolejność samych
+/// wywołań od strony aplikacji zapewnia synchroniczna komenda Tauri (`ssh_write`), czego ten test
+/// nie obejmuje.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn writes_keep_call_order_without_interleaving() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let (verifier, _) = accept_all();
+    let session = Session::connect(
+        &[hop(&env, Auth::AgentSocket(env.good_agent.clone()))],
+        verifier,
+    )
+    .await
+    .unwrap();
+    let (shell, mut rx) = session.open_shell(100, 30).await.unwrap();
+    let out = env.dir.join("order.out");
+    shell
+        .write(
+            format!(
+                "echo gotowe-$USER; stty raw -echo; cat > {}\n",
+                out.display()
+            )
+            .into_bytes(),
+        )
+        .unwrap();
+    read_until(&mut rx, &format!("gotowe-{}", env.user)).await;
+    // Odbiornik musi być drenowany, inaczej zdarzenia zapchają pętlę odczytu.
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let mut expected = Vec::new();
+    let mut push = |chunk: Vec<u8>| {
+        expected.extend_from_slice(&chunk);
+        shell.write(chunk).unwrap();
+    };
+    // Same znaki drukowalne bez 0x04 i 0x03, żeby tryb raw niczego nie interpretował.
+    for i in 0..2000 {
+        push(format!("<{i:05}>").into_bytes());
+    }
+    push((0..600 * 1024).map(|i| b'a' + (i % 26) as u8).collect());
+    for i in 0..50 {
+        push(format!("[{i:05}]").into_bytes());
+    }
+    shell.resize(120, 40).unwrap();
+    push(b"koniec".to_vec());
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let len = std::fs::metadata(&out)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        if len >= expected.len() || tokio::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let got = std::fs::read(&out).unwrap();
+    assert_eq!(got.len(), expected.len(), "długość wyjścia");
+    assert!(
+        got == expected,
+        "bajty w innej kolejności albo przeplecione"
+    );
+    session.disconnect().await;
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+/// Po zamknięciu kanału zapisy zwracają błąd, a nie znikają po cichu.
+#[tokio::test]
+async fn write_after_shell_closed_reports_error() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let (verifier, _) = accept_all();
+    let session = Session::connect(
+        &[hop(&env, Auth::AgentSocket(env.good_agent.clone()))],
+        verifier,
+    )
+    .await
+    .unwrap();
+    let (shell, mut rx) = session.open_shell(100, 30).await.unwrap();
+    shell.write(b"exit\n".to_vec()).unwrap();
+    while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
+        if matches!(ev, ShellEvent::Closed) {
+            break;
+        }
+    }
+    // Pisarz może zauważyć zamknięcie dopiero przy próbie zapisu, więc kilka prób.
+    let mut failed = false;
+    for _ in 0..50 {
+        if shell.write(b"x".to_vec()).is_err() {
+            failed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(failed, "zapis po zamknięciu powłoki powinien zwrócić błąd");
+    assert!(shell.resize(80, 24).is_err());
     session.disconnect().await;
     let _ = std::fs::remove_dir_all(&env.dir);
 }

@@ -4,6 +4,7 @@
   import Modal from './Modal.svelte';
   import Icon from './Icon.svelte';
   import { SCHEMES } from './terminalThemes';
+  import { binding } from './shortcuts';
   import { applyTheme, notify, refresh, ui } from './store.svelte';
   import { fontSizeError, passwordChangeError } from './validation';
 
@@ -83,6 +84,24 @@
     </div>
     <p class="muted info">Zmiany terminala dotyczą nowych kart. Schemat można też ustawić dla katalogu lub hosta.</p>
 
+    <div class="field rdp">
+      <label for="s-profile">Łącze RDP</label>
+      <select id="s-profile" bind:value={settings.rdp_profile}>
+        <option value="fast">Szybkie</option>
+        <option value="slow">Wolne</option>
+      </select>
+      <span class="hint muted">Wolne wyłącza efekty pulpitu (tapetę, animacje, motywy) i wygładzanie czcionek, żeby serwer wysyłał mniej zmian obrazu. Profil można zmienić dla katalogu lub hosta.</span>
+    </div>
+    <div class="field">
+      <label for="s-keys">Przechwytywanie klawiszy w sesji RDP</label>
+      <select id="s-keys" bind:value={settings.rdp_keys}>
+        <option value="never">Nigdy</option>
+        <option value="fullscreen">Tylko na pełnym ekranie</option>
+        <option value="always">Zawsze, gdy sesja ma fokus</option>
+      </select>
+      <span class="hint muted">Przechwycone klawisze, także skróty aplikacji, trafiają do zdalnego pulpitu. Skrót zwalniający: {binding(ui.doc?.settings, 'release_keys')}.</span>
+    </div>
+
     {#if local}
       <label class="check">
         <input type="checkbox" bind:checked={local.rdp_clipboard} />
@@ -119,6 +138,7 @@
 <style>
   h3 { font-size: 14px; margin: 20px 0 12px; font-weight: 600; }
   .info { font-size: 12px; margin: 4px 0 0; overflow-wrap: anywhere; }
+  .rdp { margin-top: 14px; }
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .check { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; font-size: 13px; }
   .check input { margin-top: 2px; }

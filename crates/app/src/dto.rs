@@ -1,6 +1,6 @@
 //! Typy wymieniane z frontendem. Hasła nigdy nie opuszczają backendu: widok ma tylko `has_password`.
 
-use model::{Fields, Folder, Host, Id, Protocol, Settings};
+use model::{Fields, Folder, Host, Id, LinkProfile, Protocol, Settings};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -13,6 +13,7 @@ pub struct FieldsIo {
     pub rdp_multimon: Option<bool>,
     pub rdp_kerberos: Option<bool>,
     pub rdp_kdc: Option<String>,
+    pub rdp_profile: Option<LinkProfile>,
     /// Tylko wyjście.
     #[serde(default)]
     pub has_password: bool,
@@ -35,6 +36,7 @@ impl FieldsIo {
             rdp_multimon: f.rdp_multimon,
             rdp_kerberos: f.rdp_kerberos,
             rdp_kdc: f.rdp_kdc.clone(),
+            rdp_profile: f.rdp_profile,
             has_password: f.password.is_some(),
             password: None,
             clear_password: false,
@@ -61,6 +63,7 @@ impl FieldsIo {
             rdp_multimon: self.rdp_multimon,
             rdp_kerberos: self.rdp_kerberos,
             rdp_kdc: self.rdp_kdc.filter(|s| !s.is_empty()),
+            rdp_profile: self.rdp_profile,
         }
     }
 }
@@ -138,14 +141,6 @@ pub struct HostInput {
     pub fields: FieldsIo,
 }
 
-/// Efektywne wartości po dziedziczeniu wraz ze źródłem każdego pola.
-#[derive(Debug, Serialize)]
-pub struct ResolvedView {
-    pub fields: FieldsIo,
-    pub sources: model::Sources,
-    pub port: u16,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +172,21 @@ mod tests {
         }
         .apply(&existing);
         assert_eq!(clear.password, None);
+    }
+
+    #[test]
+    fn rdp_profile_goes_both_ways() {
+        let io: FieldsIo = serde_json::from_str(r#"{"rdp_profile":"slow"}"#).unwrap();
+        assert_eq!(io.rdp_profile, Some(LinkProfile::Slow));
+        let applied = io.apply(&Fields::default());
+        assert_eq!(applied.rdp_profile, Some(LinkProfile::Slow));
+        let json = serde_json::to_string(&FieldsIo::view(&applied)).unwrap();
+        assert!(json.contains(r#""rdp_profile":"slow""#), "{json}");
+        // Brak pola z frontendu to dziedziczenie, a w widoku `null`.
+        let none: FieldsIo = serde_json::from_str(r#"{"rdp_profile":null}"#).unwrap();
+        assert_eq!(none.apply(&applied).rdp_profile, None);
+        let json = serde_json::to_string(&FieldsIo::view(&Fields::default())).unwrap();
+        assert!(json.contains(r#""rdp_profile":null"#));
     }
 
     #[test]

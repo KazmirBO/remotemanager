@@ -273,26 +273,80 @@ pub struct Session {
     handles: Vec<Handle<Client>>,
 }
 
-/// Uchwyt do wysyłania danych i zmiany rozmiaru okna.
+/// Polecenie dla pisarza powłoki. Dane i zmiana rozmiaru idą jedną kolejką, więc rozmiar nie
+/// wyprzedza danych wysłanych przed nim.
+enum ShellCmd {
+    Write(Vec<u8>),
+    Resize(u32, u32),
+}
+
+/// Uchwyt do wysyłania danych i zmiany rozmiaru okna. `write` i `resize` tylko wstawiają polecenie
+/// do kolejki (kolejność wywołań = kolejność w kanale); wysyła je jedno zadanie pisarza,
+/// które kończy się po upuszczeniu wszystkich uchwytów, po błędzie zapisu albo po zamknięciu kanału.
 #[derive(Clone)]
 pub struct ShellHandle {
     writer: Arc<russh::ChannelWriteHalf<client::Msg>>,
+    queue: mpsc::UnboundedSender<ShellCmd>,
+    /// Przyczyna przerwania pisarza; po jej ustawieniu kolejne zapisy zwracają błąd.
+    failed: Arc<std::sync::OnceLock<String>>,
+    /// Sygnał końca dla pisarza (zamknięcie powłoki albo koniec kanału); budzi także pisarza
+    /// zablokowanego na zerowym oknie kanału, który sam by nie wrócił.
+    stop: Arc<tokio::sync::Notify>,
 }
 
 impl ShellHandle {
-    pub async fn write(&self, data: Vec<u8>) -> Result<()> {
-        self.writer.data_bytes(data).await.map_err(Into::into)
+    fn enqueue(&self, cmd: ShellCmd) -> Result<()> {
+        if let Some(why) = self.failed.get() {
+            return Err(Error::Protocol(why.clone()));
+        }
+        self.queue
+            .send(cmd)
+            .map_err(|_| Error::Protocol("kanał powłoki jest zamknięty".into()))
     }
 
-    pub async fn resize(&self, cols: u32, rows: u32) -> Result<()> {
-        self.writer
-            .window_change(cols, rows, 0, 0)
-            .await
-            .map_err(Into::into)
+    /// Kolejkuje bajty do wysłania; nie czeka na sieć. Błąd oznacza, że kanał jest już martwy.
+    pub fn write(&self, data: Vec<u8>) -> Result<()> {
+        self.enqueue(ShellCmd::Write(data))
+    }
+
+    pub fn resize(&self, cols: u32, rows: u32) -> Result<()> {
+        self.enqueue(ShellCmd::Resize(cols, rows))
     }
 
     pub async fn close(&self) -> Result<()> {
+        let _ = self.failed.set("kanał powłoki jest zamknięty".to_string());
+        // `notify_one` zapamiętuje sygnał, więc pisarz zobaczy go także, gdy jeszcze nie czeka.
+        self.stop.notify_one();
         self.writer.close().await.map_err(Into::into)
+    }
+}
+
+/// Zadanie pisarza: wysyła polecenia z kolejki po kolei, aż do błędu albo końca kolejki.
+async fn run_writer(
+    writer: Arc<russh::ChannelWriteHalf<client::Msg>>,
+    mut queue: mpsc::UnboundedReceiver<ShellCmd>,
+    failed: Arc<std::sync::OnceLock<String>>,
+    stop: Arc<tokio::sync::Notify>,
+) {
+    while let Some(cmd) = queue.recv().await {
+        if failed.get().is_some() {
+            return;
+        }
+        let send = async {
+            match cmd {
+                ShellCmd::Write(data) => writer.data_bytes(data).await,
+                ShellCmd::Resize(cols, rows) => writer.window_change(cols, rows, 0, 0).await,
+            }
+        };
+        let res = tokio::select! {
+            biased;
+            _ = stop.notified() => return,
+            res = send => res,
+        };
+        if let Err(e) = res {
+            let _ = failed.set(format!("zapis do powłoki nie powiódł się: {e}"));
+            return;
+        }
     }
 }
 
@@ -412,6 +466,10 @@ impl Session {
         channel.request_shell(true).await?;
         let (mut reader, writer) = channel.split();
         let (tx, rx) = mpsc::channel(256);
+        let failed = Arc::new(std::sync::OnceLock::new());
+        let closed = failed.clone();
+        let stop = Arc::new(tokio::sync::Notify::new());
+        let reader_stop = stop.clone();
         tokio::spawn(async move {
             while let Some(msg) = reader.wait().await {
                 let ev = match msg {
@@ -422,14 +480,28 @@ impl Session {
                     _ => continue,
                 };
                 if tx.send(ev).await.is_err() {
-                    return;
+                    break;
                 }
             }
+            // Kanał zamknięty (przez serwer albo lokalnie): dalsze zapisy mają zwracać błąd.
+            let _ = closed.set("kanał powłoki jest zamknięty".to_string());
+            reader_stop.notify_one();
             let _ = tx.send(ShellEvent::Closed).await;
         });
+        let writer = Arc::new(writer);
+        let (queue, queue_rx) = mpsc::unbounded_channel();
+        tokio::spawn(run_writer(
+            writer.clone(),
+            queue_rx,
+            failed.clone(),
+            stop.clone(),
+        ));
         Ok((
             ShellHandle {
-                writer: Arc::new(writer),
+                writer,
+                queue,
+                failed,
+                stop,
             },
             rx,
         ))
