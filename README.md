@@ -20,7 +20,7 @@ Sprawdzone w działaniu: sesje SSH (także przez bastion), sesje RDP z NLA, zmia
 - **Synchronizacja** zaszyfrowanego pliku przez wskazany folder (np. Syncthing, Nextcloud, dysk sieciowy) z wykrywaniem konfliktów.
 - Ikona w zasobniku, blokada pliku, edytowalne skróty, motyw jasny i ciemny, dziennik diagnostyczny bez sekretów.
 
-Poza zakresem: SFTP, tunele, podzielone widoki, import z mRemoteNG. Jeszcze niezrobione: wiele monitorów w RDP, rejestracja schematów linków w Windows, pakiet dla Gentoo, aktualizacje.
+Poza zakresem: SFTP, tunele, podzielone widoki, import z mRemoteNG. Jeszcze niezrobione: lista ostatnio używanych hostów, wiele monitorów w RDP, rejestracja schematów linków w Windows, pakiet dla Gentoo, aktualizacje.
 
 ## Wymagania
 
