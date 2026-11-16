@@ -12,6 +12,8 @@ export const ACTIONS: ActionDef[] = [
   { id: 'prev_tab', label: 'Poprzednia karta', default: 'Ctrl+PageUp' },
   { id: 'lock', label: 'Zablokuj plik', default: 'Ctrl+Shift+L' },
   { id: 'settings', label: 'Ustawienia', default: 'Ctrl+,' },
+  // Działa tylko w sesji RDP w trybie przechwytywania klawiszy (patrz `rdpKeys.ts`); poza nim nic nie robi.
+  { id: 'release_keys', label: 'Zwolnij klawisze (RDP)', default: 'Ctrl+Shift+F12' },
 ];
 
 interface KeyLike {
@@ -21,7 +23,7 @@ interface KeyLike {
 
 const MODIFIER_CODES = /^(Control|Shift|Alt|Meta|OS)(Left|Right)?$/;
 
-function keyName(code: string): string | null {
+export function keyName(code: string): string | null {
   if (MODIFIER_CODES.test(code)) return null;
   if (/^Key[A-Z]$/.test(code)) return code.slice(3);
   if (/^Digit\d$/.test(code)) return code.slice(5);

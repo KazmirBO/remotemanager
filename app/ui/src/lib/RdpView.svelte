@@ -1,10 +1,13 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { connectRdp, rdpClipboardFocus, rdpClose, rdpSend, type Id } from './api';
+  import { onMount, untrack } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
+  import { connectRdp, rdpClipboardFocus, rdpClose, rdpGrabKeys, rdpSend, type Id, type RdpControl } from './api';
   import Icon from './Icon.svelte';
   import { desktopSize } from './rdpSize';
   import { scancodeFor } from './scancodes';
-  import { matchAction } from './shortcuts';
+  import { grabActive, grabWanted, keyRoute, parseRelease } from './rdpKeys';
+  import { validPointer } from './rdpPointer';
+  import { binding, matchAction } from './shortcuts';
   import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsPassword, notify, reconnect, requestPassword, ui } from './store.svelte';
 
   let { tabId, hostId, active }: { tabId: string; hostId: Id; active: boolean } = $props();
@@ -13,7 +16,7 @@
   let canvas: HTMLCanvasElement;
   let status = $state<'connecting' | 'connected' | 'closed' | 'error'>('connecting');
   let message = $state('');
-  let sessionId: string | null = null;
+  let sessionId = $state<string | null>(null);
   const pressed = new Set<string>();
   /** Wciśnięte przyciski myszy (numeracja RDP), zwalniane przy utracie fokusu. */
   const buttons = new Set<number>();
@@ -79,8 +82,19 @@
   }
 
   function onKey(e: KeyboardEvent, down: boolean) {
-    // Skróty aplikacji (np. zamknięcie karty) zostają lokalne.
-    if (matchAction(ui.doc?.settings, e)) return;
+    // Skróty aplikacji (np. zamknięcie karty) zostają lokalne, chyba że sesja przechwytuje klawisze:
+    // wtedy poza skrótem zwalniającym wszystko idzie do zdalnego pulpitu.
+    const route = keyRoute(matchAction(ui.doc?.settings, e), grabbing);
+    if (route === 'app') return;
+    if (route === 'release') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (down && !e.repeat) {
+        releaseAll();
+        manual = false;
+      }
+      return;
+    }
     const sc = scancodeFor(e.code);
     if (!sc) return;
     e.preventDefault();
@@ -113,6 +127,60 @@
   const room = () => ({ width: stage.offsetWidth, height: stage.offsetHeight });
 
   let fullscreen = $state(false);
+
+  // Tryb przechwytywania klawiszy. `manual` to wybór użytkownika dla tej sesji (przycisk albo skrót
+  // zwalniający) i ma pierwszeństwo przed ustawieniem; `null` oznacza brak wyboru.
+  let manual = $state<boolean | null>(null);
+  let focused = $state(false);
+  let modal = $state(false);
+  const wanted = $derived(grabWanted(ui.doc?.settings.rdp_keys ?? 'never', manual, fullscreen));
+  const grabbing = $derived(grabActive(wanted, { connected: status === 'connected', tabActive: active, focused, modal }));
+  const releaseKey = $derived(binding(ui.doc?.settings, 'release_keys'));
+  // Czy backend ma teraz przejętą klawiaturę tej sesji, i czy ostrzeżenie o klawiszach systemowych już padło.
+  let grabbed = false;
+  let warnedSystem = false;
+
+  function setGrab(on: boolean) {
+    if (on === grabbed || !sessionId) return;
+    grabbed = on;
+    const id = sessionId;
+    if (on) {
+      void rdpGrabKeys(id, true, parseRelease(releaseKey)).then((r) => {
+        if (r.system || warnedSystem || !grabbed) return;
+        warnedSystem = true;
+        notify('Klawisze systemowe (Windows, Alt+Tab) zostają lokalne. Pozostałe skróty trafiają do zdalnego pulpitu.');
+      });
+    } else {
+      releaseAll();
+      void rdpGrabKeys(id, false, null);
+    }
+  }
+
+  $effect(() => {
+    const on = grabbing && sessionId !== null;
+    untrack(() => setGrab(on));
+  });
+
+  /** Wskaźnik myszy zdalnego pulpitu jako kursor CSS kanwy; dane niepoprawne dają kursor domyślny. */
+  function applyPointer(c: RdpControl) {
+    if (c.t === 'pointer_hidden') {
+      canvas.style.cursor = 'none';
+      return;
+    }
+    canvas.style.cursor = '';
+    if (c.t !== 'pointer') return;
+    const p = validPointer(c);
+    if (!p) return;
+    try {
+      const tmp = document.createElement('canvas');
+      tmp.width = p.width;
+      tmp.height = p.height;
+      tmp.getContext('2d')!.putImageData(new ImageData(Uint8ClampedArray.from(p.rgba), p.width, p.height), 0, 0);
+      canvas.style.cursor = `url(${tmp.toDataURL()}) ${p.hot_x} ${p.hot_y}, default`;
+    } catch {
+      canvas.style.cursor = '';
+    }
+  }
   async function toggleFullscreen() {
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
@@ -169,10 +237,12 @@
             if (active) queueMicrotask(() => !modalOpen() && canvas?.focus());
           } else if (c.t === 'notice') {
             notify(c.message);
+          } else if (c.t === 'pointer' || c.t === 'pointer_default' || c.t === 'pointer_hidden') {
+            applyPointer(c);
           } else if (c.t === 'error') {
             status = 'error';
             message = c.message;
-          } else {
+          } else if (c.t === 'closed') {
             status = 'closed';
             message = `Sesja zakończona: ${c.reason}`;
           }
@@ -188,8 +258,14 @@
 
     attempt(null)
       .then((id) => {
-        if (disposed) void rdpClose(id);
-        else sessionId = id;
+        if (disposed) {
+          void rdpClose(id);
+          return;
+        }
+        sessionId = id;
+        // Identyfikator nie jest stanem reaktywnym, a komunikat o połączeniu mógł przyjść przed nim:
+        // tryb przechwytywania wynikający z ustawienia trzeba wtedy włączyć tutaj.
+        setGrab(grabbing);
       })
       .catch((e) => {
         status = 'error';
@@ -200,11 +276,36 @@
     const observer = new ResizeObserver(scheduleResize);
     observer.observe(stage);
 
+    // Okno modalne zabiera fokus kanwie, ale stan sprawdzamy też jawnie, przy każdej zmianie fokusu.
+    // Odroczone: focusout wywołuje też usuwanie elementu z DOM w trakcie aktualizacji szablonu.
+    const checkModal = () => queueMicrotask(() => (modal = modalOpen()));
+    document.addEventListener('focusin', checkModal);
+    document.addEventListener('focusout', checkModal);
+
+    // Backend zwolnił przechwycone klawisze. Skrót zwalniający (rozpoznany przez hak) wyłącza tryb
+    // dla sesji jak przycisk. Utrata pierwszego planu trybu nie wyłącza: po powrocie fokusu na kanwę
+    // przechwytywanie włączy się ponownie. Hak zdjęty przez system wymaga ponownego włączenia.
+    const unlisten = listen<{ id: string; reason?: 'combo' | 'foreground' | 'hook_lost' }>('rdp-keys-released', (e) => {
+      if (e.payload.id !== sessionId) return;
+      grabbed = false;
+      releaseAll();
+      const reason = e.payload.reason ?? 'combo';
+      if (reason === 'foreground') return;
+      manual = false;
+      if (reason === 'hook_lost') notify('System przerwał przechwytywanie klawiszy. Włącz je ponownie przyciskiem na pasku sesji.');
+    });
+
     return () => {
       disposed = true;
       cancelPasswordPrompts(tabId);
       clearTimeout(resizeTimer);
       observer.disconnect();
+      document.removeEventListener('focusin', checkModal);
+      document.removeEventListener('focusout', checkModal);
+      void unlisten.then((f) => f()).catch(() => {});
+      // Backend nie może zostać z przejętą klawiaturą po zamknięciu widoku.
+      if (grabbed && sessionId) void rdpGrabKeys(sessionId, false, null);
+      grabbed = false;
       if (fullscreen) void import('@tauri-apps/api/window').then((m) => m.getCurrentWindow().setFullscreen(false)).catch(() => {});
       if (sessionId) void rdpClose(sessionId);
     };
@@ -229,16 +330,34 @@
       onkeydown={(e) => onKey(e, true)}
       onkeyup={(e) => onKey(e, false)}
       onblur={() => {
+        focused = false;
         releaseAll();
         if (sessionId) void rdpClipboardFocus(sessionId, false);
       }}
-      onfocus={() => sessionId && void rdpClipboardFocus(sessionId, true)}
+      onfocus={() => {
+        focused = true;
+        modal = modalOpen();
+        if (sessionId) void rdpClipboardFocus(sessionId, true);
+      }}
     ></canvas>
   </div>
   {#if status === 'connected'}
     <div class="bar">
       <button class="icon-btn" title={fullscreen ? 'Wyjdź z pełnego ekranu' : 'Pełny ekran'} aria-label={fullscreen ? 'Wyjdź z pełnego ekranu' : 'Pełny ekran'} onclick={toggleFullscreen}>
         <Icon name="fullscreen" size={18} />
+      </button>
+      <button
+        class="icon-btn toggle"
+        class:on={wanted}
+        aria-pressed={wanted}
+        title={`Przechwytywanie klawiszy: ${wanted ? 'włączone' : 'wyłączone'}. Zwolnienie: ${releaseKey}`}
+        aria-label={`Przechwytywanie klawiszy (zwolnienie: ${releaseKey})`}
+        onclick={() => {
+          manual = !wanted;
+          canvas.focus();
+        }}
+      >
+        <Icon name="keyboard" size={18} />
       </button>
       <button class="icon-btn" title="Ctrl+Alt+Del" aria-label="Wyślij Ctrl+Alt+Del" onclick={() => send({ t: 'ctrl_alt_del' })}>
         <Icon name="ctrl-alt-del" size={18} />
@@ -271,6 +390,9 @@
   /* Bez `max-width`: obraz jest zawsze 1:1. */
   canvas { display: block; outline-offset: -2px; background: #000; cursor: default; }
   .bar { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; padding: 4px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-control); opacity: 0.35; transition: opacity 0.15s; }
+  /* Stan włączony: wypełnienie akcentem i pogrubione obramowanie, nie sam kolor. */
+  .icon-btn.toggle.on { background: var(--accent); color: var(--on-accent); border-color: var(--text); box-shadow: inset 0 0 0 1px var(--on-accent); }
+  .icon-btn.toggle.on:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
   .bar:hover, .bar:focus-within { opacity: 1; }
   .overlay { position: absolute; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--terminal) 80%, transparent); }
   .card { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 460px; text-align: center; padding: 24px; border: 1px solid var(--border-strong); border-radius: var(--radius-window); background: var(--panel); }

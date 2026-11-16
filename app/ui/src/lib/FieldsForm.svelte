@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { FieldsIo, FolderView, HostView, Id, Protocol } from './api';
+  import { ui } from './store.svelte';
   import { inherited, inheritsPassword, type InheritableKey } from './tree';
   import Icon from './Icon.svelte';
   import { SCHEMES } from './terminalThemes';
@@ -28,6 +29,8 @@
   };
   const jumpCandidates = $derived(hosts.filter((h) => h.protocol === 'ssh' && h.id !== selfId));
   const inheritedPw = $derived(inheritsPassword(folders, startFolder));
+  const profileName = (v: unknown) => (v === 'slow' ? 'wolne' : 'szybkie');
+  const profileHint = $derived(inherited(folders, startFolder, 'rdp_profile'));
   const kerberosHint = $derived(inherited(folders, startFolder, 'rdp_kerberos'));
 </script>
 
@@ -83,6 +86,21 @@
       <span class="hint"><Icon name="route" size={12} /> Dziedziczone z „{kerberosHint.from}”: {kerberosHint.value ? 'tak' : 'nie'}</span>
     {/if}
     <span class="hint">Wymaga pełnej nazwy hosta (np. dc01.firma.local) i hasła. Brak logowania jednokrotnego z ccache.</span>
+  </div>
+  <div class="field">
+    <label for="f-profile">Łącze (RDP)</label>
+    <select id="f-profile" value={fields.rdp_profile ?? 'inherit'}
+      onchange={(e) => { const v = e.currentTarget.value; fields.rdp_profile = v === 'inherit' ? null : (v as 'fast' | 'slow'); }}>
+      <option value="inherit">Dziedzicz ({profileName(profileHint?.value ?? ui.doc?.settings.rdp_profile ?? 'fast')})</option>
+      <option value="fast">Szybkie</option>
+      <option value="slow">Wolne</option>
+    </select>
+    {#if fields.rdp_profile === null}
+      <span class="hint"><Icon name="route" size={12} />
+        {profileHint ? `Dziedziczone z „${profileHint.from}”: ${profileName(profileHint.value)}` : `Z ustawień aplikacji: ${profileName(ui.doc?.settings.rdp_profile ?? 'fast')}`}
+      </span>
+    {/if}
+    <span class="hint">Wolne wyłącza efekty pulpitu, żeby serwer wysyłał mniej zmian obrazu. Dotyczy nowych połączeń.</span>
   </div>
   {#if fields.rdp_kerberos ?? kerberosHint?.value}
     <div class="field">

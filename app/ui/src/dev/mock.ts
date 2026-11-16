@@ -12,10 +12,10 @@ let password: string | null = params.get('state') === 'locked' || params.get('se
 let unlocked = params.has('seed');
 
 const emptyFields = (): FieldsIo => ({
-  port: null, username: null, domain: null, jump_host: null, terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, has_password: false,
+  port: null, username: null, domain: null, jump_host: null, terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, rdp_profile: null, has_password: false,
 });
 const secrets = new Map<string, string>();
-const doc: DocView = { folders: [], hosts: [], settings: { theme: 'dark', terminal_font_size: 13, terminal_scheme: 'domyslny', shortcuts: {} }, trusted_count: 0 };
+const doc: DocView = { folders: [], hosts: [], settings: { theme: 'dark', terminal_font_size: 13, terminal_scheme: 'domyslny', shortcuts: {}, rdp_profile: 'fast', rdp_keys: 'never' }, trusted_count: 0 };
 const trusted = new Set<string>();
 
 function seed() {
@@ -183,6 +183,8 @@ const handlers: Record<string, Handler> = {
   take_pending_link: () => params.get('link'),
   ssh_resize: () => {},
   ssh_close: ({ id }) => { sessions.delete(id); },
+  ssh_ack: () => {},
+  rdp_grab_keys: () => ({ system: false }),
   rdp_send: () => {},
   rdp_ack: () => {},
   rdp_close: () => {},

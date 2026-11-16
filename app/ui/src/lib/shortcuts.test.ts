@@ -6,7 +6,7 @@ const ev = (code: string, mods: Partial<Record<'ctrlKey' | 'metaKey' | 'altKey' 
   ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, code, ...mods,
 });
 const settings = (shortcuts: Record<string, string>): Settings => ({
-  theme: 'dark', terminal_font_size: 13, terminal_scheme: 'domyslny', shortcuts,
+  theme: 'dark', terminal_font_size: 13, terminal_scheme: 'domyslny', shortcuts, rdp_profile: 'fast', rdp_keys: 'never',
 });
 
 describe('comboFromEvent', () => {

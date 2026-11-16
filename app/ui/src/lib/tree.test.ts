@@ -46,6 +46,13 @@ describe('inherited', () => {
     expect(inherited(f, 'a', 'port', 2222)).toBeNull();
     expect(inherited(f, 'b', 'username', 'ktoś-inny')).toEqual({ value: 'admin', from: 'Firma' });
   });
+  it('dziedziczy profil łącza RDP z najbliższego katalogu, który go ustawia', () => {
+    const p = [folder('a', 'Firma', null, { rdp_profile: 'slow' }), folder('b', 'Sub', 'a'), folder('c', 'Biuro', 'b', { rdp_profile: 'fast' })];
+    expect(inherited(p, 'b', 'rdp_profile')).toEqual({ value: 'slow', from: 'Firma' });
+    expect(inherited(p, 'c', 'rdp_profile')).toEqual({ value: 'fast', from: 'Biuro' });
+    // Żaden poziom nie ustawia profilu: wartość z Ustawień wybiera widok.
+    expect(inherited([folder('x', 'X', null)], 'x', 'rdp_profile')).toBeNull();
+  });
   it('nie zapętla się przy cyklu', () => {
     const cyc = [folder('a', 'A', 'b'), folder('b', 'B', 'a')];
     expect(inherited(cyc, 'a', 'port')).toBeNull();

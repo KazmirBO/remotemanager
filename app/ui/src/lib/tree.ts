@@ -56,7 +56,7 @@ export function matches(h: HostView, query: string): boolean {
 }
 
 export type InheritableKey =
-  | 'port' | 'username' | 'domain' | 'jump_host' | 'terminal_scheme' | 'rdp_multimon' | 'rdp_kerberos' | 'rdp_kdc';
+  | 'port' | 'username' | 'domain' | 'jump_host' | 'terminal_scheme' | 'rdp_multimon' | 'rdp_kerberos' | 'rdp_kdc' | 'rdp_profile';
 
 /**
  * Wartość dziedziczona dla pola, licząc od katalogu `start` w górę.
