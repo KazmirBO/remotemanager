@@ -76,8 +76,8 @@ fn main() -> anyhow::Result<()> {
         ime_file_name: String::new(),
         dig_product_id: String::new(),
         desktop_size: connector::DesktopSize {
-            width: 1280,
-            height: 800,
+            width: cli.width,
+            height: cli.height,
         },
         bitmap: None,
         client_build: 0,

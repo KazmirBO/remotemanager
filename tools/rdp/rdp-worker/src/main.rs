@@ -32,6 +32,7 @@ use tokio_rustls::rustls;
 
 type Tls = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 mod clip;
+mod memlimit;
 
 type Framed = ironrdp_blocking::Framed<Tls>;
 
@@ -42,6 +43,19 @@ const FLUSH_EVERY: Duration = Duration::from_millis(16);
 /// że zmiany rozdzielczości w trakcie sesji nie obsługuje.
 const RESIZE_WAIT: Duration = Duration::from_secs(5);
 
+// W testach komunikaty nie idą na stdout, tylko do listy odczytywanej przez test.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static EMITTED: std::cell::RefCell<Vec<FromWorker>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn emit(ev: &FromWorker) {
+    EMITTED.with(|e| e.borrow_mut().push(ev.clone()));
+}
+
+#[cfg(not(test))]
 pub(crate) fn emit(ev: &FromWorker) {
     let mut out = io::stdout().lock();
     let _ = rdp_proto::write_json(&mut out, ev);
@@ -54,6 +68,10 @@ pub(crate) fn log(message: impl Into<String>) {
     });
 }
 
+#[cfg(test)]
+pub(crate) fn emit_clip(_kind: ClipKind, _data: &[u8]) {}
+
+#[cfg(not(test))]
 pub(crate) fn emit_clip(kind: ClipKind, data: &[u8]) {
     let mut out = io::stdout().lock();
     let _ = rdp_proto::write_clip(&mut out, kind, data);
@@ -127,7 +145,7 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
 
     let factory =
         ConnectionActivationFactory::new(config, result.io_channel_id, result.user_channel_id);
-    let (w, h) = (result.desktop_size.width, result.desktop_size.height);
+    let (w, h) = validate_desktop_size(result.desktop_size.width, result.desktop_size.height)?;
     let mut image = DecodedImage::new(PixelFormat::RgbA32, w, h);
     let mut stage = ActiveStageBuilder {
         static_channels: result.static_channels,
@@ -152,6 +170,7 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
     let mut pending_resize: Option<(u32, u32, Instant)> = None;
     let mut resize_refused = false;
     loop {
+        memlimit::check_soft()?;
         loop {
             match rx.try_recv() {
                 Ok(ToWorker::Close) | Err(TryRecvError::Disconnected) => {
@@ -294,6 +313,21 @@ fn resize_step(ready: bool, waited: Duration) -> ResizeStep {
     }
 }
 
+/// Największy bok pulpitu, jaki przyjmujemy od serwera (górna granica rozsądku, a nie limit
+/// Display Control 200..8192, którym ograniczamy prośby klienta).
+const MAX_DESKTOP_SIDE: u16 = 16384;
+
+/// Rozmiar pulpitu podany przez serwer trafia do bufora obrazu, więc zero i wartości absurdalne
+/// odrzucamy przed alokacją.
+fn validate_desktop_size(width: u16, height: u16) -> anyhow::Result<(u16, u16)> {
+    if width == 0 || height == 0 || width > MAX_DESKTOP_SIDE || height > MAX_DESKTOP_SIDE {
+        bail!(
+            "serwer podał nieprawidłowy rozmiar pulpitu: {width}x{height} (dozwolone 1..={MAX_DESKTOP_SIDE} w każdym wymiarze)"
+        );
+    }
+    Ok((width, height))
+}
+
 /// Sekwencja deaktywacji i reaktywacji (MS-RDPBCGR 1.3.1.3): serwer zmienia parametry pulpitu.
 fn reactivate(
     framed: &mut Framed,
@@ -347,9 +381,10 @@ fn reactivate(
     );
     stage.set_share_id(share_id);
     stage.set_enable_server_pointer(server_pointer);
-    *image = DecodedImage::new(PixelFormat::RgbA32, desktop.width, desktop.height);
+    let (w, h) = validate_desktop_size(desktop.width, desktop.height)?;
+    *image = DecodedImage::new(PixelFormat::RgbA32, w, h);
     set_timeout(framed, POLL);
-    Ok((desktop.width, desktop.height))
+    Ok((w, h))
 }
 
 fn handle(
@@ -742,6 +777,24 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_size_is_validated() {
+        assert_eq!(validate_desktop_size(1, 1).unwrap(), (1, 1));
+        assert_eq!(validate_desktop_size(1920, 1080).unwrap(), (1920, 1080));
+        assert_eq!(validate_desktop_size(16384, 16384).unwrap(), (16384, 16384));
+        for (w, h) in [
+            (0, 0),
+            (0, 600),
+            (800, 0),
+            (16385, 600),
+            (800, 16385),
+            (65535, 65535),
+        ] {
+            let e = validate_desktop_size(w, h).unwrap_err().to_string();
+            assert!(e.contains("nieprawidłowy rozmiar pulpitu"), "{e}");
+        }
+    }
 
     #[test]
     fn resize_waits_for_display_control_then_gives_up() {
