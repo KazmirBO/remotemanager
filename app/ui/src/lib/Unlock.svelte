@@ -70,5 +70,6 @@
   h1 { font-size: 20px; margin: 0 0 8px; font-weight: 600; }
   p { margin: 0 0 20px; font-size: 13px; }
   .row { display: flex; gap: 8px; align-items: center; }
-  .error { font-size: 13px; margin-bottom: 14px; display: flex; gap: 6px; align-items: center; border: 1px solid var(--text); border-radius: var(--radius-control); padding: 8px 10px; }
+  /* overflow-wrap: komunikat może zawierać długą ścieżkę pliku bez spacji. */
+  .error { font-size: 13px; margin-bottom: 14px; display: flex; gap: 6px; align-items: center; overflow-wrap: anywhere; border: 1px solid var(--text); border-radius: var(--radius-control); padding: 8px 10px; }
 </style>

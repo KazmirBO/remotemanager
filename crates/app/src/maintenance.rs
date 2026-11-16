@@ -122,13 +122,20 @@ async fn sync_pull_locked(
     // Blokada dokumentu na czas operacji na pliku, żeby zapis z interfejsu się nie wtrącił.
     let mut guard = state.inner.lock().await;
     let planned = sync::status(&state.path, folder, base).map_err(err)?;
-    if pulls(planned, keep)
-        && let Err(e) = vault::validate_file(&sync::remote_path(folder))
-    {
-        state.log(format!("synchronizacja: odmowa pobrania, zdalny plik: {e}"));
-        return Err(format!(
-            "Zdalny plik nie wygląda na poprawny plik z hostami ({e}). Nie pobrano go, lokalny plik zostaje bez zmian."
-        ));
+    if pulls(planned, keep) {
+        let remote = sync::remote_path(folder);
+        // Kontrola strukturalna, a gdy plik ma ten sam klucz co odblokowany sejf (ta sama sól
+        // i parametry KDF), także pełne uwierzytelnienie: plik obcięty w szyfrogramie odpada.
+        let checked = vault::validate_file(&remote).and_then(|()| match guard.as_ref() {
+            Some(u) => u.vault.verify_file(&remote).map(|_| ()),
+            None => Ok(()),
+        });
+        if let Err(e) = checked {
+            state.log(format!("synchronizacja: odmowa pobrania, zdalny plik: {e}"));
+            return Err(format!(
+                "Zdalny plik nie wygląda na poprawny plik z hostami ({e}). Nie pobrano go, lokalny plik zostaje bez zmian."
+            ));
+        }
     }
     let (status, new_base) = sync::sync(&state.path, folder, base, keep).map_err(|e| match e {
         sync::Error::Conflict => "Konflikt: wybierz, którą wersję zachować.".to_string(),
@@ -511,5 +518,34 @@ mod tests {
         assert!(!sync::pre_pull_copy(&path).exists());
         assert!(state.inner.lock().await.is_some(), "plik nadal odblokowany");
         assert_eq!(state.trust.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn remote_truncated_inside_ciphertext_with_same_key_is_refused() {
+        let (path, remote) = dirs("trunc-mid");
+        // Dokument na tyle duży, żeby szyfrogram był wyraźnie dłuższy od nagłówka.
+        let mut doc = doc_with("Lokalny");
+        for i in 0..50 {
+            doc.tree.add_folder(format!("k{i}"), None).unwrap();
+        }
+        let vault = Vault::create(&path, "haslo", KdfParams::FAST_FOR_TESTS, &doc).unwrap();
+        let state = AppState::new(path.clone());
+        *state.inner.lock().await = Some(Unlocked { vault, doc });
+        let (_, base) = sync::sync(&path, &remote, None, None).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let remote_file = sync::remote_path(&remote);
+        let full = std::fs::read(&remote_file).unwrap();
+        // Strukturalnie poprawny (dłuższy niż nagłówek i znacznik), ale ucięty w połowie.
+        std::fs::write(&remote_file, &full[..full.len() / 2]).unwrap();
+        vault::validate_file(&remote_file).expect("strukturalnie przechodzi");
+
+        let err = sync_pull_locked(&state, &remote, base.as_deref(), None)
+            .await
+            .err()
+            .expect("odmowa");
+        assert!(err.contains("Nie pobrano"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!sync::pre_pull_copy(&path).exists());
+        assert!(state.inner.lock().await.is_some(), "plik nadal odblokowany");
     }
 }

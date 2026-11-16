@@ -457,9 +457,11 @@ async fn slow_agent_approval_does_not_time_out() {
     let _ = std::fs::remove_dir_all(&env.dir);
 }
 
-/// Wiele zapisów wypuszczonych bez odstępów oraz duży blok z krótkimi zapisami zaraz po nim muszą
-/// dotrzeć do zdalnej powłoki w kolejności wywołań i bez przeplotu. Zapisy robią różne zadania
-/// uruchamiane po kolei, ale kolejność wywołań `write` ustala ich kolejność w kolejce.
+/// Wiele wywołań `write` (i `resize`) wykonanych po kolei z jednego zadania, bez czekania na sieć,
+/// z dużym blokiem pośrodku, musi dotrzeć do zdalnej powłoki w kolejności wywołań i bez przeplotu
+/// bloku z krótkimi zapisami. To test kontraktu kolejki w warstwie `ssh`. Kolejność samych
+/// wywołań od strony aplikacji zapewnia synchroniczna komenda Tauri (`ssh_write`), czego ten test
+/// nie obejmuje.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn writes_keep_call_order_without_interleaving() {
     let Some(env) = setup() else {

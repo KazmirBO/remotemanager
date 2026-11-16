@@ -38,7 +38,10 @@
       );
       if (!items.length) return;
       const first = items[0], last = items[items.length - 1];
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      // Fokus na samym oknie (np. przy wyłączonym przycisku głównym): Tab wchodzi na pierwszy element,
+      // Shift+Tab na ostatni, zamiast wyjść poza okno.
+      if (document.activeElement === dialog) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+      else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     }
   }

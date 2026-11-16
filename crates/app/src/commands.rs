@@ -17,6 +17,22 @@ fn vault_err(e: vault::Error) -> String {
     }
 }
 
+/// Błąd odblokowania; przy błędzie odszyfrowania, gdy obok pliku leży kopia sprzed ostatniego
+/// pobrania przy synchronizacji, komunikat wskazuje jej pełną ścieżkę.
+fn unlock_err(e: vault::Error, path: &std::path::Path) -> String {
+    let decrypt = matches!(e, vault::Error::Decrypt);
+    let msg = vault_err(e);
+    let copy = sync::pre_pull_copy(path);
+    if decrypt && copy.exists() {
+        format!(
+            "{msg} Wersja sprzed ostatniego pobrania przy synchronizacji leży w pliku: {}",
+            copy.display()
+        )
+    } else {
+        msg
+    }
+}
+
 #[tauri::command]
 pub async fn vault_state(state: State<'_, AppState>) -> Result<&'static str, String> {
     if state.inner.lock().await.is_some() {
@@ -52,7 +68,7 @@ pub async fn unlock(state: State<'_, AppState>, password: String) -> Result<(), 
         tokio::task::spawn_blocking(move || Vault::open::<Document>(path, &password))
             .await
             .map_err(err)?
-            .map_err(vault_err)?;
+            .map_err(|e| unlock_err(e, &state.path))?;
     *state.inner.lock().await = Some(Unlocked { vault, doc });
     state.log("odblokowano plik z hostami");
     Ok(())

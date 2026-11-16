@@ -215,6 +215,9 @@ pub async fn connect_ssh(
     password: Option<String>,
     on_event: Channel<InvokeResponseBody>,
 ) -> Result<Uuid, String> {
+    // Licznik przeładowań musi być odczytany przed pierwszym `await`, inaczej przeładowanie
+    // w czasie czekania na blokadę dokumentu uszłoby uwadze kontroli po wstawieniu sesji.
+    let reloads = state.reloads.load(Ordering::SeqCst);
     let (hops, host_name) = state
         .read(|doc| {
             let host = doc.tree.host(host_id).ok_or("Nie ma takiego hosta")?;
@@ -238,7 +241,6 @@ pub async fn connect_ssh(
         target.auth = Auth::Password(Arc::new(Zeroizing::new(pw)));
     }
     let target_uses_agent = matches!(hops.last().map(|h| &h.auth), Some(Auth::Agent));
-    let reloads = state.reloads.load(Ordering::SeqCst);
     state.log(format!("SSH: łączenie z {host_name}"));
 
     let app2 = app.clone();

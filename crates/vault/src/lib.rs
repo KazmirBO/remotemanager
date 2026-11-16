@@ -75,6 +75,15 @@ impl KdfParams {
     };
 }
 
+/// Wynik `Vault::verify_file`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verified {
+    /// Ten sam klucz, plik uwierzytelniony.
+    SameKey,
+    /// Inna sól albo parametry KDF: nie da się sprawdzić bez hasła.
+    OtherKey,
+}
+
 /// Otwarty plik: trzyma klucz, więc zapis nie wymaga ponownego KDF.
 pub struct Vault {
     path: PathBuf,
@@ -186,6 +195,33 @@ impl Vault {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Sprawdza inny plik kluczem z pamięci, bez pytania o hasło. Gdy sól i parametry KDF w jego
+    /// nagłówku są takie same jak w tym sejfie, uwierzytelnia całość (nagłówek jako AAD) i zwraca
+    /// `SameKey` albo błąd; inna sól lub inne parametry (zmiana hasła głównego gdzie indziej)
+    /// dają `OtherKey` bez błędu, bo nie ma czym sprawdzić. Odszyfrowana treść jest zerowana
+    /// i nie opuszcza funkcji.
+    pub fn verify_file(&self, path: &Path) -> Result<Verified> {
+        let data = fs::read(path)?;
+        let (kdf, salt, nonce) = parse_header(&data)?;
+        if kdf != self.kdf || salt != self.salt {
+            return Ok(Verified::OtherKey);
+        }
+        let cipher = XChaCha20Poly1305::new_from_slice(self.key.as_ref())
+            .map_err(|_| Error::BadKdfParams)?;
+        let _plain = Zeroizing::new(
+            cipher
+                .decrypt(
+                    &XNonce::from(nonce),
+                    Payload {
+                        msg: &data[HEADER_LEN..],
+                        aad: &data[..HEADER_LEN],
+                    },
+                )
+                .map_err(|_| Error::Decrypt)?,
+        );
+        Ok(Verified::SameKey)
     }
 
     pub fn set_backup_count(&mut self, n: usize) {
@@ -489,6 +525,33 @@ mod tests {
             Err(Error::UnsupportedVersion(9))
         ));
         assert!(validate_file(&p.with_extension("brak")).is_err());
+    }
+
+    #[test]
+    fn verify_file_same_key_corrupted_and_other_key() {
+        let p = tmp("verify");
+        let v = Vault::create(&p, "x", KdfParams::FAST_FOR_TESTS, &doc(20)).unwrap();
+        assert_eq!(v.verify_file(&p).unwrap(), Verified::SameKey);
+        // Zapis zmienia nonce, ale nie sól: plik nadal tym samym kluczem.
+        v.save(&doc(21)).unwrap();
+        assert_eq!(v.verify_file(&p).unwrap(), Verified::SameKey);
+        let data = fs::read(&p).unwrap();
+        // Obcięty w środku szyfrogramu.
+        let cut = p.with_extension("obciety");
+        fs::write(&cut, &data[..HEADER_LEN + (data.len() - HEADER_LEN) / 2]).unwrap();
+        assert!(matches!(v.verify_file(&cut), Err(Error::Decrypt)));
+        // Zmieniony bajt szyfrogramu.
+        let mut bad = data.clone();
+        *bad.last_mut().unwrap() ^= 1;
+        fs::write(&cut, &bad).unwrap();
+        assert!(matches!(v.verify_file(&cut), Err(Error::Decrypt)));
+        // Inne hasło (inna sól): nie da się sprawdzić, ale bez błędu.
+        let other = p.with_extension("inne");
+        Vault::create(&other, "y", KdfParams::FAST_FOR_TESTS, &doc(1)).unwrap();
+        assert_eq!(v.verify_file(&other).unwrap(), Verified::OtherKey);
+        // Uszkodzona struktura to nadal błąd.
+        fs::write(&cut, &data[..30]).unwrap();
+        assert!(matches!(v.verify_file(&cut), Err(Error::Truncated)));
     }
 
     #[test]

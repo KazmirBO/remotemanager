@@ -554,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_folder_parent_fails_on_resolve_and_blocks_moves_under_it() {
+    fn orphaned_folder_parent_fails_on_resolve_but_folder_can_still_be_removed() {
         let (mut t, _, sub, h, _) = tree_with_chain();
         let missing = Uuid::new_v4();
         t.folders.iter_mut().find(|f| f.id == sub).unwrap().parent = Some(missing);

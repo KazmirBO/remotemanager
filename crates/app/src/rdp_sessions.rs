@@ -97,6 +97,9 @@ pub async fn connect_rdp(
     password: Option<String>,
     on_event: Channel<InvokeResponseBody>,
 ) -> Result<Uuid, String> {
+    // Licznik przeładowań musi być odczytany przed pierwszym `await`, inaczej przeładowanie
+    // w czasie czekania na blokadę dokumentu uszłoby uwadze kontroli po wstawieniu sesji.
+    let reloads = state.reloads.load(Ordering::SeqCst);
     let params = state
         .read(|doc| {
             let host = doc.tree.host(host_id).ok_or("Nie ma takiego hosta")?;
@@ -134,7 +137,6 @@ pub async fn connect_rdp(
         })
         .await?;
     let (host, port) = (params.host.clone(), params.port);
-    let reloads = state.reloads.load(Ordering::SeqCst);
     state.log(format!("RDP: łączenie z {host}:{port}"));
 
     let worker = rdp::find_worker().ok_or(
