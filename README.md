@@ -8,14 +8,14 @@ Nazwa "Menedżer sesji" i polecenie `multiremotemanager` są robocze.
 
 Wczesna wersja rozwojowa (0.1.0), bez wydań i bez gotowych pakietów. Rozwijana i używana na Linuksie (Gentoo, KDE na Waylandzie). Kod jest pisany także pod Windows, ale na Windows nie był dotąd uruchamiany.
 
-Sprawdzone w działaniu: sesje SSH (także przez bastion), sesje RDP z NLA, zmiana rozdzielczości pulpitu razem z oknem i schowek w obie strony. Niesprawdzone: Kerberos z prawdziwym KDC. Szczegóły i lista rzeczy niezweryfikowanych są w [PROJECT.md](PROJECT.md).
+Sprawdzone w działaniu: sesje SSH (także przez bastion), sesje RDP z NLA, zmiana rozdzielczości pulpitu razem z oknem i schowek w obie strony. Niesprawdzone: Kerberos z prawdziwym KDC oraz dodane 16.11.2026 lokalny kursor RDP, profil łącza, przechwytywanie klawiszy i renderer WebGL terminala. Szczegóły i lista rzeczy niezweryfikowanych są w [PROJECT.md](PROJECT.md).
 
 ## Możliwości
 
 - **Drzewo hostów** z katalogami, ulubionymi, wyszukiwaniem i przeciąganiem. Port, użytkownik, domena, hasło, bastion i schemat terminala dziedziczą się z katalogu, a host może każde pole nadpisać.
 - **Zaszyfrowany plik hostów**: Argon2id i XChaCha20-Poly1305, zapis atomowy, pięć rotowanych kopii zapasowych z przywracaniem. Hasła nie trafiają do warstwy interfejsu.
-- **SSH**: terminal w karcie, uwierzytelnianie agentem SSH albo hasłem, bastiony (odpowiednik ProxyJump, także łańcuchy), zapamiętywanie kluczy hostów z ostrzeżeniem o zmianie, opcjonalny dziennik sesji.
-- **RDP**: pulpit w karcie z uwierzytelnianiem NLA (CredSSP), rozdzielczość podążająca za rozmiarem okna, pełny ekran, Ctrl+Alt+Del, schowek w obie strony (tekst, HTML, obrazy, pliki i katalogi), zapamiętywanie certyfikatów.
+- **SSH**: terminal w karcie z rendererem WebGL, uwierzytelnianie agentem SSH albo hasłem, bastiony (odpowiednik ProxyJump, także łańcuchy), zapamiętywanie kluczy hostów z ostrzeżeniem o zmianie, opcjonalny dziennik sesji.
+- **RDP**: pulpit w karcie z uwierzytelnianiem NLA (CredSSP), rozdzielczość podążająca za rozmiarem okna, pełny ekran, Ctrl+Alt+Del, lokalny kursor, profil łącza (szybkie albo wolne, także dla katalogu i hosta), przechwytywanie klawiszy z ustawieniem i przyciskiem (także klawiszy systemowych, np. Win i Alt+Tab), schowek w obie strony (tekst, HTML, obrazy, pliki i katalogi), zapamiętywanie certyfikatów.
 - **Szybkie łączenie** (domyślnie Ctrl+Shift+K) i linki `ssh://` oraz `rdp://`. Link nigdy nie łączy sam: otwiera zapisany host z pytaniem albo formularz nowego.
 - **Synchronizacja** zaszyfrowanego pliku przez wskazany folder (np. Syncthing, Nextcloud, dysk sieciowy) z wykrywaniem konfliktów.
 - Ikona w zasobniku, blokada pliku, edytowalne skróty, motyw jasny i ciemny, dziennik diagnostyczny bez sekretów.
