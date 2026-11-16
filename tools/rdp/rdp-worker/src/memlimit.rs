@@ -47,11 +47,23 @@ impl<A> Counting<A> {
 
     /// Rezerwuje `n` bajtów w liczniku; false, gdy przekroczyłoby to twardy próg.
     fn reserve(&self, n: usize) -> bool {
-        self.used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-                admit(cur, n, self.limit).then_some(cur + n)
-            })
-            .is_ok()
+        // Pętla `compare_exchange` zamiast `fetch_update`: działa na każdej wersji kompilatora
+        // (`fetch_update` jest przestarzałe od Rust 1.100, a jego następcy nie ma w starszych).
+        let mut current = self.used.load(Ordering::Relaxed);
+        loop {
+            if !admit(current, n, self.limit) {
+                return false;
+            }
+            match self.used.compare_exchange_weak(
+                current,
+                current + n,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(seen) => current = seen,
+            }
+        }
     }
 
     fn release(&self, n: usize) {
