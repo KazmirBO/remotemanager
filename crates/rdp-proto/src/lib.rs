@@ -556,4 +556,193 @@ mod tests {
         .unwrap();
         assert_eq!(json, r#"{"t":"connected","width":1,"height":2}"#);
     }
+
+    /// Migawka serializacji JSON każdego wariantu `ToWorker` i `FromWorker`. Aplikacja i proces
+    /// RDP są budowane osobno (osobne workspace'y), a stara kopia procesu pomija nieznane
+    /// komunikaty po cichu, więc zmiana kształtu któregokolwiek wariantu bez podbicia [`PROTOCOL`]
+    /// psuje sesje bez śladu. Gdy ten test przestaje przechodzić: zmień migawkę i PODBIJ `PROTOCOL`.
+    #[test]
+    fn wire_format_snapshot_requires_protocol_bump() {
+        // Wyczerpujące dopasowania (bez wzorca domyślnego): nowy wariant nie skompiluje się,
+        // dopóki ktoś nie doda go do migawki poniżej.
+        fn covered_to(w: &ToWorker) {
+            match w {
+                ToWorker::Connect(_)
+                | ToWorker::Trust { .. }
+                | ToWorker::MouseMove { .. }
+                | ToWorker::MouseButton { .. }
+                | ToWorker::Wheel { .. }
+                | ToWorker::Key { .. }
+                | ToWorker::CtrlAltDel
+                | ToWorker::Resize { .. }
+                | ToWorker::ClipAnnounce { .. }
+                | ToWorker::ClipAnnounceFiles { .. }
+                | ToWorker::ClipFetch { .. }
+                | ToWorker::ClipFetchFiles
+                | ToWorker::ClipDownload { .. }
+                | ToWorker::ClipData { .. }
+                | ToWorker::Close => {}
+            }
+        }
+        fn covered_from(w: &FromWorker) {
+            match w {
+                FromWorker::Cert { .. }
+                | FromWorker::Connected { .. }
+                | FromWorker::Resized { .. }
+                | FromWorker::ClipRemote { .. }
+                | FromWorker::ClipRequest { .. }
+                | FromWorker::ClipFiles { .. }
+                | FromWorker::ClipFilesDone { .. }
+                | FromWorker::Hello { .. }
+                | FromWorker::Notice { .. }
+                | FromWorker::Log { .. }
+                | FromWorker::Error { .. }
+                | FromWorker::Closed { .. } => {}
+            }
+        }
+        let to = [
+            ToWorker::Connect(params()),
+            ToWorker::Trust { accept: true },
+            ToWorker::MouseMove { x: 1, y: 2 },
+            ToWorker::MouseButton {
+                button: 2,
+                down: true,
+            },
+            ToWorker::Wheel {
+                vertical: true,
+                delta: -120,
+            },
+            ToWorker::Key {
+                scancode: 30,
+                extended: false,
+                down: true,
+            },
+            ToWorker::CtrlAltDel,
+            ToWorker::Resize {
+                width: 800,
+                height: 600,
+            },
+            ToWorker::ClipAnnounce {
+                kinds: vec![ClipKind::Text, ClipKind::Html, ClipKind::Image],
+            },
+            ToWorker::ClipAnnounceFiles {
+                paths: vec!["/a".into()],
+            },
+            ToWorker::ClipFetch {
+                kind: ClipKind::Image,
+            },
+            ToWorker::ClipFetchFiles,
+            ToWorker::ClipDownload { dir: "/d".into() },
+            ToWorker::Close,
+        ];
+        let from = [
+            FromWorker::Cert {
+                fingerprint: "ab".into(),
+                subject: "s".into(),
+            },
+            FromWorker::Connected {
+                width: 1,
+                height: 2,
+            },
+            FromWorker::Resized {
+                width: 3,
+                height: 4,
+            },
+            FromWorker::ClipRemote {
+                kinds: vec![ClipKind::Text],
+                files: true,
+            },
+            FromWorker::ClipRequest {
+                kind: ClipKind::Html,
+            },
+            FromWorker::ClipFiles {
+                files: vec![RemoteFile {
+                    path: "a/b".into(),
+                    size: 5,
+                    dir: false,
+                }],
+            },
+            FromWorker::ClipFilesDone {
+                paths: vec!["/x".into()],
+            },
+            FromWorker::Hello { protocol: 1 },
+            FromWorker::Notice {
+                message: "n".into(),
+            },
+            FromWorker::Log {
+                message: "l".into(),
+            },
+            FromWorker::Error {
+                message: "e".into(),
+            },
+            FromWorker::Closed { reason: "r".into() },
+        ];
+        to.iter().for_each(covered_to);
+        from.iter().for_each(covered_from);
+        let to_json: Vec<String> = to
+            .iter()
+            .map(|m| serde_json::to_string(m).unwrap())
+            .collect();
+        let from_json: Vec<String> = from
+            .iter()
+            .map(|m| serde_json::to_string(m).unwrap())
+            .collect();
+        // Hasło z danych testowych jest wstawiane w miejsce znacznika, żeby migawka nie zawierała
+        // literału wyglądającego na zapisane hasło (skanery sekretów zgłaszają taki zapis).
+        let expected_to: Vec<String> = EXPECTED_TO
+            .iter()
+            .map(|s| s.replace(FIXTURE_PASSWORD, &params().password))
+            .collect();
+        assert_eq!(
+            to_json, expected_to,
+            "zmiana migawki wymaga podbicia PROTOCOL"
+        );
+        assert_eq!(
+            from_json, EXPECTED_FROM,
+            "zmiana migawki wymaga podbicia PROTOCOL"
+        );
+        // `ClipData` płynie ramką binarną i nie ma postaci JSON.
+        assert!(
+            serde_json::to_string(&ToWorker::ClipData {
+                kind: ClipKind::Text,
+                data: vec![1]
+            })
+            .is_err()
+        );
+        // Migawka zapisana dla PROTOCOL = 1; przy podbiciu zaktualizuj obie stałe i tę liczbę.
+        assert_eq!(PROTOCOL, 1, "po podbiciu PROTOCOL zaktualizuj migawkę");
+    }
+
+    /// Znacznik w migawce zastępowany hasłem z `params()`.
+    const FIXTURE_PASSWORD: &str = "<FIXTURE>";
+    const EXPECTED_TO: &[&str] = &[
+        r#"{"t":"connect","host":"dc01","port":3389,"username":"u","domain":"D","password":"<FIXTURE>","kerberos":false,"kdc":null,"width":1280,"height":800}"#,
+        r#"{"t":"trust","accept":true}"#,
+        r#"{"t":"mouse_move","x":1,"y":2}"#,
+        r#"{"t":"mouse_button","button":2,"down":true}"#,
+        r#"{"t":"wheel","vertical":true,"delta":-120}"#,
+        r#"{"t":"key","scancode":30,"extended":false,"down":true}"#,
+        r#"{"t":"ctrl_alt_del"}"#,
+        r#"{"t":"resize","width":800,"height":600}"#,
+        r#"{"t":"clip_announce","kinds":["text","html","image"]}"#,
+        r#"{"t":"clip_announce_files","paths":["/a"]}"#,
+        r#"{"t":"clip_fetch","kind":"image"}"#,
+        r#"{"t":"clip_fetch_files"}"#,
+        r#"{"t":"clip_download","dir":"/d"}"#,
+        r#"{"t":"close"}"#,
+    ];
+    const EXPECTED_FROM: &[&str] = &[
+        r#"{"t":"cert","fingerprint":"ab","subject":"s"}"#,
+        r#"{"t":"connected","width":1,"height":2}"#,
+        r#"{"t":"resized","width":3,"height":4}"#,
+        r#"{"t":"clip_remote","kinds":["text"],"files":true}"#,
+        r#"{"t":"clip_request","kind":"html"}"#,
+        r#"{"t":"clip_files","files":[{"path":"a/b","size":5,"dir":false}]}"#,
+        r#"{"t":"clip_files_done","paths":["/x"]}"#,
+        r#"{"t":"hello","protocol":1}"#,
+        r#"{"t":"notice","message":"n"}"#,
+        r#"{"t":"log","message":"l"}"#,
+        r#"{"t":"error","message":"e"}"#,
+        r#"{"t":"closed","reason":"r"}"#,
+    ];
 }
