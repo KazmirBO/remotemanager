@@ -344,8 +344,11 @@ fn live(state: &AppState, id: Uuid) -> Result<Arc<Live>, String> {
 }
 
 /// Dane z klawiatury jako surowe bajty; identyfikator sesji w nagłówku `x-session`.
+/// Komenda jest synchroniczna celowo (jak `rdp_send`): Tauri wykonuje takie wywołania po kolei,
+/// a `write` tylko wstawia bajty do kolejki sesji, z której jedno zadanie pisarza wysyła je do
+/// kanału SSH. Komenda `async` byłaby uruchamiana jako osobne zadania i zamieniała porcje miejscami.
 #[tauri::command]
-pub async fn ssh_write(state: State<'_, AppState>, request: Request<'_>) -> Result<(), String> {
+pub fn ssh_write(state: State<'_, AppState>, request: Request<'_>) -> Result<(), String> {
     let InvokeBody::Raw(data) = request.body() else {
         return Err("Oczekiwano surowych danych.".into());
     };
@@ -358,12 +361,12 @@ pub async fn ssh_write(state: State<'_, AppState>, request: Request<'_>) -> Resu
     live(&state, id)?
         .shell
         .write(data.clone())
-        .await
         .map_err(|e| e.to_string())
 }
 
+/// Zmiana rozmiaru idzie tą samą kolejką co dane, więc nie wyprzedza bajtów wysłanych przed nią.
 #[tauri::command]
-pub async fn ssh_resize(
+pub fn ssh_resize(
     state: State<'_, AppState>,
     id: Uuid,
     cols: u32,
@@ -372,7 +375,6 @@ pub async fn ssh_resize(
     live(&state, id)?
         .shell
         .resize(cols, rows)
-        .await
         .map_err(|e| e.to_string())
 }
 
