@@ -6,13 +6,17 @@
 //! zdarzenie do systemu, więc nigdy na nic nie czeka. `stop` bierze zwykłą blokadę: poczeka
 //! najwyżej na jedno trwające wywołanie haka, a po jej zdjęciu stanu już nie ma, więc `sink`
 //! nie zostanie więcej wołany.
+//!
+//! Gdy system po cichu usunie hak (limit `LowLevelHooksTimeout`), WinAPI tego nie zgłasza, więc
+//! `Released::HookLost` nie jest dziś emitowane. Klawisze wracają wtedy do okna aplikacji i frontend
+//! wysyła je do sesji zwykłą drogą (jak bez przechwytywania systemowego); ponowne włączenie trybu
+//! (`start` po `stop`) zakłada hak od nowa.
 
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Mutex, PoisonError, TryLockError};
-use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -22,11 +26,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::logic::{Action, Logic, RawKey};
-use crate::{Combo, Error, Event, Released, Sink};
-
-/// Wywołanie dłuższe niż to uznajemy za zagrożone usunięciem haka przez system (limit
-/// `LowLevelHooksTimeout`, domyślnie ok. 300 ms).
-const SLOW_CALL: Duration = Duration::from_millis(250);
+use crate::{Combo, Error, Event, Sink};
 
 struct Hooked {
     logic: Logic,
@@ -136,21 +136,13 @@ unsafe fn handle(lparam: LPARAM) -> bool {
     if !hooked.logic.capturing() {
         return false;
     }
-    let started = Instant::now();
     // SAFETY: GetForegroundWindow nie ma argumentów ani wymagań; wynik porównujemy tylko jako
     // liczbę (okno mogło zniknąć, ale nie dereferencjujemy uchwytu).
     let foreground = unsafe { GetForegroundWindow() } as isize == hooked.window;
     let Hooked { logic, sink, .. } = hooked;
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         let mut emit = |e: Event| sink(e);
-        let action = logic.handle(raw, foreground, &mut emit);
-        // Wywołanie, które trwało blisko limitu systemowego, mogło kosztować nas hak: zwalniamy
-        // klawisze i zgłaszamy utratę, wywołujący zdecyduje o ponownym założeniu.
-        if logic.capturing() && started.elapsed() > SLOW_CALL {
-            logic.release_all(Released::HookLost, &mut emit);
-            return Action::Pass;
-        }
-        action
+        logic.handle(raw, foreground, &mut emit)
     }));
     let action = match outcome {
         Ok(a) => a,

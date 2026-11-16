@@ -39,7 +39,9 @@ pub enum Released {
     Combo,
     /// Okno przestało być na pierwszym planie.
     Foreground,
-    /// Hak prawdopodobnie został usunięty przez system (wywołanie zajęło za długo).
+    /// Zarezerwowane: hak usunięty przez system. Dziś nie jest emitowane, bo WinAPI nie zgłasza
+    /// usunięcia haka (po cichu klawisze wracają do okna aplikacji, a ponowne włączenie trybu
+    /// zakłada hak od nowa).
     HookLost,
 }
 

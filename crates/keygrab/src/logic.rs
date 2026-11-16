@@ -186,7 +186,7 @@ impl Logic {
     }
 
     /// Wysyła zwolnienia wszystkich wciśniętych klawiszy (zwykłe przed modyfikatorami), potem
-    /// zdarzenie `Released` i przestaje zatrzymywać. Wołane też z warstwy WinAPI (`HookLost`).
+    /// zdarzenie `Released` i przestaje zatrzymywać.
     pub fn release_all(&mut self, reason: Released, emit: &mut dyn FnMut(Event)) {
         if !self.capturing {
             return;

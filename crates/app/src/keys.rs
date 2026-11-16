@@ -1,7 +1,9 @@
 //! Przechwytywanie klawiszy systemowych (Win, Alt+Tab itp.) przez sesję RDP.
 //!
-//! Linux: przejęcie klawiatury przez GDK na głównym oknie (na Waylandzie wstrzymuje to skróty
-//! kompozytora). Windows: niskopoziomowy hak klawiatury z crate'a `keygrab`. Inne platformy tego
+//! Linux: przejęcie klawiatury przez GDK na głównym oknie, tylko na Waylandzie, gdzie wstrzymuje to
+//! skróty kompozytora i jest związane z fokusem powierzchni. Na X11 przejęcie zostaje aktywne po
+//! kliknięciu innego okna, a GDK nie zgłasza wtedy utraty fokusu, więc tekst wpisywany w innym
+//! programie (np. hasło) trafiałby do zdalnej sesji; tam komenda zwraca `system: false`. Windows: niskopoziomowy hak klawiatury z crate'a `keygrab`. Inne platformy tego
 //! nie potrafią: komenda kończy się wtedy sukcesem z `system: false`, a frontend i tak przechwytuje
 //! skróty aplikacji.
 //!
@@ -10,6 +12,7 @@
 //! od tego, czy interfejs zdąży je wyłączyć.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
@@ -52,6 +55,9 @@ pub struct GrabResult {
 
 struct Holder {
     session: Uuid,
+    /// Numer nadany przy `set`: pozwala zwolnić tylko własne przechwytywanie (`release_generation`).
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
+    generation: u64,
     release: Release,
 }
 
@@ -61,19 +67,43 @@ pub struct Grabs {
     /// Serializuje włączanie i wyłączanie (praca w wątku głównym trwa między krokami).
     gate: tokio::sync::Mutex<()>,
     holder: Mutex<Option<Holder>>,
+    /// Licznik generacji przechwytywań (rośnie przy każdym `set`).
+    next_generation: AtomicU64,
 }
 
 impl Grabs {
     /// Zapamiętuje przechwytywanie sesji; poprzednie (jeśli jest) zostaje najpierw zwolnione.
-    pub fn set(&self, session: Uuid, release: Release) {
-        let old = self
-            .holder
-            .lock()
-            .expect("keys")
-            .replace(Holder { session, release });
+    /// Zwraca numer generacji tego przechwytywania.
+    pub fn set(&self, session: Uuid, release: Release) -> u64 {
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        let old = self.holder.lock().expect("keys").replace(Holder {
+            session,
+            generation,
+            release,
+        });
         if let Some(old) = old {
             (old.release)();
         }
+        generation
+    }
+
+    /// Zwalnia przechwytywanie tylko wtedy, gdy nadal należy do tej sesji i ma tę generację. Spóźnione
+    /// zdarzenie starego wątku przekazującego nie zwolni nowego przechwytywania tej samej sesji.
+    #[cfg(any(windows, test))]
+    pub fn release_generation(&self, session: Uuid, generation: u64) -> bool {
+        let mut guard = self.holder.lock().expect("keys");
+        if guard
+            .as_ref()
+            .is_some_and(|h| h.session == session && h.generation == generation)
+        {
+            let holder = guard.take();
+            drop(guard);
+            if let Some(h) = holder {
+                (h.release)();
+            }
+            return true;
+        }
+        false
     }
 
     /// Zwalnia przechwytywanie, jeśli należy do tej sesji. Zwraca, czy coś zwolniono.
@@ -148,6 +178,7 @@ mod platform {
     use super::*;
     use gtk::gdk::prelude::SeatExt;
     use gtk::gdk::{GrabStatus, SeatCapabilities};
+    use gtk::glib::prelude::ObjectExt;
     use gtk::prelude::WidgetExt;
     use tauri::Manager;
 
@@ -162,10 +193,20 @@ mod platform {
         Some((seat, window))
     }
 
+    /// Czy okno działa na Waylandzie. Nazwa typu wyświetlacza jak w `DisplayExtManual::backend`
+    /// (gdk 0.18), ale bez paniki dla nieznanego zaplecza.
+    fn is_wayland(window: &gtk::gdk::Window) -> bool {
+        window.display().type_().name() == "GdkWaylandDisplay"
+    }
+
     fn grab(app: &AppHandle) -> bool {
         let Some((seat, window)) = seat_and_window(app) else {
             return false;
         };
+        // X11: przejęcie przetrwałoby zmianę fokusu bez wiedzy okna (patrz opis modułu).
+        if !is_wayland(&window) {
+            return false;
+        }
         seat.grab(&window, SeatCapabilities::KEYBOARD, true, None, None, None)
             == GrabStatus::Success
     }
@@ -196,7 +237,7 @@ mod platform {
             let b = a.clone();
             let _ = a.run_on_main_thread(move || ungrab(&b));
         });
-        tauri::Manager::state::<AppState>(app)
+        let _ = tauri::Manager::state::<AppState>(app)
             .keys
             .set(session, release);
         true
@@ -249,7 +290,7 @@ mod platform {
             let _ = a.run_on_main_thread(keygrab::stop);
         });
         // Zwolnienie musi być zarejestrowane, zanim ruszy pętla przekazująca zdarzenia.
-        state.keys.set(session, release_fn);
+        let generation = state.keys.set(session, release_fn);
         let app = app.clone();
         std::thread::spawn(move || {
             forward_events(
@@ -262,9 +303,13 @@ mod platform {
                     });
                 },
                 |reason| {
-                    // Zdarzenie tylko wtedy, gdy przechwytywanie nadal należało do tej sesji
-                    // (zwolnione z zewnątrz samo nie zgłasza powodu).
-                    if app.state::<AppState>().keys.release_for(session) {
+                    // Zdarzenie tylko wtedy, gdy przechwytywanie nadal jest tym samym (sesja i
+                    // generacja); zwolnione z zewnątrz albo zastąpione nowszym nie zgłasza powodu.
+                    if app
+                        .state::<AppState>()
+                        .keys
+                        .release_generation(session, generation)
+                    {
                         let _ = app.emit(
                             "rdp-keys-released",
                             ReleasedPayload {
@@ -363,6 +408,26 @@ mod tests {
         assert!(grabs.release_all());
         assert!(!grabs.release_all());
         assert_eq!(nc.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn stale_generation_does_not_release_a_newer_grab_of_the_same_session() {
+        let grabs = Grabs::default();
+        let a = Uuid::new_v4();
+        let (n1, r1) = counting();
+        let g1 = grabs.set(a, r1);
+        // Ponowne włączenie tej samej sesji zwalnia stare i nadaje nową generację.
+        let (n2, r2) = counting();
+        let g2 = grabs.set(a, r2);
+        assert_ne!(g1, g2);
+        assert_eq!(n1.load(Ordering::SeqCst), 1);
+        // Spóźnione zwolnienie ze starego wątku nic nie robi.
+        assert!(!grabs.release_generation(a, g1));
+        assert_eq!(n2.load(Ordering::SeqCst), 0);
+        assert!(!grabs.release_generation(Uuid::new_v4(), g2));
+        assert!(grabs.release_generation(a, g2));
+        assert!(!grabs.release_generation(a, g2));
+        assert_eq!(n2.load(Ordering::SeqCst), 1);
     }
 
     #[test]

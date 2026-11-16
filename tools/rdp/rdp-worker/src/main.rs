@@ -23,9 +23,9 @@ use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::session::fast_path;
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
+use ironrdp::session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, SessionError};
 use ironrdp_graphics::image_processing::PixelFormat;
-use ironrdp_graphics::pointer::DecodedPointer;
+use ironrdp_graphics::pointer::{DecodedPointer, PointerError};
 use rdp_proto::{
     ClipKind, ConnectParams, FromWorker, Image, LinkProfile, Message, Pointer, ToWorker,
 };
@@ -185,6 +185,14 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
 
     let mut input = Database::new();
     let mut dirty = Dirty::new(w, h);
+    // Ostatni stan wskaźnika czeka tu do wysyłki obrazu (`flush_all`), więc kształty nie wymagają
+    // kontroli przepływu: serwer nie wymusi więcej niż jednej ramki wskaźnika na `FLUSH_EVERY`.
+    let mut pointer = PointerState::new();
+    // Czy biblioteka ma dekodować kształty wskaźnika. Po pierwszym błędzie dekodowania kształtu
+    // wyłączamy je do końca sesji (także po reaktywacji), a lokalny kursor zostaje domyślny.
+    let mut pointer_shapes = result.enable_server_pointer;
+    let software_pointer = result.pointer_software_rendering;
+    let mut share_id = result.share_id;
     let mut last_flush = Instant::now();
     // Prośba o zmianę rozdzielczości czekająca na gotowość kanału (rozmiar i chwila zgłoszenia).
     let mut pending_resize: Option<(u32, u32, Instant)> = None;
@@ -220,7 +228,7 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
                     if !ops.is_empty() {
                         let events = input.apply(ops);
                         let outs = stage.process_fastpath_input(&mut image, &events)?;
-                        handle(outs, &mut framed, &mut dirty)?;
+                        handle(outs, &mut framed, &mut dirty, &mut pointer)?;
                     }
                 }
                 Err(TryRecvError::Empty) => break,
@@ -259,21 +267,55 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
 
         match framed.read_pdu() {
             Ok((action, payload)) => {
-                let outs = stage.process(&mut image, action, &payload)?;
+                let outs = match stage.process(&mut image, action, &payload) {
+                    Ok(outs) => outs,
+                    // Wadliwy kształt wskaźnika (np. 8 bpp, maska niezgodna z wymiarami) nie może
+                    // kończyć sesji: przechodzimy na tryb bez kształtów i ponawiamy ten sam PDU raz.
+                    // Rozpoznanie po rodzaju źródła błędu, inne błędy sesji idą dalej.
+                    Err(e) if pointer_shapes && is_pointer_decode_error(&e) => {
+                        pointer_shapes = false;
+                        stage.set_fastpath_processor(fast_path_processor(
+                            factory.io_channel_id(),
+                            factory.user_channel_id(),
+                            share_id,
+                            false,
+                            software_pointer,
+                        ));
+                        stage.set_enable_server_pointer(false);
+                        pointer.set(PointerShape::Default);
+                        log(
+                            "wskaźnik: nie udało się zdekodować kształtu, kształty wyłączone do końca sesji",
+                        );
+                        stage.process(&mut image, action, &payload)?
+                    }
+                    Err(e) => return Err(e.into()),
+                };
                 let mut reactivate_needed = false;
-                for o in coalesce_pointer_outputs(outs) {
+                for o in outs {
                     match o {
                         ActiveStageOutput::DeactivateAll => reactivate_needed = true,
                         other => {
-                            if let Some(reason) = handle_one(other, &mut framed, &mut dirty)? {
-                                flush(&image, &mut dirty);
+                            if let Some(reason) =
+                                handle_one(other, &mut framed, &mut dirty, &mut pointer)?
+                            {
+                                flush_all(&image, &mut dirty, &mut pointer);
                                 return Ok(reason);
                             }
                         }
                     }
                 }
                 if reactivate_needed {
-                    let (w, h) = reactivate(&mut framed, &factory, &mut stage, &mut image)?;
+                    let (w, h, new_share_id) = reactivate(
+                        &mut framed,
+                        &factory,
+                        &mut stage,
+                        &mut image,
+                        pointer_shapes,
+                    )?;
+                    share_id = new_share_id;
+                    // Nowy procesor ma pustą pamięć kształtów, więc nie wiemy, jaki kursor
+                    // pokazuje serwer: do czasu nowego kształtu lokalny kursor jest domyślny.
+                    pointer.set(PointerShape::Default);
                     dirty = Dirty::new(w, h);
                     emit(&FromWorker::Resized {
                         width: w,
@@ -287,17 +329,17 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                 ) =>
             {
-                flush(&image, &mut dirty);
+                flush_all(&image, &mut dirty, &mut pointer);
                 last_flush = Instant::now();
             }
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                flush(&image, &mut dirty);
+                flush_all(&image, &mut dirty, &mut pointer);
                 return Ok("serwer zamknął połączenie".into());
             }
             Err(e) => return Err(anyhow::Error::new(e).context("odczyt z serwera")),
         }
         if last_flush.elapsed() >= FLUSH_EVERY {
-            flush(&image, &mut dirty);
+            flush_all(&image, &mut dirty, &mut pointer);
             last_flush = Instant::now();
         }
     }
@@ -365,7 +407,8 @@ fn reactivate(
     factory: &ConnectionActivationFactory,
     stage: &mut ActiveStage,
     image: &mut DecodedImage,
-) -> anyhow::Result<(u16, u16)> {
+    pointer_shapes: bool,
+) -> anyhow::Result<(u16, u16, u32)> {
     set_timeout(framed, CONNECT_TIMEOUT);
     let mut seq = factory.create();
     let mut buf = WriteBuf::new();
@@ -400,34 +443,54 @@ fn reactivate(
         }
     };
     // `server_pointer` i `software_pointer` pochodzą z konfiguracji (`build_config`): wskaźnik idzie
-    // do aplikacji, a nie do obrazu; nowy procesor zaczyna z pustą pamięcią kształtów, więc serwer
-    // wyśle je ponownie.
-    stage.set_fastpath_processor(
-        fast_path::ProcessorBuilder {
-            io_channel_id: factory.io_channel_id(),
-            user_channel_id: factory.user_channel_id(),
-            share_id,
-            enable_server_pointer: server_pointer,
-            pointer_software_rendering: software_pointer,
-            bulk_decompressor: None,
-        }
-        .build(),
-    );
+    // do aplikacji, a nie do obrazu; nowy procesor zaczyna z pustą pamięcią kształtów (pętla główna
+    // przywraca wtedy kursor domyślny). Gdy sesja przeszła na tryb bez kształtów (`pointer_shapes`
+    // false), reaktywacja nie włącza ich z powrotem.
+    let server_pointer = server_pointer && pointer_shapes;
+    stage.set_fastpath_processor(fast_path_processor(
+        factory.io_channel_id(),
+        factory.user_channel_id(),
+        share_id,
+        server_pointer,
+        software_pointer,
+    ));
     stage.set_share_id(share_id);
     stage.set_enable_server_pointer(server_pointer);
     let (w, h) = validate_desktop_size(desktop.width, desktop.height)?;
     *image = DecodedImage::new(PixelFormat::RgbA32, w, h);
     set_timeout(framed, POLL);
-    Ok((w, h))
+    Ok((w, h, share_id))
+}
+
+/// Procesor fast-path bez kompresji (jej nie negocjujemy, patrz `performance_flags`), więc jego
+/// przebudowa w trakcie sesji nie gubi stanu dekompresora; kodeki obrazu poza prostymi bitmapami
+/// nie są ogłaszane serwerowi.
+fn fast_path_processor(
+    io_channel_id: u16,
+    user_channel_id: u16,
+    share_id: u32,
+    enable_server_pointer: bool,
+    pointer_software_rendering: bool,
+) -> fast_path::Processor {
+    fast_path::ProcessorBuilder {
+        io_channel_id,
+        user_channel_id,
+        share_id,
+        enable_server_pointer,
+        pointer_software_rendering,
+        bulk_decompressor: None,
+    }
+    .build()
 }
 
 fn handle(
     outs: Vec<ActiveStageOutput>,
     framed: &mut Framed,
     dirty: &mut Dirty,
+    pointer: &mut PointerState,
 ) -> anyhow::Result<()> {
     for o in outs {
-        handle_one(o, framed, dirty)?;
+        handle_one(o, framed, dirty, pointer)?;
     }
     Ok(())
 }
@@ -437,20 +500,17 @@ fn handle_one(
     out: ActiveStageOutput,
     framed: &mut Framed,
     dirty: &mut Dirty,
+    pointer: &mut PointerState,
 ) -> anyhow::Result<Option<String>> {
     match out {
         ActiveStageOutput::ResponseFrame(frame) => {
             framed.write_all(&frame).context("zapis odpowiedzi")?
         }
         ActiveStageOutput::GraphicsUpdate(r) => dirty.add(r.left, r.top, r.right, r.bottom),
-        ActiveStageOutput::PointerBitmap(p) => match pointer_frame(&p) {
-            Some(frame) => emit_pointer(&frame),
-            // Kształt, którego nie umiemy bezpiecznie przekazać (bok zero albo ponad limit, długość
-            // niezgodna z wymiarami): lokalny kursor wraca do domyślnego zamiast zepsuć sesję.
-            None => emit(&FromWorker::PointerDefault),
-        },
-        ActiveStageOutput::PointerDefault => emit(&FromWorker::PointerDefault),
-        ActiveStageOutput::PointerHidden => emit(&FromWorker::PointerHidden),
+        // Wskaźnik tylko zapamiętujemy; do aplikacji idzie ostatni stan przy wysyłce obrazu.
+        ActiveStageOutput::PointerBitmap(p) => pointer.set(PointerShape::Bitmap(p)),
+        ActiveStageOutput::PointerDefault => pointer.set(PointerShape::Default),
+        ActiveStageOutput::PointerHidden => pointer.set(PointerShape::Hidden),
         // Pozycji wskaźnika z serwera nie stosujemy: lokalny kursor idzie za myszą użytkownika, a
         // serwer odsyła pozycję tylko jako echo naszych ruchów (przestawianie kursora na żądanie
         // serwera dawałoby skoki i opóźnienie).
@@ -476,21 +536,105 @@ fn pointer_frame(p: &DecodedPointer) -> Option<Pointer> {
     frame.is_valid().then_some(frame)
 }
 
-/// Przy kształcie z pamięci podręcznej biblioteka zgłasza `PointerHidden` tuż przed
-/// `PointerBitmap` (krok pośredni, nie prawdziwe ukrycie). Pomijamy takie `PointerHidden`, żeby
-/// lokalny kursor nie mrugał; stan końcowy jest ten sam, bo bitmapa i tak następuje.
-fn coalesce_pointer_outputs(outs: Vec<ActiveStageOutput>) -> Vec<ActiveStageOutput> {
-    let mut result = Vec::with_capacity(outs.len());
-    let mut iter = outs.into_iter().peekable();
-    while let Some(o) = iter.next() {
-        if matches!(o, ActiveStageOutput::PointerHidden)
-            && matches!(iter.peek(), Some(ActiveStageOutput::PointerBitmap(_)))
-        {
-            continue;
+/// Stan wskaźnika zgłoszony przez serwer. Kształty porównujemy po tożsamości `Arc` (kształt z
+/// pamięci podręcznej biblioteki to ten sam `Arc`), więc porównanie jest tanie.
+#[derive(Clone)]
+enum PointerShape {
+    Default,
+    Hidden,
+    Bitmap(Arc<DecodedPointer>),
+}
+
+impl PartialEq for PointerShape {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Default, Self::Default) | (Self::Hidden, Self::Hidden) => true,
+            (Self::Bitmap(a), Self::Bitmap(b)) => Arc::ptr_eq(a, b),
+            _ => false,
         }
-        result.push(o);
     }
-    result
+}
+
+/// Co wysłać do aplikacji.
+enum PointerOut {
+    Default,
+    Hidden,
+    Frame(Pointer),
+}
+
+/// Pamięta tylko ostatni stan wskaźnika i ostatnio wysłany. Wrogi serwer może kilkubajtowymi PDU
+/// (kształt z pamięci podręcznej) wymuszać duże ramki, a wskaźnik nie podlega kontroli przepływu,
+/// więc wysyłka idzie najwyżej raz na wysyłkę obrazu. Daje to też pomijanie `PointerHidden`, które
+/// biblioteka zgłasza tuż przed kształtem z pamięci podręcznej (krok pośredni): liczy się stan
+/// końcowy, a kursor nie mruga.
+struct PointerState {
+    wanted: Option<PointerShape>,
+    sent: Option<PointerShape>,
+}
+
+impl PointerState {
+    fn new() -> Self {
+        Self {
+            wanted: None,
+            sent: None,
+        }
+    }
+
+    fn set(&mut self, shape: PointerShape) {
+        // Kształt o boku zero to ukryty kursor (patrz `pointer_out`); sprowadzony do `Hidden`
+        // nie jest wysyłany ponownie, gdy kursor już jest ukryty.
+        self.wanted = Some(match shape {
+            PointerShape::Bitmap(p) if p.width == 0 || p.height == 0 => PointerShape::Hidden,
+            other => other,
+        });
+    }
+
+    /// Stan do wysłania teraz, jeśli różni się od ostatnio wysłanego.
+    fn take_due(&mut self) -> Option<PointerOut> {
+        let wanted = self.wanted.take()?;
+        if self.sent.as_ref() == Some(&wanted) {
+            return None;
+        }
+        let out = match &wanted {
+            PointerShape::Default => PointerOut::Default,
+            PointerShape::Hidden => PointerOut::Hidden,
+            PointerShape::Bitmap(p) => pointer_out(p),
+        };
+        self.sent = Some(wanted);
+        Some(out)
+    }
+}
+
+/// Kształt o boku zero to w IronRDP kursor niewidoczny; kształt, którego nie umiemy bezpiecznie
+/// przekazać (ponad limit, długość niezgodna z wymiarami), zastępujemy kursorem domyślnym zamiast
+/// psuć sesję.
+fn pointer_out(p: &DecodedPointer) -> PointerOut {
+    if p.width == 0 || p.height == 0 {
+        return PointerOut::Hidden;
+    }
+    pointer_frame(p).map_or(PointerOut::Default, PointerOut::Frame)
+}
+
+/// Wysyła do aplikacji ostatni stan wskaźnika, jeśli się zmienił.
+fn flush_pointer(pointer: &mut PointerState) {
+    match pointer.take_due() {
+        Some(PointerOut::Default) => emit(&FromWorker::PointerDefault),
+        Some(PointerOut::Hidden) => emit(&FromWorker::PointerHidden),
+        Some(PointerOut::Frame(frame)) => emit_pointer(&frame),
+        None => {}
+    }
+}
+
+fn flush_all(image: &DecodedImage, dirty: &mut Dirty, pointer: &mut PointerState) {
+    flush(image, dirty);
+    flush_pointer(pointer);
+}
+
+/// Czy błąd przetwarzania PDU pochodzi z dekodowania kształtu wskaźnika. Biblioteka opakowuje
+/// wtedy `PointerError` jako źródło błędu sesji (`SessionError::custom` w `process_pointer_update`),
+/// więc rozpoznajemy go po typie źródła, a nie po treści komunikatu.
+fn is_pointer_decode_error(e: &SessionError) -> bool {
+    std::error::Error::source(e).is_some_and(|s| s.is::<PointerError>())
 }
 
 fn operations_for(cmd: &ToWorker) -> Vec<Operation> {
@@ -1150,28 +1294,107 @@ mod tests {
         }
     }
 
+    fn shape(w: u16, h: u16) -> PointerShape {
+        PointerShape::Bitmap(Arc::new(decoded(
+            w,
+            h,
+            usize::from(w) * usize::from(h) * 4,
+            (0, 0),
+        )))
+    }
+
+    fn kind(o: &Option<PointerOut>) -> &'static str {
+        match o {
+            None => "nic",
+            Some(PointerOut::Default) => "domyslny",
+            Some(PointerOut::Hidden) => "ukryty",
+            Some(PointerOut::Frame(_)) => "ksztalt",
+        }
+    }
+
     #[test]
-    fn hidden_before_a_bitmap_is_dropped_but_a_lone_hidden_stays() {
-        use std::sync::Arc;
-        let bitmap = || ActiveStageOutput::PointerBitmap(Arc::new(decoded(1, 1, 4, (0, 0))));
-        let kinds = |v: &[ActiveStageOutput]| -> Vec<&'static str> {
-            v.iter()
-                .map(|o| match o {
-                    ActiveStageOutput::PointerHidden => "hidden",
-                    ActiveStageOutput::PointerBitmap(_) => "bitmap",
-                    ActiveStageOutput::PointerDefault => "default",
-                    _ => "inne",
-                })
-                .collect()
-        };
-        let out = coalesce_pointer_outputs(vec![
-            ActiveStageOutput::PointerHidden,
-            bitmap(),
-            ActiveStageOutput::PointerHidden,
-            ActiveStageOutput::PointerDefault,
-            ActiveStageOutput::PointerHidden,
-        ]);
-        assert_eq!(kinds(&out), ["bitmap", "hidden", "default", "hidden"]);
+    fn pointer_series_between_flushes_sends_only_the_last_state() {
+        let mut st = PointerState::new();
+        assert_eq!(kind(&st.take_due()), "nic");
+        st.set(PointerShape::Hidden);
+        st.set(shape(2, 2));
+        st.set(PointerShape::Default);
+        st.set(PointerShape::Hidden);
+        assert_eq!(kind(&st.take_due()), "ukryty");
+        assert_eq!(kind(&st.take_due()), "nic");
+        // Ukrycie tuż przed kształtem z pamięci podręcznej daje sam kształt.
+        st.set(PointerShape::Hidden);
+        st.set(shape(2, 2));
+        assert_eq!(kind(&st.take_due()), "ksztalt");
+    }
+
+    #[test]
+    fn repeated_same_shape_is_not_sent_again() {
+        let mut st = PointerState::new();
+        let a = shape(4, 4);
+        st.set(a.clone());
+        assert_eq!(kind(&st.take_due()), "ksztalt");
+        st.set(a.clone());
+        assert_eq!(kind(&st.take_due()), "nic");
+        // Ukrycie tuż przed tym samym kształtem (kształt z pamięci podręcznej) też nic nie wysyła.
+        st.set(PointerShape::Hidden);
+        st.set(a.clone());
+        assert_eq!(kind(&st.take_due()), "nic");
+        // Inny kształt o tej samej treści to osobny `Arc` i jest wysyłany.
+        st.set(shape(4, 4));
+        assert_eq!(kind(&st.take_due()), "ksztalt");
+    }
+
+    #[test]
+    fn shape_hidden_same_shape_is_sent_across_flushes() {
+        let mut st = PointerState::new();
+        let a = shape(4, 4);
+        st.set(a.clone());
+        assert_eq!(kind(&st.take_due()), "ksztalt");
+        st.set(PointerShape::Hidden);
+        assert_eq!(kind(&st.take_due()), "ukryty");
+        st.set(a);
+        assert_eq!(kind(&st.take_due()), "ksztalt");
+    }
+
+    #[test]
+    fn reactivation_default_overrides_hidden_or_shape() {
+        let mut st = PointerState::new();
+        st.set(PointerShape::Hidden);
+        assert_eq!(kind(&st.take_due()), "ukryty");
+        st.set(PointerShape::Default);
+        assert_eq!(kind(&st.take_due()), "domyslny");
+        st.set(shape(4, 4));
+        assert_eq!(kind(&st.take_due()), "ksztalt");
+        st.set(PointerShape::Default);
+        assert_eq!(kind(&st.take_due()), "domyslny");
+    }
+
+    #[test]
+    fn zero_sized_shape_hides_and_bad_shape_falls_back_to_default() {
+        let mut st = PointerState::new();
+        st.set(PointerShape::Bitmap(Arc::new(decoded(0, 0, 0, (0, 0)))));
+        assert_eq!(kind(&st.take_due()), "ukryty");
+        st.set(PointerShape::Bitmap(Arc::new(decoded(0, 8, 0, (0, 0)))));
+        assert_eq!(kind(&st.take_due()), "nic");
+        st.set(PointerShape::Bitmap(Arc::new(decoded(8, 8, 3, (0, 0)))));
+        assert_eq!(kind(&st.take_due()), "domyslny");
+    }
+
+    #[test]
+    fn only_pointer_decode_errors_are_recognised() {
+        use ironrdp::session::SessionErrorExt as _;
+        let pointer = SessionError::custom(
+            "failed to decode pointer attribute",
+            PointerError::NotSupportedBpp { bpp: 8 },
+        );
+        assert!(is_pointer_decode_error(&pointer));
+        assert!(!is_pointer_decode_error(&SessionError::general("inny")));
+        assert!(!is_pointer_decode_error(&SessionError::reason(
+            "inny", "powód"
+        )));
+        let io = SessionError::custom("inny", io::Error::other("x"));
+        assert!(!is_pointer_decode_error(&io));
     }
 
     #[test]
