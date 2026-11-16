@@ -1649,7 +1649,12 @@ mod tests {
         let (mut st, dir, _) = started("dl-timeout", vec![remote_file(None, "a.txt", Some(3))]);
         st.tick();
         assert!(st.download.is_some());
-        st.download.as_mut().unwrap().last = Instant::now() - FILE_TIMEOUT - Duration::from_secs(1);
+        // Na maszynie uruchomionej krócej niż limit czasu zegar monotoniczny nie sięga tak daleko wstecz.
+        let Some(past) = Instant::now().checked_sub(FILE_TIMEOUT + Duration::from_secs(1)) else {
+            let _ = fs::remove_dir_all(dir);
+            return;
+        };
+        st.download.as_mut().unwrap().last = past;
         st.tick();
         assert!(st.download.is_none());
         assert!(notices().iter().any(|n| n.contains("Przekroczono czas")));

@@ -563,125 +563,117 @@ mod tests {
     /// psuje sesje bez śladu. Gdy ten test przestaje przechodzić: zmień migawkę i PODBIJ `PROTOCOL`.
     #[test]
     fn wire_format_snapshot_requires_protocol_bump() {
-        // Wyczerpujące dopasowania (bez wzorca domyślnego): nowy wariant nie skompiluje się,
-        // dopóki ktoś nie doda go do migawki poniżej.
-        fn covered_to(w: &ToWorker) {
-            match w {
-                ToWorker::Connect(_)
-                | ToWorker::Trust { .. }
-                | ToWorker::MouseMove { .. }
-                | ToWorker::MouseButton { .. }
-                | ToWorker::Wheel { .. }
-                | ToWorker::Key { .. }
-                | ToWorker::CtrlAltDel
-                | ToWorker::Resize { .. }
-                | ToWorker::ClipAnnounce { .. }
-                | ToWorker::ClipAnnounceFiles { .. }
-                | ToWorker::ClipFetch { .. }
-                | ToWorker::ClipFetchFiles
-                | ToWorker::ClipDownload { .. }
-                | ToWorker::ClipData { .. }
-                | ToWorker::Close => {}
+        // Próbki powstają łańcuchem: wyczerpujące dopasowanie (bez wzorca domyślnego) dla każdego
+        // wariantu zwraca próbkę następnego. Nowy wariant nie skompiluje się, dopóki nie dostanie
+        // ramienia; dopisz go do łańcucha (dotychczasowy ostatni wariant ma zwracać nowy), a wtedy
+        // jego JSON musi trafić do migawki poniżej, inaczej porównanie się nie zgodzi.
+        fn next_to(prev: Option<&ToWorker>) -> Option<ToWorker> {
+            let Some(prev) = prev else {
+                return Some(ToWorker::Connect(params()));
+            };
+            match prev {
+                ToWorker::Connect(_) => Some(ToWorker::Trust { accept: true }),
+                ToWorker::Trust { .. } => Some(ToWorker::MouseMove { x: 1, y: 2 }),
+                ToWorker::MouseMove { .. } => Some(ToWorker::MouseButton {
+                    button: 2,
+                    down: true,
+                }),
+                ToWorker::MouseButton { .. } => Some(ToWorker::Wheel {
+                    vertical: true,
+                    delta: -120,
+                }),
+                ToWorker::Wheel { .. } => Some(ToWorker::Key {
+                    scancode: 30,
+                    extended: false,
+                    down: true,
+                }),
+                ToWorker::Key { .. } => Some(ToWorker::CtrlAltDel),
+                ToWorker::CtrlAltDel => Some(ToWorker::Resize {
+                    width: 800,
+                    height: 600,
+                }),
+                ToWorker::Resize { .. } => Some(ToWorker::ClipAnnounce {
+                    kinds: vec![ClipKind::Text, ClipKind::Html, ClipKind::Image],
+                }),
+                ToWorker::ClipAnnounce { .. } => Some(ToWorker::ClipAnnounceFiles {
+                    paths: vec!["/a".into()],
+                }),
+                ToWorker::ClipAnnounceFiles { .. } => Some(ToWorker::ClipFetch {
+                    kind: ClipKind::Image,
+                }),
+                ToWorker::ClipFetch { .. } => Some(ToWorker::ClipFetchFiles),
+                ToWorker::ClipFetchFiles => Some(ToWorker::ClipDownload { dir: "/d".into() }),
+                ToWorker::ClipDownload { .. } => Some(ToWorker::ClipData {
+                    kind: ClipKind::Text,
+                    data: vec![1],
+                }),
+                ToWorker::ClipData { .. } => Some(ToWorker::Close),
+                ToWorker::Close => None,
             }
         }
-        fn covered_from(w: &FromWorker) {
-            match w {
-                FromWorker::Cert { .. }
-                | FromWorker::Connected { .. }
-                | FromWorker::Resized { .. }
-                | FromWorker::ClipRemote { .. }
-                | FromWorker::ClipRequest { .. }
-                | FromWorker::ClipFiles { .. }
-                | FromWorker::ClipFilesDone { .. }
-                | FromWorker::Hello { .. }
-                | FromWorker::Notice { .. }
-                | FromWorker::Log { .. }
-                | FromWorker::Error { .. }
-                | FromWorker::Closed { .. } => {}
+        fn next_from(prev: Option<&FromWorker>) -> Option<FromWorker> {
+            let Some(prev) = prev else {
+                return Some(FromWorker::Cert {
+                    fingerprint: "ab".into(),
+                    subject: "s".into(),
+                });
+            };
+            match prev {
+                FromWorker::Cert { .. } => Some(FromWorker::Connected {
+                    width: 1,
+                    height: 2,
+                }),
+                FromWorker::Connected { .. } => Some(FromWorker::Resized {
+                    width: 3,
+                    height: 4,
+                }),
+                FromWorker::Resized { .. } => Some(FromWorker::ClipRemote {
+                    kinds: vec![ClipKind::Text],
+                    files: true,
+                }),
+                FromWorker::ClipRemote { .. } => Some(FromWorker::ClipRequest {
+                    kind: ClipKind::Html,
+                }),
+                FromWorker::ClipRequest { .. } => Some(FromWorker::ClipFiles {
+                    files: vec![RemoteFile {
+                        path: "a/b".into(),
+                        size: 5,
+                        dir: false,
+                    }],
+                }),
+                FromWorker::ClipFiles { .. } => Some(FromWorker::ClipFilesDone {
+                    paths: vec!["/x".into()],
+                }),
+                FromWorker::ClipFilesDone { .. } => Some(FromWorker::Hello { protocol: 1 }),
+                FromWorker::Hello { .. } => Some(FromWorker::Notice {
+                    message: "n".into(),
+                }),
+                FromWorker::Notice { .. } => Some(FromWorker::Log {
+                    message: "l".into(),
+                }),
+                FromWorker::Log { .. } => Some(FromWorker::Error {
+                    message: "e".into(),
+                }),
+                FromWorker::Error { .. } => Some(FromWorker::Closed { reason: "r".into() }),
+                FromWorker::Closed { .. } => None,
             }
         }
-        let to = [
-            ToWorker::Connect(params()),
-            ToWorker::Trust { accept: true },
-            ToWorker::MouseMove { x: 1, y: 2 },
-            ToWorker::MouseButton {
-                button: 2,
-                down: true,
-            },
-            ToWorker::Wheel {
-                vertical: true,
-                delta: -120,
-            },
-            ToWorker::Key {
-                scancode: 30,
-                extended: false,
-                down: true,
-            },
-            ToWorker::CtrlAltDel,
-            ToWorker::Resize {
-                width: 800,
-                height: 600,
-            },
-            ToWorker::ClipAnnounce {
-                kinds: vec![ClipKind::Text, ClipKind::Html, ClipKind::Image],
-            },
-            ToWorker::ClipAnnounceFiles {
-                paths: vec!["/a".into()],
-            },
-            ToWorker::ClipFetch {
-                kind: ClipKind::Image,
-            },
-            ToWorker::ClipFetchFiles,
-            ToWorker::ClipDownload { dir: "/d".into() },
-            ToWorker::Close,
-        ];
-        let from = [
-            FromWorker::Cert {
-                fingerprint: "ab".into(),
-                subject: "s".into(),
-            },
-            FromWorker::Connected {
-                width: 1,
-                height: 2,
-            },
-            FromWorker::Resized {
-                width: 3,
-                height: 4,
-            },
-            FromWorker::ClipRemote {
-                kinds: vec![ClipKind::Text],
-                files: true,
-            },
-            FromWorker::ClipRequest {
-                kind: ClipKind::Html,
-            },
-            FromWorker::ClipFiles {
-                files: vec![RemoteFile {
-                    path: "a/b".into(),
-                    size: 5,
-                    dir: false,
-                }],
-            },
-            FromWorker::ClipFilesDone {
-                paths: vec!["/x".into()],
-            },
-            FromWorker::Hello { protocol: 1 },
-            FromWorker::Notice {
-                message: "n".into(),
-            },
-            FromWorker::Log {
-                message: "l".into(),
-            },
-            FromWorker::Error {
-                message: "e".into(),
-            },
-            FromWorker::Closed { reason: "r".into() },
-        ];
-        to.iter().for_each(covered_to);
-        from.iter().for_each(covered_from);
+        let mut to = Vec::new();
+        let mut cur = next_to(None);
+        while let Some(m) = cur {
+            cur = next_to(Some(&m));
+            to.push(m);
+        }
+        let mut from = Vec::new();
+        let mut cur = next_from(None);
+        while let Some(m) = cur {
+            cur = next_from(Some(&m));
+            from.push(m);
+        }
+        // `ClipData` płynie ramką binarną i nie ma postaci JSON; w migawce stoi za nią znacznik.
         let to_json: Vec<String> = to
             .iter()
-            .map(|m| serde_json::to_string(m).unwrap())
+            .map(|m| serde_json::to_string(m).unwrap_or_else(|_| BINARY_FRAME.into()))
             .collect();
         let from_json: Vec<String> = from
             .iter()
@@ -701,18 +693,12 @@ mod tests {
             from_json, EXPECTED_FROM,
             "zmiana migawki wymaga podbicia PROTOCOL"
         );
-        // `ClipData` płynie ramką binarną i nie ma postaci JSON.
-        assert!(
-            serde_json::to_string(&ToWorker::ClipData {
-                kind: ClipKind::Text,
-                data: vec![1]
-            })
-            .is_err()
-        );
         // Migawka zapisana dla PROTOCOL = 1; przy podbiciu zaktualizuj obie stałe i tę liczbę.
         assert_eq!(PROTOCOL, 1, "po podbiciu PROTOCOL zaktualizuj migawkę");
     }
 
+    /// Miejsce wariantu `ClipData` w migawce: nie ma postaci JSON.
+    const BINARY_FRAME: &str = "(ramka binarna)";
     /// Znacznik w migawce zastępowany hasłem z `params()`.
     const FIXTURE_PASSWORD: &str = "<FIXTURE>";
     const EXPECTED_TO: &[&str] = &[
@@ -729,6 +715,7 @@ mod tests {
         r#"{"t":"clip_fetch","kind":"image"}"#,
         r#"{"t":"clip_fetch_files"}"#,
         r#"{"t":"clip_download","dir":"/d"}"#,
+        BINARY_FRAME,
         r#"{"t":"close"}"#,
     ];
     const EXPECTED_FROM: &[&str] = &[

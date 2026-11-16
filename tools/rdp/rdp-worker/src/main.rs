@@ -316,13 +316,24 @@ fn resize_step(ready: bool, waited: Duration) -> ResizeStep {
 /// Największy bok pulpitu, jaki przyjmujemy od serwera (górna granica rozsądku, a nie limit
 /// Display Control 200..8192, którym ograniczamy prośby klienta).
 const MAX_DESKTOP_SIDE: u16 = 16384;
+/// Największe pole pulpitu w pikselach (8192 x 8192, czyli 256 MiB obrazu RGBA). Przy reaktywacji
+/// i wysyłce pasów obraz bywa chwilowo w pamięci dwa albo trzy razy, a całość musi zostać pod
+/// progiem miękkim z `memlimit`.
+const MAX_DESKTOP_PIXELS: u32 = 8192 * 8192;
+const _: () = assert!(3 * (MAX_DESKTOP_PIXELS as usize) * 4 <= memlimit::SOFT_LIMIT);
 
 /// Rozmiar pulpitu podany przez serwer trafia do bufora obrazu, więc zero i wartości absurdalne
 /// odrzucamy przed alokacją.
 fn validate_desktop_size(width: u16, height: u16) -> anyhow::Result<(u16, u16)> {
-    if width == 0 || height == 0 || width > MAX_DESKTOP_SIDE || height > MAX_DESKTOP_SIDE {
+    let pixels = u32::from(width) * u32::from(height);
+    if width == 0
+        || height == 0
+        || width > MAX_DESKTOP_SIDE
+        || height > MAX_DESKTOP_SIDE
+        || pixels > MAX_DESKTOP_PIXELS
+    {
         bail!(
-            "serwer podał nieprawidłowy rozmiar pulpitu: {width}x{height} (dozwolone 1..={MAX_DESKTOP_SIDE} w każdym wymiarze)"
+            "serwer podał nieprawidłowy rozmiar pulpitu: {width}x{height} (bok najwyżej {MAX_DESKTOP_SIDE}, pole najwyżej {MAX_DESKTOP_PIXELS} pikseli)"
         );
     }
     Ok((width, height))
@@ -782,8 +793,11 @@ mod tests {
     fn desktop_size_is_validated() {
         assert_eq!(validate_desktop_size(1, 1).unwrap(), (1, 1));
         assert_eq!(validate_desktop_size(1920, 1080).unwrap(), (1920, 1080));
-        assert_eq!(validate_desktop_size(16384, 16384).unwrap(), (16384, 16384));
+        assert_eq!(validate_desktop_size(8192, 8192).unwrap(), (8192, 8192));
+        assert_eq!(validate_desktop_size(16384, 4096).unwrap(), (16384, 4096));
         for (w, h) in [
+            (16384, 16384),
+            (8193, 8192),
             (0, 0),
             (0, 600),
             (800, 0),

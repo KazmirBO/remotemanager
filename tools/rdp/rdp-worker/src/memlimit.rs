@@ -10,8 +10,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Twardy próg: powyżej niego alokacja się nie udaje.
 pub const HARD_LIMIT: usize = 2 << 30;
-/// Miękki próg: powyżej niego pętla główna kończy sesję błędem.
-pub const SOFT_LIMIT: usize = 1536 << 20;
+/// Miękki próg: powyżej niego pętla główna kończy sesję błędem. Bufor składany z fragmentów
+/// rośnie przez podwajanie, więc z rozmiaru tuż pod progiem miękkim skacze do dwukrotności;
+/// ta musi zmieścić się pod progiem twardym razem z resztą pamięci procesu (`HEADROOM`),
+/// inaczej proces kończyłby się błędem alokacji, zanim pętla zdąży zgłosić czytelny błąd.
+pub const SOFT_LIMIT: usize = 896 << 20;
+/// Zapas na pozostałą pamięć procesu przy podwojeniu największego bufora.
+const HEADROOM: usize = 256 << 20;
+const _: () = assert!(2 * SOFT_LIMIT + HEADROOM <= HARD_LIMIT);
 
 /// Czy do bieżącej sumy `current` można dołożyć `request` bajtów bez przekroczenia `limit`.
 pub fn admit(current: usize, request: usize, limit: usize) -> bool {
@@ -142,6 +148,29 @@ mod tests {
         assert!(soft_check(SOFT_LIMIT, SOFT_LIMIT).is_ok());
         let e = soft_check(SOFT_LIMIT + 1, SOFT_LIMIT).unwrap_err();
         assert!(e.to_string().contains("za dużo pamięci"));
+    }
+
+    /// Bufor rosnący przez podwajanie (jak `Vec` składany z fragmentów kanału) zawsze trafia
+    /// w próg miękki, zanim kolejne podwojenie przekroczy próg twardy, niezależnie od rozmiaru
+    /// fragmentu. Między podwojeniami pętla główna wraca do `check_soft`.
+    #[test]
+    fn doubling_buffer_hits_soft_limit_before_hard() {
+        for chunk in [1usize, 100, 1024, 1200, 1592, 2048, 4096, 65000, 1 << 20] {
+            let other = HEADROOM;
+            let mut cap = chunk;
+            loop {
+                if soft_check(other + cap, SOFT_LIMIT).is_err() {
+                    break;
+                }
+                let next = cap * 2;
+                // `realloc` rezerwuje w liczniku tylko przyrost, więc liczy się nowa pojemność.
+                assert!(
+                    admit(other + cap, next - cap, HARD_LIMIT),
+                    "fragment {chunk} B: podwojenie z {cap} B przekracza próg twardy przed miękkim"
+                );
+                cap = next;
+            }
+        }
     }
 
     #[test]
