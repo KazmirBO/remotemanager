@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use model::Document;
@@ -40,6 +41,9 @@ pub struct AppState {
     pub rdp_clip: Mutex<HashMap<Uuid, Arc<crate::clipboard::ClipSync>>>,
     /// Kontrola przepływu obrazu sesji RDP (potwierdzenia z interfejsu).
     pub rdp_flow: Mutex<HashMap<Uuid, Arc<crate::rdp_sessions::Flow>>>,
+    /// Licznik przeładowań interfejsu. Połączenie, które zaczęło się przed przeładowaniem, a skończyło
+    /// po nim, nie ma karty w nowym interfejsie i zamyka się samo (jak przy blokadzie pliku).
+    pub reloads: AtomicU64,
 }
 
 impl AppState {
@@ -58,6 +62,7 @@ impl AppState {
             rdp: Mutex::new(HashMap::new()),
             rdp_clip: Mutex::new(HashMap::new()),
             rdp_flow: Mutex::new(HashMap::new()),
+            reloads: AtomicU64::new(0),
         };
         if let Some(w) = warning {
             state.log(w);
@@ -394,6 +399,28 @@ mod tests {
         state.cancel_trust();
         assert!(state.trust.lock().unwrap().is_empty());
         assert!(rx.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn reload_closes_sessions_and_trust_but_keeps_file_unlocked() {
+        let state = unlocked("reload").await;
+        *state.pending_link.lock().unwrap() = Some("ssh://srv".into());
+        let (tx, rx) = oneshot::channel::<TrustAnswer>();
+        state.trust.lock().unwrap().insert(Uuid::new_v4(), tx);
+        crate::commands::reset_after_reload(&state).await;
+        assert!(state.sessions.lock().unwrap().is_empty());
+        assert!(state.rdp.lock().unwrap().is_empty());
+        assert!(state.trust.lock().unwrap().is_empty());
+        assert!(rx.await.is_err());
+        // Plik zostaje odblokowany, a link czekający na odblokowanie nie ginie.
+        assert!(state.read(|_| Ok(())).await.is_ok());
+        assert_eq!(
+            state.pending_link.lock().unwrap().as_deref(),
+            Some("ssh://srv")
+        );
+        assert_eq!(state.reloads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Pierwsze ładowanie bez sesji niczego nie wpisuje do dziennika.
+        assert!(state.diag.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

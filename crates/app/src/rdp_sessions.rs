@@ -134,6 +134,7 @@ pub async fn connect_rdp(
         })
         .await?;
     let (host, port) = (params.host.clone(), params.port);
+    let reloads = state.reloads.load(Ordering::SeqCst);
     state.log(format!("RDP: łączenie z {host}:{port}"));
 
     let worker = rdp::find_worker().ok_or(
@@ -162,14 +163,16 @@ pub async fn connect_rdp(
         .insert(id, flow.clone());
     // Blokada pliku najpierw ustawia `inner` na `None`, a potem opróżnia mapy sesji (jak przy SSH).
     // Klient wstawiony po blokadzie trzeba zamknąć tutaj, zanim zostanie zwrócony do interfejsu.
-    if state.inner.lock().await.is_none() {
+    // To samo po przeładowaniu interfejsu w trakcie łączenia (`reset_after_reload`).
+    let locked = state.inner.lock().await.is_none();
+    if locked || state.reloads.load(Ordering::SeqCst) != reloads {
         state.rdp_clip.lock().expect("clip").remove(&id);
         state.rdp_flow.lock().expect("flow").remove(&id);
         let c = state.rdp.lock().expect("rdp").remove(&id);
         if let Some(c) = c {
             c.close();
         }
-        return Err("Plik z hostami został zablokowany w trakcie łączenia.".into());
+        return Err(crate::sessions::interrupted_message(locked).into());
     }
 
     // Sprawdzanie lokalnego schowka, gdy okno sesji ma fokus: zmiany są ogłaszane serwerowi.

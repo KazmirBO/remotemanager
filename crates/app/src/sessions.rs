@@ -1,6 +1,7 @@
 //! Sesje SSH: łączenie, strumień danych do frontendu i decyzje o zaufaniu do kluczy hostów.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use model::{Id, Protocol, TrustedKey};
@@ -191,6 +192,15 @@ fn hop_for(doc: &model::Document, id: Id) -> Result<Hop, String> {
     })
 }
 
+/// Komunikat dla połączenia przerwanego blokadą pliku albo przeładowaniem interfejsu.
+pub fn interrupted_message(locked: bool) -> &'static str {
+    if locked {
+        "Plik z hostami został zablokowany w trakcie łączenia."
+    } else {
+        "Interfejs został przeładowany w trakcie łączenia."
+    }
+}
+
 fn control(json: &str) -> InvokeResponseBody {
     InvokeResponseBody::Json(json.to_owned())
 }
@@ -228,6 +238,7 @@ pub async fn connect_ssh(
         target.auth = Auth::Password(Arc::new(Zeroizing::new(pw)));
     }
     let target_uses_agent = matches!(hops.last().map(|h| &h.auth), Some(Auth::Agent));
+    let reloads = state.reloads.load(Ordering::SeqCst);
     state.log(format!("SSH: łączenie z {host_name}"));
 
     let app2 = app.clone();
@@ -270,13 +281,16 @@ pub async fn connect_ssh(
     // Blokada pliku najpierw ustawia `inner` na `None`, a potem opróżnia mapę sesji. Sesja wstawiona
     // przed blokadą zostanie zamknięta przez nią, a ta wstawiona po blokadzie widzi `None` i zamyka
     // się tutaj, zanim zostanie zwrócona do interfejsu.
-    if state.inner.lock().await.is_none() {
+    // Przeładowanie interfejsu w trakcie łączenia (`reset_after_reload`) działa tak samo: nowy
+    // interfejs nie ma karty tej sesji.
+    let locked = state.inner.lock().await.is_none();
+    if locked || state.reloads.load(Ordering::SeqCst) != reloads {
         let l = state.sessions.lock().expect("sessions").remove(&id);
         if let Some(l) = l {
             let _ = l.shell.close().await;
             l.session.disconnect().await;
         }
-        return Err("Plik z hostami został zablokowany w trakcie łączenia.".into());
+        return Err(interrupted_message(locked).into());
     }
 
     let app3 = app.clone();

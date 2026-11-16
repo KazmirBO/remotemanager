@@ -138,14 +138,6 @@ pub struct HostInput {
     pub fields: FieldsIo,
 }
 
-/// Efektywne wartości po dziedziczeniu wraz ze źródłem każdego pola.
-#[derive(Debug, Serialize)]
-pub struct ResolvedView {
-    pub fields: FieldsIo,
-    pub sources: model::Sources,
-    pub port: u16,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
