@@ -1,4 +1,5 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
+import { createAcker } from './sshAck';
 
 export type Protocol = 'ssh' | 'rdp';
 export type Id = string;
@@ -107,9 +108,18 @@ export const api = {
   answerTrust: (id: string, accept: boolean, remember: boolean) =>
     call<void>('answer_trust', { id, accept, remember }),
   sshResize: (id: string, cols: number, rows: number) => call<void>('ssh_resize', { id, cols, rows }),
-  sshClose: (id: string) => call<void>('ssh_close', { id }),
+  sshClose: (id: string) => {
+    // Zamknięcie karty nie zawsze kończy się komunikatem sterującym, więc nasłuch widoczności
+    // dokumentu tej sesji zdejmujemy także tutaj.
+    sshStops.get(id)?.();
+    sshStops.delete(id);
+    return call<void>('ssh_close', { id });
+  },
   sshAck: (id: string, bytes: number) => call<void>('ssh_ack', { id, bytes }),
 };
+
+/** Sprzątanie nasłuchu widoczności dokumentu dla otwartych sesji SSH (patrz `connectSsh`). */
+const sshStops = new Map<string, () => void>();
 
 /** Wywołanie z surowym ciałem i identyfikatorem sesji w nagłówku. */
 export function sshWrite(id: string, data: Uint8Array): Promise<void> {
@@ -122,29 +132,38 @@ export async function connectSsh(
 ): Promise<string> {
   const channel = new Channel<ArrayBuffer | ShellControl>();
   // Kontrola przepływu: backend wstrzymuje wyjście po 4 MiB niepotwierdzonych bajtów. `done` wywołuje
-  // widok, gdy terminal przetworzył porcję (`term.write(dane, done)`). Dane mogą przyjść przed
-  // identyfikatorem sesji; licznik wtedy czeka.
+  // widok, gdy terminal przetworzył porcję (`term.write(dane, done)`); w ukrytym dokumencie potwierdzamy
+  // od razu (patrz `sshAck.ts`). Dane mogą przyjść przed identyfikatorem sesji; licznik wtedy czeka.
   let id: string | null = null;
-  let processed = 0;
-  const ack = () => {
-    if (id === null || processed < SSH_ACK_BYTES) return;
-    const bytes = processed;
-    processed = 0;
-    void api.sshAck(id, bytes).catch(() => {});
+  const acker = createAcker(
+    (bytes) => id !== null && void api.sshAck(id, bytes).catch(() => {}),
+    () => document.hidden,
+    SSH_ACK_BYTES,
+  );
+  const onVisibility = () => document.hidden && acker.hide();
+  document.addEventListener('visibilitychange', onVisibility);
+  const stop = () => {
+    document.removeEventListener('visibilitychange', onVisibility);
+    if (id !== null) sshStops.delete(id);
   };
-  const data = (bytes: Uint8Array) =>
-    onData(bytes, () => {
-      processed += bytes.length;
-      ack();
-    });
+  const data = (bytes: Uint8Array) => onData(bytes, acker.receive(bytes.length));
   channel.onmessage = (msg) => {
     if (msg instanceof ArrayBuffer) data(new Uint8Array(msg));
     else if (ArrayBuffer.isView(msg)) data(new Uint8Array((msg as ArrayBufferView).buffer));
     else if (Array.isArray(msg)) data(Uint8Array.from(msg as number[]));
-    else onControl(msg as ShellControl);
+    else {
+      stop();
+      onControl(msg as ShellControl);
+    }
   };
-  id = await call<string>('connect_ssh', { hostId, cols, rows, password, onEvent: channel });
-  ack();
+  try {
+    id = await call<string>('connect_ssh', { hostId, cols, rows, password, onEvent: channel });
+  } catch (e) {
+    stop();
+    throw e;
+  }
+  sshStops.set(id, stop);
+  acker.ready();
   return id;
 }
 /** Co tyle przetworzonych bajtów wyjścia SSH interfejs wysyła potwierdzenie (okno backendu to 4 MiB). */
@@ -210,6 +229,7 @@ export const rdpClose = (id: string) => call<void>('rdp_close', { id });
 
 /** Skrót zwalniający przechwycone klawisze: scancode z `scancodes.ts` i modyfikatory. */
 export interface ReleaseCombo { scancode: number; extended: boolean; ctrl: boolean; alt: boolean; shift: boolean; meta: boolean }
-/** Włącza albo wyłącza przechwytywanie klawiszy; `system` mówi, czy przejęto też klawisze systemowe. */
+/** Włącza albo wyłącza przechwytywanie klawiszy; `system` mówi, czy przejęto też klawisze systemowe.
+ * Błąd wywołania (np. sesja już nie istnieje) daje `null`. */
 export const rdpGrabKeys = (id: string, on: boolean, release: ReleaseCombo | null) =>
-  call<{ system: boolean }>('rdp_grab_keys', { id, on, release }).catch(() => ({ system: false }));
+  call<{ system: boolean }>('rdp_grab_keys', { id, on, release }).catch(() => null);

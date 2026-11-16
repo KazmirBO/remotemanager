@@ -90,7 +90,7 @@
         <option value="fast">Szybkie</option>
         <option value="slow">Wolne</option>
       </select>
-      <span class="hint muted">Wolne wyłącza efekty pulpitu (tapetę, animacje, motywy), żeby serwer wysyłał mniej zmian obrazu. Profil można zmienić dla katalogu lub hosta.</span>
+      <span class="hint muted">Wolne wyłącza efekty pulpitu (tapetę, animacje, motywy) i wygładzanie czcionek, żeby serwer wysyłał mniej zmian obrazu. Profil można zmienić dla katalogu lub hosta.</span>
     </div>
     <div class="field">
       <label for="s-keys">Przechwytywanie klawiszy w sesji RDP</label>

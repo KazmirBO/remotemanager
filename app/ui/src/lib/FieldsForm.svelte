@@ -100,7 +100,7 @@
         {profileHint ? `Dziedziczone z „${profileHint.from}”: ${profileName(profileHint.value)}` : `Z ustawień aplikacji: ${profileName(ui.doc?.settings.rdp_profile ?? 'fast')}`}
       </span>
     {/if}
-    <span class="hint">Wolne wyłącza efekty pulpitu, żeby serwer wysyłał mniej zmian obrazu. Dotyczy nowych połączeń.</span>
+    <span class="hint">Wolne wyłącza efekty pulpitu (tapetę, animacje, motywy) i wygładzanie czcionek, żeby serwer wysyłał mniej zmian obrazu. Dotyczy nowych połączeń.</span>
   </div>
   {#if fields.rdp_kerberos ?? kerberosHint?.value}
     <div class="field">

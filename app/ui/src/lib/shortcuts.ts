@@ -1,4 +1,5 @@
 import type { Settings } from './api';
+import { SCANCODES } from './scancodes';
 
 export interface ActionDef { id: string; label: string; default: string }
 
@@ -55,9 +56,24 @@ export function validCombo(combo: string): boolean {
   return parts.length >= 2 ? mods.some((m) => m === 'Ctrl' || m === 'Alt' || m === 'Meta') : /^F\d{1,2}$/.test(key);
 }
 
+/** Akcje kontekstowe: mają znaczenie tylko w określonej sesji (tu `release_keys` w sesji RDP w trybie
+ * przechwytywania). Globalna obsługa skrótów i terminal ich nie zatrzymują, kombinacja idzie dalej. */
+export const CONTEXTUAL_ACTIONS: ReadonlySet<string> = new Set(['release_keys']);
+
+/** Czy kombinacja kończy się klawiszem ze scancode (tylko taką rozpoznaje hak i da się ją wysłać do pulpitu). */
+export function hasScancode(combo: string): boolean {
+  const key = combo.split('+').pop();
+  return !!key && Object.keys(SCANCODES).some((c) => keyName(c) === key);
+}
+
+/** Skrót obowiązujący dla akcji. Zapisana wartość `release_keys` bez scancode (stary plik, ręczna edycja)
+ * jest ignorowana na rzecz domyślnej: inaczej na Windows nie dałoby się wyjść z trybu klawiaturą. */
 export function binding(settings: Settings | undefined, id: string): string {
+  const def = ACTIONS.find((a) => a.id === id)!.default;
   const custom = settings?.shortcuts?.[id];
-  return custom || ACTIONS.find((a) => a.id === id)!.default;
+  if (!custom) return def;
+  if (id === 'release_keys' && !hasScancode(custom)) return def;
+  return custom;
 }
 
 /** Akcja przypisana do zdarzenia klawiatury albo `null`. */
@@ -67,6 +83,12 @@ export function matchAction(settings: Settings | undefined, e: KeyLike): string 
   const combo = comboFromEvent(e);
   if (!combo) return null;
   return ACTIONS.find((a) => binding(settings, a.id) === combo)?.id ?? null;
+}
+
+/** Jak `matchAction`, ale bez akcji kontekstowych: do globalnej obsługi skrótów i terminala. */
+export function matchAppAction(settings: Settings | undefined, e: KeyLike): string | null {
+  const a = matchAction(settings, e);
+  return a && CONTEXTUAL_ACTIONS.has(a) ? null : a;
 }
 
 /** Id innej akcji, która już używa tej kombinacji. */

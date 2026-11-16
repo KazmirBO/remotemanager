@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { grabActive, grabWanted, keyRoute, parseRelease } from './rdpKeys';
-import { ACTIONS, comboFromEvent, findConflict, matchAction, validCombo } from './shortcuts';
+import { createSerialQueue, grabActive, grabWanted, keyRoute, parseRelease } from './rdpKeys';
+import { ACTIONS, binding, comboFromEvent, findConflict, hasScancode, matchAction, matchAppAction, validCombo } from './shortcuts';
 import { validPointer } from './rdpPointer';
 
 describe('parseRelease', () => {
@@ -45,9 +45,9 @@ describe('grabActive', () => {
 });
 
 describe('keyRoute', () => {
-  it('poza trybem skróty aplikacji zostają lokalne', () => {
+  it('poza trybem skróty aplikacji zostają lokalne, a release_keys idzie do sesji', () => {
     expect(keyRoute('quick_connect', false)).toBe('app');
-    expect(keyRoute('release_keys', false)).toBe('app');
+    expect(keyRoute('release_keys', false)).toBe('remote');
     expect(keyRoute(null, false)).toBe('remote');
   });
   it('w trybie wszystko poza release_keys idzie do sesji', () => {
@@ -70,6 +70,37 @@ describe('akcja release_keys', () => {
     expect(comboFromEvent(ev)).toBe('Ctrl+Shift+F12');
     expect(validCombo('Ctrl+Shift+F12')).toBe(true);
     expect(findConflict(settings({}), 'release_keys', 'Ctrl+Shift+K')).toBe('quick_connect');
+    expect(findConflict(settings({}), 'quick_connect', 'Ctrl+Shift+F12')).toBe('release_keys');
+  });
+  it('globalna obsługa skrótów pomija akcję kontekstową, ale zwykłe skróty zostają', () => {
+    expect(matchAppAction(settings({}), ev)).toBeNull();
+    expect(matchAppAction(settings({}), { ...ev, code: 'KeyK' })).toBe('quick_connect');
+  });
+  it('wartość bez scancode zastępuje skrót domyślny, w tym w podpowiedzi i dopasowaniu', () => {
+    const bad = settings({ release_keys: 'Ctrl+PrintScreen' });
+    expect(hasScancode('Ctrl+PrintScreen')).toBe(false);
+    expect(hasScancode('Ctrl+F13')).toBe(false);
+    expect(hasScancode('Ctrl+Shift+F12')).toBe(true);
+    expect(binding(bad, 'release_keys')).toBe('Ctrl+Shift+F12');
+    expect(matchAction(bad, ev)).toBe('release_keys');
+    expect(parseRelease(binding(bad, 'release_keys'))).not.toBeNull();
+    expect(binding(settings({ release_keys: 'Alt+F11' }), 'release_keys')).toBe('Alt+F11');
+    // Dla innych akcji wartość zapisana zostaje bez zmian.
+    expect(binding(settings({ lock: 'Ctrl+F13' }), 'lock')).toBe('Ctrl+F13');
+  });
+});
+
+describe('createSerialQueue', () => {
+  it('wykonuje zadania po kolei, także gdy wcześniejsze trwa dłużej albo się nie udaje', async () => {
+    const q = createSerialQueue();
+    const log: string[] = [];
+    const slow = q(async () => { await new Promise((r) => setTimeout(r, 20)); log.push('on'); return 1; });
+    const failing = q(async () => { log.push('boom'); throw new Error('x'); });
+    const last = q(async () => { log.push('off'); return 3; });
+    expect(await slow).toBe(1);
+    await expect(failing).rejects.toThrow();
+    expect(await last).toBe(3);
+    expect(log).toEqual(['on', 'boom', 'off']);
   });
 });
 

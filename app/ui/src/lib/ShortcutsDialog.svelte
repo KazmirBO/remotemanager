@@ -2,7 +2,7 @@
   import { api, type Settings } from './api';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
-  import { ACTIONS, binding, comboFromEvent, findConflict, validCombo } from './shortcuts';
+  import { ACTIONS, binding, comboFromEvent, findConflict, hasScancode, validCombo } from './shortcuts';
   import { applyTheme, notify, refresh, ui } from './store.svelte';
 
   let { onclose }: { onclose: () => void } = $props();
@@ -26,6 +26,10 @@
     if (!combo) return; // sam modyfikator: czekamy na właściwy klawisz
     if (!validCombo(combo)) {
       error = 'Skrót musi zawierać Ctrl, Alt albo Meta (albo być klawiszem funkcyjnym).';
+      return;
+    }
+    if (capturing === 'release_keys' && !hasScancode(combo)) {
+      error = 'Tego klawisza nie da się użyć do zwolnienia klawiszy: zdalny pulpit nie ma dla niego kodu klawisza. Wybierz inny, np. klawisz funkcyjny F1-F12.';
       return;
     }
     const clash = findConflict(settings, capturing, combo);

@@ -5,7 +5,7 @@
   import Icon from './Icon.svelte';
   import { desktopSize } from './rdpSize';
   import { scancodeFor } from './scancodes';
-  import { grabActive, grabWanted, keyRoute, parseRelease } from './rdpKeys';
+  import { createSerialQueue, grabActive, grabWanted, keyRoute, parseRelease } from './rdpKeys';
   import { validPointer } from './rdpPointer';
   import { binding, matchAction } from './shortcuts';
   import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsPassword, notify, reconnect, requestPassword, ui } from './store.svelte';
@@ -96,7 +96,14 @@
       return;
     }
     const sc = scancodeFor(e.code);
-    if (!sc) return;
+    // W trybie przechwytywania klawisz bez scancode też jest zatrzymany, żeby nie wykonał skrótu aplikacji.
+    if (!sc) {
+      if (grabbing) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     if (down) pressed.add(e.code);
@@ -139,20 +146,27 @@
   // Czy backend ma teraz przejętą klawiaturę tej sesji, i czy ostrzeżenie o klawiszach systemowych już padło.
   let grabbed = false;
   let warnedSystem = false;
+  // Wywołania `rdp_grab_keys` idą po kolei: każde jest osobnym zadaniem w backendzie i bez kolejki
+  // wyłączenie mogłoby je wyprzedzić. `grabGen` unieważnia wynik włączenia, które wyłączono w międzyczasie.
+  const grabQueue = createSerialQueue();
+  let grabGen = 0;
 
   function setGrab(on: boolean) {
     if (on === grabbed || !sessionId) return;
     grabbed = on;
     const id = sessionId;
+    const gen = ++grabGen;
     if (on) {
-      void rdpGrabKeys(id, true, parseRelease(releaseKey)).then((r) => {
-        if (r.system || warnedSystem || !grabbed) return;
+      const release = parseRelease(releaseKey);
+      void grabQueue(() => rdpGrabKeys(id, true, release)).then((r) => {
+        // Błąd wywołania (r === null) albo tryb wyłączony w międzyczasie: bez powiadomienia.
+        if (!r || r.system || warnedSystem || gen !== grabGen || !grabbed) return;
         warnedSystem = true;
         notify('Klawisze systemowe (Windows, Alt+Tab) zostają lokalne. Pozostałe skróty trafiają do zdalnego pulpitu.');
       });
     } else {
       releaseAll();
-      void rdpGrabKeys(id, false, null);
+      void grabQueue(() => rdpGrabKeys(id, false, null));
     }
   }
 
@@ -304,15 +318,21 @@
       document.removeEventListener('focusout', checkModal);
       void unlisten.then((f) => f()).catch(() => {});
       // Backend nie może zostać z przejętą klawiaturą po zamknięciu widoku.
-      if (grabbed && sessionId) void rdpGrabKeys(sessionId, false, null);
+      if (grabbed && sessionId) {
+        const id = sessionId;
+        void grabQueue(() => rdpGrabKeys(id, false, null));
+      }
       grabbed = false;
+      grabGen++;
       if (fullscreen) void import('@tauri-apps/api/window').then((m) => m.getCurrentWindow().setFullscreen(false)).catch(() => {});
       if (sessionId) void rdpClose(sessionId);
     };
   });
 </script>
 
-<svelte:window onblur={releaseAll} />
+<!-- Powrót okna na pierwszy plan: po zwolnieniu klawiszy przez backend (powód `foreground`) kanwa mogła
+  nie stracić fokusu, więc żaden stan się nie zmienił; przejęcie włączamy tu ponownie, jeśli nadal jest chciane. -->
+<svelte:window onblur={releaseAll} onfocus={() => setGrab(grabbing)} />
 
 <div class="wrap" class:hidden={!active}>
   <div class="stage" bind:this={stage}>

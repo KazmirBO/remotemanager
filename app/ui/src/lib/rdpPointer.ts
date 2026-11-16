@@ -1,4 +1,5 @@
-/** Największy bok kursora zdalnego (ten sam limit ma proces RDP). */
+/** Największy bok kursora zdalnego, jaki przyjmuje interfejs. Limity są dwa: proces RDP przyjmuje kształty
+ * do 384 px, ale aplikacja przekazuje do interfejsu najwyżej 128 px; większe zamienia na kursor domyślny. */
 export const MAX_POINTER_SIDE = 128;
 
 export interface PointerShape { width: number; height: number; hot_x: number; hot_y: number; rgba: number[] }
