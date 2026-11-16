@@ -6,7 +6,7 @@ Nazwa "Menedżer sesji" i polecenie `multiremotemanager` są robocze.
 
 ## Stan projektu
 
-Wczesna wersja rozwojowa (0.1.0), bez wydań i bez gotowych pakietów. Rozwijana i używana na Linuksie (Gentoo, KDE na Waylandzie). Kod jest pisany także pod Windows, ale na Windows nie był dotąd uruchamiany.
+Wczesna wersja rozwojowa. Pierwsze wydanie wstępne (0.1.0) ma niepodpisane pakiety: instalator dla Windows i deb; opis zmian jest w [CHANGELOG.md](CHANGELOG.md). Rozwijana i używana na Linuksie (Gentoo, KDE na Waylandzie). Kod jest pisany także pod Windows, ale na Windows nie był dotąd uruchamiany.
 
 Sprawdzone w działaniu: sesje SSH (także przez bastion), sesje RDP z NLA, zmiana rozdzielczości pulpitu razem z oknem i schowek w obie strony. Niesprawdzone: Kerberos z prawdziwym KDC oraz dodane 16.11.2026 lokalny kursor RDP, profil łącza, przechwytywanie klawiszy i renderer WebGL terminala. Szczegóły i lista rzeczy niezweryfikowanych są w [PROJECT.md](PROJECT.md).
 
@@ -48,7 +48,7 @@ Kilka rzeczy, które nie są oczywiste:
 - Cecha `custom-protocol` wbudowuje interfejs w binarkę. Bez niej okno ładuje `http://localhost:1420` i wymaga działającego `pnpm --dir app/ui dev`.
 - Po zmianie interfejsu trzeba ponowić `pnpm --dir app/ui build` i budowę aplikacji, a po zmianie procesu RDP jego budowę.
 
-Pakiet instalacyjny (deb) z procesem RDP w środku buduje `scripts/build-release.sh --bundles deb`.
+Pakiet instalacyjny (deb) z procesem RDP w środku buduje `scripts/build-release.sh --bundles deb`. Wydanie na GitHubie (tag, instalator NSIS i deb) robi workflow `wydanie` uruchamiany ręcznie z gałęzi `main`; wersję bierze z `crates/app/tauri.conf.json`, a opis z `CHANGELOG.md`.
 
 ## Dane i bezpieczeństwo
 
