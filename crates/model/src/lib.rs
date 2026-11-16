@@ -55,6 +55,30 @@ pub enum Source {
     Builtin,
 }
 
+/// Profil łącza sesji RDP: dobór ustawień wydajności (tapeta, animacje, motywy).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkProfile {
+    /// Sieć lokalna albo szybkie łącze.
+    #[default]
+    Fast,
+    /// Wolne łącze: bez tapety, animacji i motywów.
+    Slow,
+}
+
+/// Kiedy sesja RDP przechwytuje klawisze systemowe (Win, Alt+Tab itp.).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RdpKeys {
+    /// Nigdy: klawisze systemowe obsługuje system lokalny.
+    #[default]
+    Never,
+    /// Tylko w trybie pełnoekranowym.
+    Fullscreen,
+    /// Zawsze, gdy sesja ma fokus.
+    Always,
+}
+
 macro_rules! fields {
     ($($name:ident : $ty:ty),* $(,)?) => {
         /// Nadpisywalne ustawienia. `None` = dziedzicz.
@@ -115,6 +139,7 @@ fields! {
     rdp_multimon: bool,
     rdp_kerberos: bool,
     rdp_kdc: String,
+    rdp_profile: LinkProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -376,6 +401,12 @@ pub struct Settings {
     /// Nadpisane skróty: id akcji -> kombinacja, np. "quick_connect" -> "Ctrl+K".
     #[serde(default)]
     pub shortcuts: BTreeMap<String, String>,
+    /// Domyślny profil łącza RDP, gdy żaden poziom drzewa go nie ustawia.
+    #[serde(default)]
+    pub rdp_profile: LinkProfile,
+    /// Przechwytywanie klawiszy systemowych w sesji RDP.
+    #[serde(default)]
+    pub rdp_keys: RdpKeys,
 }
 
 fn default_terminal_scheme() -> String {
@@ -389,6 +420,8 @@ impl Default for Settings {
             terminal_font_size: 13,
             terminal_scheme: default_terminal_scheme(),
             shortcuts: BTreeMap::new(),
+            rdp_profile: LinkProfile::default(),
+            rdp_keys: RdpKeys::default(),
         }
     }
 }
@@ -659,6 +692,54 @@ mod tests {
             serde_json::from_str(r#"{"theme":"dark","terminal_font_size":14}"#).unwrap();
         assert_eq!(old.terminal_scheme, "domyslny");
         assert!(old.shortcuts.is_empty());
+    }
+
+    #[test]
+    fn new_settings_default_roundtrip_and_old_documents() {
+        let old: Settings =
+            serde_json::from_str(r#"{"theme":"dark","terminal_font_size":14}"#).unwrap();
+        assert_eq!(old.rdp_profile, LinkProfile::Fast);
+        assert_eq!(old.rdp_keys, RdpKeys::Never);
+        // Cały stary dokument (bez nowych pól w ustawieniach i w polach drzewa) dalej się czyta.
+        let doc: Document = serde_json::from_str(
+            r#"{"tree":{"folders":[],"hosts":[]},"settings":{"theme":"dark","terminal_font_size":14}}"#,
+        )
+        .unwrap();
+        assert_eq!(doc.settings.rdp_keys, RdpKeys::Never);
+        let st = Settings {
+            rdp_profile: LinkProfile::Slow,
+            rdp_keys: RdpKeys::Fullscreen,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&st).unwrap();
+        assert!(
+            json.contains(r#""rdp_profile":"slow""#) && json.contains(r#""rdp_keys":"fullscreen""#)
+        );
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), st);
+        assert_eq!(
+            serde_json::from_str::<RdpKeys>(r#""always""#).unwrap(),
+            RdpKeys::Always
+        );
+    }
+
+    #[test]
+    fn rdp_profile_is_inherited_host_folder_none() {
+        let mut t = Tree::default();
+        let f = t.add_folder("F", None).unwrap();
+        let h = t.add_host("h", "h", Protocol::Rdp, Some(f)).unwrap();
+        // Nikt nie ustawia: brak wartości i brak źródła.
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.rdp_profile, None);
+        assert_eq!(r.sources.rdp_profile, None);
+        t.folders[0].fields.rdp_profile = Some(LinkProfile::Slow);
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.rdp_profile, Some(LinkProfile::Slow));
+        assert_eq!(r.sources.rdp_profile, Some(Source::Folder(f)));
+        // Host nadpisuje katalog.
+        t.hosts[0].fields.rdp_profile = Some(LinkProfile::Fast);
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.rdp_profile, Some(LinkProfile::Fast));
+        assert_eq!(r.sources.rdp_profile, Some(Source::Host));
     }
 
     #[test]

@@ -27,6 +27,7 @@ vault = { path = "../vault" }
 ssh = { path = "../ssh" }
 sync = { path = "../sync" }
 rdp = { path = "../rdp" }
+keygrab = { path = "../keygrab" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
@@ -34,3 +35,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = "1"
 tauri-plugin-single-instance = "2"
 arboard = { version = "3", features = ["wayland-data-control"] }
+
+# Przejęcie klawiatury przez GDK (Linux). Ta sama wersja i cecha co w tauri, więc bez nowych pakietów;
+# `gdk` jest dostępne jako `gtk::gdk`.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", features = ["v3_24"] }

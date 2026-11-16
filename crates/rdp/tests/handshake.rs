@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rdp::{ConnectParams, Event, FromWorker, RdpClient};
+use rdp::{ConnectParams, Event, FromWorker, LinkProfile, Pointer, RdpClient};
 use tokio::sync::mpsc::channel;
 
 /// Atrapa procesu: skrypt, który wypisuje przygotowaną ramkę i czeka.
@@ -43,6 +43,7 @@ fn params() -> ConnectParams {
         kdc: None,
         width: 800,
         height: 600,
+        profile: LinkProfile::Fast,
     }
 }
 
@@ -178,4 +179,57 @@ async fn unknown_control_message_is_skipped_and_the_session_goes_on() {
         panic!("oczekiwano wiadomości po pominiętych")
     };
     assert_eq!(message, "dalej");
+}
+
+#[tokio::test]
+async fn pointer_frame_arrives_as_pointer_event() {
+    let pointer = Pointer {
+        width: 2,
+        height: 3,
+        hot_x: 1,
+        hot_y: 2,
+        rgba: (0..2 * 3 * 4).collect(),
+    };
+    let mut bytes = hello_frame();
+    rdp_proto::write_pointer(&mut bytes, &pointer).unwrap();
+    let Event::Pointer(got) = first_event(fake_worker_bytes("wskaznik", &bytes)).await else {
+        panic!("oczekiwano wskaźnika")
+    };
+    assert_eq!(got, pointer);
+}
+
+#[tokio::test]
+async fn pointer_default_and_hidden_arrive_in_order() {
+    let mut bytes = hello_frame();
+    rdp_proto::write_json(&mut bytes, &FromWorker::PointerHidden).unwrap();
+    let Event::Worker(FromWorker::PointerHidden) =
+        first_event(fake_worker_bytes("ukryty", &bytes)).await
+    else {
+        panic!("oczekiwano ukrytego wskaźnika")
+    };
+    let mut bytes = hello_frame();
+    rdp_proto::write_json(&mut bytes, &FromWorker::PointerDefault).unwrap();
+    let Event::Worker(FromWorker::PointerDefault) =
+        first_event(fake_worker_bytes("domyslny", &bytes)).await
+    else {
+        panic!("oczekiwano wskaźnika domyślnego")
+    };
+}
+
+/// Ramka wskaźnika (rodzaj 4) o podanych wymiarach i długości danych.
+fn pointer_frame_raw(w: u16, h: u16, data_len: usize) -> Vec<u8> {
+    let mut body = Vec::new();
+    for v in [w, h, 0, 0] {
+        body.extend_from_slice(&v.to_le_bytes());
+    }
+    body.resize(8 + data_len, 0);
+    raw_frame(4, &body)
+}
+
+#[tokio::test]
+async fn pointer_frame_with_bad_dimensions_ends_the_session_with_an_error() {
+    // Bok zero, bok ponad limit (dane zgodne z wymiarami) i długość danych niezgodna z wymiarami.
+    assert_corrupt_frame_ends_session("wsk-zero", &pointer_frame_raw(0, 4, 0)).await;
+    assert_corrupt_frame_ends_session("wsk-duzy", &pointer_frame_raw(385, 1, 385 * 4)).await;
+    assert_corrupt_frame_ends_session("wsk-dlugosc", &pointer_frame_raw(4, 4, 63)).await;
 }

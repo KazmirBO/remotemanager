@@ -2239,6 +2239,7 @@ dependencies = [
  "ironrdp-graphics",
  "rdp-proto",
  "sha2",
+ "socket2",
  "sspi",
  "tokio-rustls",
  "x509-cert",

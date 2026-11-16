@@ -4,76 +4,21 @@
 //! obrazu (`x,y,w,h` jako `u16 LE`, potem RGBA).
 
 use model::{Id, Protocol};
-use rdp::{ConnectParams, Event, FromWorker, RdpClient, ToWorker};
+use rdp::{ConnectParams, Event, FromWorker, LinkProfile, Pointer, RdpClient, ToWorker};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Manager, State};
-use tokio::sync::Notify;
 use tokio::sync::mpsc::channel;
 use uuid::Uuid;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use crate::clipboard::{ClipSync, Outcome};
+use crate::flow::{Flow, RDP_WINDOW};
 use crate::sessions::ask_trust;
 use crate::state::AppState;
-
-/// Ile bajtów obrazu może czekać na odebranie przez interfejs (dwa pełne ekrany 4K).
-const IMAGE_WINDOW: u64 = 64 * 1024 * 1024;
-
-/// Kontrola przepływu obrazu jednej sesji. Kanał do interfejsu nie ma limitu, więc bez niej wolno
-/// rysujący interfejs (albo szybko zmieniający się ekran) powodowałby nieograniczony wzrost pamięci.
-/// Pętla sesji liczy wysłane bajty, interfejs potwierdza odebrane (`rdp_ack`), a po przekroczeniu
-/// okna pętla przestaje odbierać zdarzenia z procesu, co przez potok i sieć spowalnia sam serwer.
-#[derive(Default)]
-pub struct Flow {
-    outstanding: AtomicU64,
-    acked: Notify,
-}
-
-impl Flow {
-    fn sent(&self, bytes: u64) {
-        self.outstanding.fetch_add(bytes, Ordering::Relaxed);
-    }
-
-    /// Interfejs odebrał `bytes` bajtów obrazu. Nadmiarowe potwierdzenie zeruje licznik.
-    pub fn ack(&self, bytes: u64) {
-        // Odejmowanie z nasyceniem w pętli `compare_exchange`: działa na każdej wersji kompilatora
-        // (`fetch_update` jest przestarzałe od Rust 1.100, a jego następcy nie ma w starszych).
-        let mut current = self.outstanding.load(Ordering::Relaxed);
-        loop {
-            let next = current.saturating_sub(bytes);
-            match self.outstanding.compare_exchange_weak(
-                current,
-                next,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(seen) => current = seen,
-            }
-        }
-        self.acked.notify_one();
-    }
-
-    fn congested(&self) -> bool {
-        self.outstanding.load(Ordering::Relaxed) > IMAGE_WINDOW
-    }
-
-    /// Czeka, aż w oknie będzie miejsce. Zwraca `false`, gdy sesja w tym czasie przestała istnieć
-    /// (`alive` jest sprawdzane co 250 ms, żeby zamknięcie sesji nie zostawiło pętli w zawieszeniu).
-    async fn wait(&self, alive: impl Fn() -> bool) -> bool {
-        while self.congested() {
-            if !alive() {
-                return false;
-            }
-            let _ = tokio::time::timeout(Duration::from_millis(250), self.acked.notified()).await;
-        }
-        true
-    }
-}
 
 /// Podstawowy i największy odstęp między sprawdzeniami lokalnego schowka.
 const CLIP_POLL: Duration = Duration::from_secs(1);
@@ -133,6 +78,7 @@ pub async fn connect_rdp(
                 kdc: r.fields.rdp_kdc.clone(),
                 width: width.clamp(200, 8192),
                 height: height.clamp(200, 8192),
+                profile: link_profile(r.fields.rdp_profile, doc.settings.rdp_profile),
             })
         })
         .await?;
@@ -157,7 +103,7 @@ pub async fn connect_rdp(
         .lock()
         .expect("clip")
         .insert(id, sync.clone());
-    let flow = Arc::new(Flow::default());
+    let flow = Arc::new(Flow::new(RDP_WINDOW));
     state
         .rdp_flow
         .lock()
@@ -237,6 +183,13 @@ pub async fn connect_rdp(
                             .contains_key(&id)
                     };
                     if !flow.wait(alive).await {
+                        break;
+                    }
+                }
+                // Wskaźnik myszy to komunikat sterujący: interfejs go nie potwierdza, więc nie liczy się w `Flow`.
+                Event::Pointer(p) => {
+                    let msg = pointer_message(&p);
+                    if on_event.send(InvokeResponseBody::Json(msg)).is_err() {
                         break;
                     }
                 }
@@ -342,8 +295,47 @@ pub async fn connect_rdp(
         if let Some(c) = st.rdp.lock().expect("rdp").remove(&id) {
             c.close();
         }
+        // Przechwytywanie klawiszy należy do sesji: razem z nią się kończy.
+        st.keys.release_for(id);
     });
     Ok(id)
+}
+
+/// Profil łącza sesji: wartość rozwiązana dla hosta, a gdy żaden poziom jej nie ustawia, domyślna z ustawień.
+fn link_profile(resolved: Option<model::LinkProfile>, default: model::LinkProfile) -> LinkProfile {
+    match resolved.unwrap_or(default) {
+        model::LinkProfile::Fast => LinkProfile::Fast,
+        model::LinkProfile::Slow => LinkProfile::Slow,
+    }
+}
+
+/// Największy bok kursora CSS, który przyjmują przeglądarki (większy bywa ignorowany).
+const CURSOR_MAX_SIDE: u16 = 128;
+
+/// Komunikat JSON dla frontendu z bitmapą wskaźnika. Bitmapa niepoprawna albo większa niż limit
+/// kursora CSS zamienia się na wskaźnik domyślny (lokalna strzałka).
+fn pointer_message(p: &Pointer) -> String {
+    #[derive(serde::Serialize)]
+    struct Msg<'a> {
+        t: &'static str,
+        width: u16,
+        height: u16,
+        hot_x: u16,
+        hot_y: u16,
+        rgba: &'a [u8],
+    }
+    if !p.is_valid() || p.width > CURSOR_MAX_SIDE || p.height > CURSOR_MAX_SIDE {
+        return r#"{"t":"pointer_default"}"#.to_string();
+    }
+    serde_json::to_string(&Msg {
+        t: "pointer",
+        width: p.width,
+        height: p.height,
+        hot_x: p.hot_x,
+        hot_y: p.hot_y,
+        rgba: &p.rgba,
+    })
+    .unwrap_or_else(|_| r#"{"t":"pointer_default"}"#.to_string())
 }
 
 fn clipboard_enabled(app: &AppHandle) -> bool {
@@ -395,6 +387,7 @@ pub async fn rdp_close(state: State<'_, AppState>, id: Uuid) -> Result<(), Strin
     if let Some(c) = c {
         c.close();
     }
+    state.keys.release_for(id);
     Ok(())
 }
 
@@ -466,27 +459,53 @@ mod tests {
     use super::*;
     use rdp::ClipKind;
 
-    #[tokio::test]
-    async fn image_flow_waits_for_acks_and_stops_when_session_is_gone() {
-        let flow = Flow::default();
-        // W oknie: bez czekania, także dokładnie na granicy.
-        flow.sent(IMAGE_WINDOW);
-        assert!(!flow.congested());
-        assert!(flow.wait(|| true).await);
-        // Ponad okno: czekanie trwa do potwierdzenia.
-        flow.sent(1);
-        assert!(flow.congested());
-        let waiting = tokio::time::timeout(Duration::from_millis(100), flow.wait(|| true)).await;
-        assert!(waiting.is_err(), "bez potwierdzenia pętla czeka");
-        flow.ack(1024);
-        assert!(flow.wait(|| true).await);
-        // Sesja zniknęła w trakcie zatoru: czekanie kończy się wynikiem `false`.
-        flow.sent(IMAGE_WINDOW);
-        assert!(!flow.wait(|| false).await);
-        // Nadmiarowe potwierdzenie nie przekręca licznika.
-        flow.ack(u64::MAX);
-        assert!(!flow.congested());
-        assert!(flow.wait(|| true).await);
+    fn pointer(w: u16, h: u16) -> Pointer {
+        Pointer {
+            width: w,
+            height: h,
+            hot_x: 3,
+            hot_y: 4,
+            rgba: vec![7; usize::from(w) * usize::from(h) * 4],
+        }
+    }
+
+    #[test]
+    fn pointer_becomes_json_or_default() {
+        let v: serde_json::Value = serde_json::from_str(&pointer_message(&pointer(2, 1))).unwrap();
+        assert_eq!(v["t"], "pointer");
+        assert_eq!(
+            (v["width"].as_u64(), v["height"].as_u64()),
+            (Some(2), Some(1))
+        );
+        assert_eq!(
+            (v["hot_x"].as_u64(), v["hot_y"].as_u64()),
+            (Some(3), Some(4))
+        );
+        assert_eq!(v["rgba"], serde_json::json!([7, 7, 7, 7, 7, 7, 7, 7]));
+        // Dokładnie na granicy limitu kursora CSS.
+        assert!(pointer_message(&pointer(128, 128)).contains(r#""t":"pointer""#));
+        // Ponad limit, zerowy bok i niezgodny bufor dają wskaźnik domyślny.
+        let default = r#"{"t":"pointer_default"}"#;
+        assert_eq!(pointer_message(&pointer(129, 1)), default);
+        assert_eq!(pointer_message(&pointer(1, 129)), default);
+        assert_eq!(pointer_message(&pointer(0, 0)), default);
+        let mut bad = pointer(2, 2);
+        bad.rgba.pop();
+        assert_eq!(pointer_message(&bad), default);
+        // Pozostałe komunikaty wskaźnika idą istniejącą gałęzią JSON procesu.
+        assert_eq!(
+            serde_json::to_string(&FromWorker::PointerHidden).unwrap(),
+            r#"{"t":"pointer_hidden"}"#
+        );
+    }
+
+    #[test]
+    fn link_profile_prefers_resolved_then_settings() {
+        use model::LinkProfile as M;
+        assert_eq!(link_profile(None, M::Fast), LinkProfile::Fast);
+        assert_eq!(link_profile(None, M::Slow), LinkProfile::Slow);
+        assert_eq!(link_profile(Some(M::Fast), M::Slow), LinkProfile::Fast);
+        assert_eq!(link_profile(Some(M::Slow), M::Fast), LinkProfile::Slow);
     }
 
     #[test]

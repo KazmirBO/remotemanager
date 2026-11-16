@@ -25,7 +25,10 @@ use ironrdp::session::fast_path;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_graphics::image_processing::PixelFormat;
-use rdp_proto::{ClipKind, ConnectParams, FromWorker, Image, Message, ToWorker};
+use ironrdp_graphics::pointer::DecodedPointer;
+use rdp_proto::{
+    ClipKind, ConnectParams, FromWorker, Image, LinkProfile, Message, Pointer, ToWorker,
+};
 use sha2::{Digest as _, Sha256};
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use tokio_rustls::rustls;
@@ -37,8 +40,20 @@ mod memlimit;
 type Framed = ironrdp_blocking::Framed<Tls>;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-const POLL: Duration = Duration::from_millis(15);
+/// Okres odpytywania pętli głównej: tyle najdłużej czeka odczyt z sieci, zanim pętla zajrzy do poleceń
+/// aplikacji (mysz, klawisze, schowek). Przy 15 ms wejście z interfejsu czekało na tę pętlę nawet
+/// 15 ms, co było widać jako opóźnienie kursora i pisania; 5 ms zostawia pętli pomijalny koszt
+/// (ok. 200 pustych obrotów na sekundę). Obraz nadal idzie co `FLUSH_EVERY` przy ciągłym strumieniu,
+/// a po ciszy dłuższej niż `POLL` od razu (patrz gałąź limitu czasu w pętli). Limity czasu schowka
+/// i oczekiwanie na Display Control liczą się zegarem (`Instant`), nie obrotami pętli.
+const POLL: Duration = Duration::from_millis(5);
 const FLUSH_EVERY: Duration = Duration::from_millis(16);
+/// Pierwsza sonda keepalive po tak długiej ciszy; potem co `KEEPALIVE_INTERVAL`. Bez tego pół-martwe
+/// połączenie (np. po zmianie sieci albo uśpieniu serwera) wisiałoby bez końca.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+/// Najdłuższy czas jednego zapisu do gniazda; przekroczenie kończy sesję jak każdy błąd zapisu.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Ile czekamy, aż serwer otworzy kanał Display Control i zgłosi swoje możliwości, zanim uznamy,
 /// że zmiany rozdzielczości w trakcie sesji nie obsługuje.
 const RESIZE_WAIT: Duration = Duration::from_secs(5);
@@ -82,6 +97,11 @@ fn emit_image(img: &Image) {
     let _ = rdp_proto::write_image(&mut out, img);
 }
 
+fn emit_pointer(p: &Pointer) {
+    let mut out = io::stdout().lock();
+    let _ = rdp_proto::write_pointer(&mut out, p);
+}
+
 fn main() {
     // Pierwsza wiadomość: wersja protokołu, po której aplikacja rozpoznaje niezgodny (stary) proces.
     emit(&FromWorker::Hello {
@@ -105,7 +125,7 @@ fn main() {
                         break;
                     }
                 }
-                Ok(Some(Message::Image(_))) => {}
+                Ok(Some(Message::Image(_) | Message::Pointer(_))) => {}
                 // Koniec strumienia albo błąd: aplikacja zniknęła, kończymy sesję.
                 Ok(None) | Err(_) => {
                     let _ = tx.send(ToWorker::Close);
@@ -164,7 +184,7 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
     });
 
     let mut input = Database::new();
-    let mut dirty = Dirty::default();
+    let mut dirty = Dirty::new(w, h);
     let mut last_flush = Instant::now();
     // Prośba o zmianę rozdzielczości czekająca na gotowość kanału (rozmiar i chwila zgłoszenia).
     let mut pending_resize: Option<(u32, u32, Instant)> = None;
@@ -241,7 +261,7 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
             Ok((action, payload)) => {
                 let outs = stage.process(&mut image, action, &payload)?;
                 let mut reactivate_needed = false;
-                for o in outs {
+                for o in coalesce_pointer_outputs(outs) {
                     match o {
                         ActiveStageOutput::DeactivateAll => reactivate_needed = true,
                         other => {
@@ -254,7 +274,7 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
                 }
                 if reactivate_needed {
                     let (w, h) = reactivate(&mut framed, &factory, &mut stage, &mut image)?;
-                    dirty = Dirty::default();
+                    dirty = Dirty::new(w, h);
                     emit(&FromWorker::Resized {
                         width: w,
                         height: h,
@@ -379,6 +399,9 @@ fn reactivate(
             framed.write_all(&buf[..n]).context("reaktywacja: zapis")?;
         }
     };
+    // `server_pointer` i `software_pointer` pochodzą z konfiguracji (`build_config`): wskaźnik idzie
+    // do aplikacji, a nie do obrazu; nowy procesor zaczyna z pustą pamięcią kształtów, więc serwer
+    // wyśle je ponownie.
     stage.set_fastpath_processor(
         fast_path::ProcessorBuilder {
             io_channel_id: factory.io_channel_id(),
@@ -420,12 +443,54 @@ fn handle_one(
             framed.write_all(&frame).context("zapis odpowiedzi")?
         }
         ActiveStageOutput::GraphicsUpdate(r) => dirty.add(r.left, r.top, r.right, r.bottom),
+        ActiveStageOutput::PointerBitmap(p) => match pointer_frame(&p) {
+            Some(frame) => emit_pointer(&frame),
+            // Kształt, którego nie umiemy bezpiecznie przekazać (bok zero albo ponad limit, długość
+            // niezgodna z wymiarami): lokalny kursor wraca do domyślnego zamiast zepsuć sesję.
+            None => emit(&FromWorker::PointerDefault),
+        },
+        ActiveStageOutput::PointerDefault => emit(&FromWorker::PointerDefault),
+        ActiveStageOutput::PointerHidden => emit(&FromWorker::PointerHidden),
+        // Pozycji wskaźnika z serwera nie stosujemy: lokalny kursor idzie za myszą użytkownika, a
+        // serwer odsyła pozycję tylko jako echo naszych ruchów (przestawianie kursora na żądanie
+        // serwera dawałoby skoki i opóźnienie).
+        ActiveStageOutput::PointerPosition { .. } => {}
         ActiveStageOutput::Terminate(reason) => {
             return Ok(Some(format!("serwer zakończył sesję: {reason:?}")));
         }
         _ => {}
     }
     Ok(None)
+}
+
+/// Zamienia bitmapę wskaźnika z biblioteki na ramkę protokołu. Biblioteka nie sprawdza wymiarów
+/// (patrz `MAX_POINTER_SIDE`), więc kontrola jest tutaj; punkt zaczepienia ucinamy do bitmapy.
+fn pointer_frame(p: &DecodedPointer) -> Option<Pointer> {
+    let frame = Pointer {
+        width: p.width,
+        height: p.height,
+        hot_x: p.hotspot_x.min(p.width.saturating_sub(1)),
+        hot_y: p.hotspot_y.min(p.height.saturating_sub(1)),
+        rgba: p.bitmap_data.clone(),
+    };
+    frame.is_valid().then_some(frame)
+}
+
+/// Przy kształcie z pamięci podręcznej biblioteka zgłasza `PointerHidden` tuż przed
+/// `PointerBitmap` (krok pośredni, nie prawdziwe ukrycie). Pomijamy takie `PointerHidden`, żeby
+/// lokalny kursor nie mrugał; stan końcowy jest ten sam, bo bitmapa i tak następuje.
+fn coalesce_pointer_outputs(outs: Vec<ActiveStageOutput>) -> Vec<ActiveStageOutput> {
+    let mut result = Vec::with_capacity(outs.len());
+    let mut iter = outs.into_iter().peekable();
+    while let Some(o) = iter.next() {
+        if matches!(o, ActiveStageOutput::PointerHidden)
+            && matches!(iter.peek(), Some(ActiveStageOutput::PointerBitmap(_)))
+        {
+            continue;
+        }
+        result.push(o);
+    }
+    result
 }
 
 fn operations_for(cmd: &ToWorker) -> Vec<Operation> {
@@ -485,16 +550,104 @@ fn operations_for(cmd: &ToWorker) -> Vec<Operation> {
     }
 }
 
-/// Suma prostokątów zmienionych od ostatniego wysłania obrazu (współrzędne włącznie).
-#[derive(Default)]
-struct Dirty(Option<(u16, u16, u16, u16)>);
+/// Prostokąt `(lewy, górny, prawy, dolny)`, współrzędne włącznie.
+type Rect = (u16, u16, u16, u16);
+
+/// Najwięcej osobnych prostokątów zmian do następnego wysłania obrazu.
+const MAX_DIRTY_RECTS: usize = 16;
+/// Połączenie dwóch prostokątów opłaca się, gdy dokłada najwyżej tyle pikseli zbędnych...
+const MERGE_FREE_WASTE: u64 = 64;
+/// ...albo gdy zbędne piksele to najwyżej 1/8 pikseli faktycznie zmienionych w obu.
+const MERGE_WASTE_DIVISOR: u64 = 8;
+
+fn rect_area((l, t, r, b): Rect) -> u64 {
+    u64::from(r - l + 1) * u64::from(b - t + 1)
+}
+
+fn rect_union(a: Rect, b: Rect) -> Rect {
+    (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+}
+
+fn rect_overlap_area(a: Rect, b: Rect) -> u64 {
+    let (l, t, r, bt) = (a.0.max(b.0), a.1.max(b.1), a.2.min(b.2), a.3.min(b.3));
+    if l > r || t > bt {
+        0
+    } else {
+        rect_area((l, t, r, bt))
+    }
+}
+
+/// Piksele, które połączenie dokłada ponad faktycznie zmienione, i liczba faktycznie zmienionych.
+fn merge_cost(a: Rect, b: Rect) -> (u64, u64) {
+    let covered = rect_area(a) + rect_area(b) - rect_overlap_area(a, b);
+    (rect_area(rect_union(a, b)) - covered, covered)
+}
+
+/// Ograniczona lista prostokątów zmienionych od ostatniego wysłania obrazu (współrzędne włącznie,
+/// przycięte do obrazu). Dwie małe zmiany w przeciwległych rogach zostają dwoma prostokątami, a nie
+/// jednym na cały ekran; prostokąty, których połączenie prawie nic nie marnuje (stykające się,
+/// zachodzące, zawarte), są łączone. Po przekroczeniu `MAX_DIRTY_RECTS` łączone są te pary, które
+/// marnują najmniej, aż lista się zmieści (w ostateczności zostaje jeden prostokąt obejmujący).
+struct Dirty {
+    width: u16,
+    height: u16,
+    rects: Vec<Rect>,
+}
 
 impl Dirty {
+    fn new(width: u16, height: u16) -> Self {
+        Self {
+            width,
+            height,
+            rects: Vec::new(),
+        }
+    }
+
     fn add(&mut self, l: u16, t: u16, r: u16, b: u16) {
-        self.0 = Some(match self.0 {
-            None => (l, t, r, b),
-            Some((a, c, d, e)) => (a.min(l), c.min(t), d.max(r), e.max(b)),
-        });
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+        let (r, b) = (r.min(self.width - 1), b.min(self.height - 1));
+        if l > r || t > b {
+            return;
+        }
+        self.rects.push((l, t, r, b));
+        // Łączymy do ustabilizowania: połączony prostokąt bywa większy i może teraz pasować do innych.
+        'again: loop {
+            for i in 0..self.rects.len() {
+                for j in i + 1..self.rects.len() {
+                    let (waste, covered) = merge_cost(self.rects[i], self.rects[j]);
+                    if waste <= MERGE_FREE_WASTE || waste * MERGE_WASTE_DIVISOR <= covered {
+                        self.merge(i, j);
+                        continue 'again;
+                    }
+                }
+            }
+            break;
+        }
+        while self.rects.len() > MAX_DIRTY_RECTS {
+            let mut best = (u64::MAX, 0, 1);
+            for i in 0..self.rects.len() {
+                for j in i + 1..self.rects.len() {
+                    let (waste, _) = merge_cost(self.rects[i], self.rects[j]);
+                    if waste < best.0 {
+                        best = (waste, i, j);
+                    }
+                }
+            }
+            self.merge(best.1, best.2);
+        }
+    }
+
+    /// Scala prostokąt `j` z `i` (musi być `i < j`).
+    fn merge(&mut self, i: usize, j: usize) {
+        let removed = self.rects.remove(j);
+        self.rects[i] = rect_union(self.rects[i], removed);
+    }
+
+    /// Oddaje zebrane prostokąty i zaczyna od zera.
+    fn take(&mut self) -> Vec<Rect> {
+        std::mem::take(&mut self.rects)
     }
 }
 
@@ -505,29 +658,22 @@ const STRIP_BYTES: usize = 16 * 1024 * 1024;
 const _: () = assert!(STRIP_BYTES < rdp_proto::MAX_FRAME);
 
 fn flush(image: &DecodedImage, dirty: &mut Dirty) {
-    let Some(rect) = dirty.0.take() else {
-        return;
-    };
-    for img in strips(
-        image.data(),
-        image.width(),
-        image.height(),
-        rect,
-        STRIP_BYTES,
-    ) {
-        emit_image(&img);
+    for rect in dirty.take() {
+        for img in strips(
+            image.data(),
+            image.width(),
+            image.height(),
+            rect,
+            STRIP_BYTES,
+        ) {
+            emit_image(&img);
+        }
     }
 }
 
 /// Wycina prostokąt `(l, t, r, b)` (włącznie) z obrazu RGBA, dzieląc go na poziome pasy
 /// po najwyżej `max_bytes` bajtów (zawsze co najmniej jeden wiersz).
-fn strips(
-    data: &[u8],
-    iw: u16,
-    ih: u16,
-    (l, t, r, b): (u16, u16, u16, u16),
-    max_bytes: usize,
-) -> Vec<Image> {
+fn strips(data: &[u8], iw: u16, ih: u16, (l, t, r, b): Rect, max_bytes: usize) -> Vec<Image> {
     if iw == 0 || ih == 0 {
         return Vec::new();
     }
@@ -576,6 +722,43 @@ fn hostname() -> String {
         .unwrap_or_else(|| "multiremotemanager".to_owned())
 }
 
+/// Flagi wydajności wysyłane serwerowi w zależności od profilu łącza. `Fast` to dotychczasowe
+/// ustawienia biblioteki. `Slow` wyłącza tapetę, przeciąganie okien z zawartością, animacje menu,
+/// motywy i cień kursora; nie włącza wygładzania czcionek ani kompozycji pulpitu i nie dotyka bitów
+/// zarezerwowanych. Serwer może te flagi zignorować albo nadpisać własnymi.
+///
+/// Kompresji danych (`compression_type`) i 16 bitów koloru świadomie NIE włączamy w żadnym profilu:
+/// IronRDP 0.17 dekompresuje tylko fast-path (ścieżka slow-path ma w źródle TODO i dostałaby
+/// skompresowane bajty jako grafikę), a ogłaszana głębia kolorów jest w bibliotece wpisana na stałe.
+fn performance_flags(profile: LinkProfile) -> PerformanceFlags {
+    match profile {
+        LinkProfile::Fast => PerformanceFlags::default(),
+        LinkProfile::Slow => {
+            PerformanceFlags::DISABLE_WALLPAPER
+                | PerformanceFlags::DISABLE_FULLWINDOWDRAG
+                | PerformanceFlags::DISABLE_MENUANIMATIONS
+                | PerformanceFlags::DISABLE_THEMING
+                | PerformanceFlags::DISABLE_CURSOR_SHADOW
+        }
+    }
+}
+
+/// Ustawia gniazdo długo żyjącej sesji: bez opóźniania małych pakietów (ruch myszy, klawisze),
+/// z keepalive (pierwsza sonda po `KEEPALIVE_IDLE`, kolejne co `KEEPALIVE_INTERVAL`) i limitem czasu
+/// zapisu. Próbuje wszystkich ustawień i zwraca pierwszy błąd; wywołujący może go zignorować
+/// (sesja działa też bez nich).
+fn tune_socket(tcp: &TcpStream) -> io::Result<()> {
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(KEEPALIVE_IDLE)
+        .with_interval(KEEPALIVE_INTERVAL);
+    let results = [
+        tcp.set_nodelay(true),
+        tcp.set_write_timeout(Some(WRITE_TIMEOUT)),
+        socket2::SockRef::from(tcp).set_tcp_keepalive(&keepalive),
+    ];
+    results.into_iter().collect()
+}
+
 fn build_config(p: &ConnectParams) -> connector::Config {
     connector::Config {
         credentials: Credentials::UsernamePassword {
@@ -603,14 +786,15 @@ fn build_config(p: &ConnectParams) -> connector::Config {
         platform: MajorPlatformType::WINDOWS,
         #[cfg(not(windows))]
         platform: MajorPlatformType::UNIX,
-        enable_server_pointer: false,
+        // Kształt wskaźnika idzie do aplikacji (lokalny kursor), a nie do obrazu pulpitu.
+        enable_server_pointer: true,
         request_data: None,
         autologon: false,
         enable_audio_playback: false,
         compression_type: None,
-        pointer_software_rendering: true,
+        pointer_software_rendering: false,
         multitransport_flags: None,
-        performance_flags: PerformanceFlags::default(),
+        performance_flags: performance_flags(p.profile),
         desktop_scale_factor: 0,
         hardware_id: None,
         license_cache: None,
@@ -649,6 +833,9 @@ fn connect(
         (None, None) => anyhow::bail!("brak adresu hosta"),
     };
     tcp.set_read_timeout(Some(CONNECT_TIMEOUT))?;
+    if let Err(e) = tune_socket(&tcp) {
+        log(format!("gniazdo: nie udało się ustawić opcji: {e}"));
+    }
     let client_addr = tcp.local_addr()?;
     let mut framed = ironrdp_blocking::Framed::new(tcp);
     // Kanał dynamiczny Display Control pozwala zmieniać rozmiar pulpitu bez ponownego łączenia.
@@ -824,11 +1011,228 @@ mod tests {
 
     #[test]
     fn dirty_rectangles_are_merged() {
-        let mut d = Dirty::default();
-        assert!(d.0.is_none());
+        let mut d = Dirty::new(200, 200);
+        assert!(d.rects.is_empty());
         d.add(10, 20, 30, 40);
         d.add(5, 25, 28, 90);
-        assert_eq!(d.0, Some((5, 20, 30, 90)));
+        // Zachodzące prostokąty o małym marnotrawstwie: jeden wspólny.
+        assert_eq!(d.take(), vec![(5, 20, 30, 90)]);
+        assert!(d.take().is_empty());
+    }
+
+    #[test]
+    fn dirty_keeps_distant_changes_apart_and_merges_neighbours() {
+        let mut d = Dirty::new(1000, 800);
+        d.add(0, 0, 9, 9);
+        d.add(990, 790, 999, 799);
+        assert_eq!(d.rects, vec![(0, 0, 9, 9), (990, 790, 999, 799)]);
+        // Stykający się z pierwszym (bez marnotrawstwa) łączy się z nim.
+        d.add(10, 0, 19, 9);
+        assert_eq!(d.rects, vec![(0, 0, 19, 9), (990, 790, 999, 799)]);
+        // Zawarty w już zebranym nic nie zmienia.
+        d.add(2, 2, 3, 3);
+        assert_eq!(d.rects.len(), 2);
+        // Pusty prostokąt biblioteki (0,0,0,0) leży w pierwszym.
+        d.add(0, 0, 0, 0);
+        assert_eq!(d.rects.len(), 2);
+    }
+
+    #[test]
+    fn dirty_library_empty_rectangle_does_not_inflate_the_area() {
+        let mut d = Dirty::new(200, 200);
+        d.add(0, 0, 0, 0);
+        d.add(100, 100, 199, 199);
+        let total: u64 = d.rects.iter().map(|&r| rect_area(r)).sum();
+        assert_eq!(d.rects.len(), 2);
+        assert_eq!(total, 1 + 100 * 100);
+    }
+
+    #[test]
+    fn dirty_clips_to_image_and_ignores_empty_ranges() {
+        let mut d = Dirty::new(100, 50);
+        d.add(90, 40, 5000, 5000);
+        assert_eq!(d.rects, vec![(90, 40, 99, 49)]);
+        d.add(100, 0, 200, 10);
+        d.add(0, 50, 10, 60);
+        d.add(20, 0, 10, 10);
+        assert_eq!(d.rects.len(), 1);
+        let mut empty = Dirty::new(0, 0);
+        empty.add(0, 0, 1, 1);
+        assert!(empty.rects.is_empty());
+    }
+
+    /// Niezmiennik: każdy piksel każdego dodanego (przyciętego) prostokąta jest pokryty przez listę,
+    /// lista mieści się w limicie, a jej prostokąty leżą w obrazie.
+    #[test]
+    fn dirty_list_covers_every_added_pixel_within_the_limit() {
+        let (w, h) = (96u16, 64u16);
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        for round in 0..200 {
+            let mut d = Dirty::new(w, h);
+            let mut added: Vec<Rect> = Vec::new();
+            for _ in 0..(1 + next(60)) {
+                // Część prostokątów wystaje poza obraz albo jest pojedynczym pikselem.
+                let l = next(u64::from(w) + 20) as u16;
+                let t = next(u64::from(h) + 20) as u16;
+                let span = if next(3) == 0 { 0 } else { next(30) as u16 };
+                let (r, b) = (l + span, t + (next(20) as u16));
+                d.add(l, t, r, b);
+                let (cr, cb) = (r.min(w - 1), b.min(h - 1));
+                if l <= cr && t <= cb {
+                    added.push((l, t, cr, cb));
+                }
+                assert!(d.rects.len() <= MAX_DIRTY_RECTS, "runda {round}");
+            }
+            for &(l, t, r, b) in &d.rects {
+                assert!(l <= r && t <= b && r < w && b < h, "{:?}", d.rects);
+            }
+            for &(l, t, r, b) in &added {
+                for y in t..=b {
+                    for x in l..=r {
+                        assert!(
+                            d.rects
+                                .iter()
+                                .any(|&(a, c, e, f)| a <= x && x <= e && c <= y && y <= f),
+                            "piksel {x},{y} niepokryty, runda {round}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dirty_over_the_limit_degrades_to_fewer_rectangles() {
+        let mut d = Dirty::new(2000, 2000);
+        // 40 odległych kropek: lista ma zostać w limicie, a pierwsza kropka pokryta.
+        for i in 0..40u16 {
+            d.add(i * 50, i * 50, i * 50, i * 50);
+            assert!(d.rects.len() <= MAX_DIRTY_RECTS);
+        }
+        assert!(d.rects.iter().any(|&(l, t, _, _)| l == 0 && t == 0));
+        assert!(d.rects.len() > 1);
+    }
+
+    fn decoded(w: u16, h: u16, len: usize, hot: (u16, u16)) -> DecodedPointer {
+        DecodedPointer {
+            width: w,
+            height: h,
+            hotspot_x: hot.0,
+            hotspot_y: hot.1,
+            bitmap_data: vec![7; len],
+        }
+    }
+
+    #[test]
+    fn pointer_frame_accepts_valid_and_rejects_bad_shapes() {
+        let ok = pointer_frame(&decoded(32, 32, 32 * 32 * 4, (3, 4))).unwrap();
+        assert_eq!((ok.width, ok.height, ok.hot_x, ok.hot_y), (32, 32, 3, 4));
+        assert_eq!(ok.rgba.len(), 32 * 32 * 4);
+        // Punkt zaczepienia poza bitmapą jest ucinany.
+        let clamped = pointer_frame(&decoded(8, 8, 8 * 8 * 4, (500, 9))).unwrap();
+        assert_eq!((clamped.hot_x, clamped.hot_y), (7, 7));
+        assert!(pointer_frame(&decoded(384, 384, 384 * 384 * 4, (0, 0))).is_some());
+        for bad in [
+            decoded(0, 0, 0, (0, 0)),
+            decoded(0, 8, 0, (0, 0)),
+            decoded(385, 1, 385 * 4, (0, 0)),
+            decoded(1, 385, 385 * 4, (0, 0)),
+            decoded(8, 8, 8 * 8 * 4 - 1, (0, 0)),
+            decoded(8, 8, 8 * 8 * 4 + 4, (0, 0)),
+        ] {
+            assert!(pointer_frame(&bad).is_none());
+        }
+    }
+
+    #[test]
+    fn hidden_before_a_bitmap_is_dropped_but_a_lone_hidden_stays() {
+        use std::sync::Arc;
+        let bitmap = || ActiveStageOutput::PointerBitmap(Arc::new(decoded(1, 1, 4, (0, 0))));
+        let kinds = |v: &[ActiveStageOutput]| -> Vec<&'static str> {
+            v.iter()
+                .map(|o| match o {
+                    ActiveStageOutput::PointerHidden => "hidden",
+                    ActiveStageOutput::PointerBitmap(_) => "bitmap",
+                    ActiveStageOutput::PointerDefault => "default",
+                    _ => "inne",
+                })
+                .collect()
+        };
+        let out = coalesce_pointer_outputs(vec![
+            ActiveStageOutput::PointerHidden,
+            bitmap(),
+            ActiveStageOutput::PointerHidden,
+            ActiveStageOutput::PointerDefault,
+            ActiveStageOutput::PointerHidden,
+        ]);
+        assert_eq!(kinds(&out), ["bitmap", "hidden", "default", "hidden"]);
+    }
+
+    #[test]
+    fn config_uses_local_cursor_and_link_profile() {
+        let c = build_config(&ConnectParams {
+            host: "h".into(),
+            port: 3389,
+            username: "u".into(),
+            domain: None,
+            password: String::new(),
+            kerberos: false,
+            kdc: None,
+            width: 800,
+            height: 600,
+            profile: LinkProfile::Slow,
+        });
+        assert!(c.enable_server_pointer);
+        assert!(!c.pointer_software_rendering);
+        assert!(c.compression_type.is_none());
+        assert_eq!(c.performance_flags, performance_flags(LinkProfile::Slow));
+    }
+
+    #[test]
+    fn link_profiles_map_to_performance_flags() {
+        assert_eq!(
+            performance_flags(LinkProfile::Fast),
+            PerformanceFlags::default()
+        );
+        let slow = performance_flags(LinkProfile::Slow);
+        assert_eq!(
+            slow,
+            PerformanceFlags::DISABLE_WALLPAPER
+                | PerformanceFlags::DISABLE_FULLWINDOWDRAG
+                | PerformanceFlags::DISABLE_MENUANIMATIONS
+                | PerformanceFlags::DISABLE_THEMING
+                | PerformanceFlags::DISABLE_CURSOR_SHADOW
+        );
+        for off in [
+            PerformanceFlags::ENABLE_FONT_SMOOTHING,
+            PerformanceFlags::ENABLE_DESKTOP_COMPOSITION,
+            PerformanceFlags::RESERVED1,
+            PerformanceFlags::RESERVED2,
+        ] {
+            assert!(!slow.intersects(off));
+        }
+    }
+
+    #[test]
+    fn tune_socket_sets_nodelay_keepalive_and_write_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let tcp = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        tune_socket(&tcp).unwrap();
+        assert!(tcp.nodelay().unwrap());
+        assert_eq!(tcp.write_timeout().unwrap(), Some(WRITE_TIMEOUT));
+        let sock = socket2::SockRef::from(&tcp);
+        assert!(sock.keepalive().unwrap());
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(sock.tcp_keepalive_time().unwrap(), KEEPALIVE_IDLE);
+            assert_eq!(sock.tcp_keepalive_interval().unwrap(), KEEPALIVE_INTERVAL);
+        }
     }
 
     #[test]

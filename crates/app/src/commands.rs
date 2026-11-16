@@ -98,6 +98,9 @@ pub async fn lock_all(app: &tauri::AppHandle, state: &AppState, log: &str) {
 /// wpisu w mapie. Zwraca liczbę zamkniętych sesji.
 pub async fn close_all_sessions(state: &AppState) -> usize {
     state.cancel_trust();
+    // Przechwytywanie klawiszy należy do sesji RDP: musi zniknąć razem z nimi (na Windows
+    // zapomniany hak zatrzymywałby całą klawiaturę, dopóki okno jest na pierwszym planie).
+    state.keys.release_all();
     let ssh: Vec<_> = state
         .sessions
         .lock()

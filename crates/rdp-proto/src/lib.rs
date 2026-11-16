@@ -3,7 +3,10 @@
 //!
 //! Ramka: `u32 LE długość | u8 rodzaj | treść`, gdzie długość obejmuje rodzaj i treść.
 //! Rodzaj 1: JSON ([`ToWorker`] albo [`FromWorker`]). Rodzaj 2: fragment obrazu
-//! (`x,y,w,h` jako `u16 LE`, potem `w*h*4` bajtów RGBA).
+//! (`x,y,w,h` jako `u16 LE`, potem `w*h*4` bajtów RGBA). Rodzaj 3: dane schowka (bajt rodzaju
+//! danych, potem dane). Rodzaj 4: bitmapa wskaźnika myszy ([`Pointer`]: `w,h,hot_x,hot_y` jako
+//! `u16 LE`, potem `w*h*4` bajtów RGBA, alfa nieprzemnożona, wiersze od góry; bok od 1 do
+//! [`MAX_POINTER_SIDE`]).
 
 pub mod clipfmt;
 
@@ -19,10 +22,26 @@ pub const MAX_FRAME: usize = 64 * 1024 * 1024;
 /// (`FromWorker::Hello`), a aplikacja odrzuca proces, który jej nie podał albo podał inną. Zwiększaj
 /// przy każdej zmianie `ToWorker`, `FromWorker` albo ramek: stary proces obok nowej aplikacji działał
 /// po cichu bez nowszych funkcji (np. bez schowka), co wyglądało jak błąd w aplikacji.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 const KIND_JSON: u8 = 1;
 const KIND_IMAGE: u8 = 2;
 const KIND_CLIP: u8 = 3;
+const KIND_POINTER: u8 = 4;
+
+/// Największy bok bitmapy wskaźnika (limit "dużego wskaźnika" RDP to 384 x 384). Proces zamienia
+/// większe kształty na [`FromWorker::PointerDefault`], a odczyt ramki takiej bitmapy odrzuca.
+pub const MAX_POINTER_SIDE: u16 = 384;
+
+/// Profil łącza: dobór ustawień wydajności sesji (tapeta, animacje, motywy).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkProfile {
+    /// Sieć lokalna albo szybkie łącze: ustawienia domyślne.
+    #[default]
+    Fast,
+    /// Wolne łącze: bez tapety, animacji, motywów i cienia kursora.
+    Slow,
+}
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectParams {
@@ -36,6 +55,9 @@ pub struct ConnectParams {
     pub kdc: Option<String>,
     pub width: u16,
     pub height: u16,
+    /// Profil łącza; brak pola (starszy nadawca) oznacza `Fast`.
+    #[serde(default)]
+    pub profile: LinkProfile,
 }
 
 impl fmt::Debug for ConnectParams {
@@ -49,6 +71,7 @@ impl fmt::Debug for ConnectParams {
             .field("kerberos", &self.kerberos)
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("profile", &self.profile)
             .finish()
     }
 }
@@ -189,6 +212,11 @@ pub enum FromWorker {
     ClipFilesDone {
         paths: Vec<String>,
     },
+    /// Serwer przywrócił domyślny wskaźnik systemowy (lokalny kursor wraca do strzałki).
+    PointerDefault,
+    /// Serwer ukrył wskaźnik. Przy kształcie z pamięci podręcznej biblioteka zgłasza to tuż przed
+    /// bitmapą ([`Message::Pointer`]), więc odbiorca ma przyjąć stan z ostatniej wiadomości.
+    PointerHidden,
     /// Pierwsza wiadomość procesu: wersja protokołu (`PROTOCOL`).
     Hello {
         protocol: u32,
@@ -234,10 +262,46 @@ impl fmt::Debug for Image {
     }
 }
 
+/// Bitmapa wskaźnika myszy: RGBA, alfa nieprzemnożona, wiersze od góry; `hot_x`/`hot_y` to punkt
+/// zaczepienia w pikselach bitmapy.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Pointer {
+    pub width: u16,
+    pub height: u16,
+    pub hot_x: u16,
+    pub hot_y: u16,
+    pub rgba: Vec<u8>,
+}
+
+impl fmt::Debug for Pointer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Pointer {}x{} hot {},{} ({} B)",
+            self.width,
+            self.height,
+            self.hot_x,
+            self.hot_y,
+            self.rgba.len()
+        )
+    }
+}
+
+impl Pointer {
+    /// Czy wymiary są dozwolone (bok od 1 do [`MAX_POINTER_SIDE`]) i zgadzają się z długością danych.
+    pub fn is_valid(&self) -> bool {
+        (1..=MAX_POINTER_SIDE).contains(&self.width)
+            && (1..=MAX_POINTER_SIDE).contains(&self.height)
+            && self.rgba.len() == usize::from(self.width) * usize::from(self.height) * 4
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Message {
     Json(Vec<u8>),
     Image(Image),
+    /// Bitmapa wskaźnika myszy (od procesu do aplikacji).
+    Pointer(Pointer),
     /// Dane schowka (tekst, HTML albo obraz) w jedną stronę.
     Clip {
         kind: ClipKind,
@@ -287,6 +351,23 @@ pub fn write_image(w: &mut impl Write, img: &Image) -> io::Result<()> {
     write_frame(w, KIND_IMAGE, &[&head, &img.rgba])
 }
 
+pub fn write_pointer(w: &mut impl Write, p: &Pointer) -> io::Result<()> {
+    if !p.is_valid() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "wymiary wskaźnika są niedozwolone albo nie pasują do bufora",
+        ));
+    }
+    let mut head = [0u8; 8];
+    for (i, v) in [p.width, p.height, p.hot_x, p.hot_y]
+        .into_iter()
+        .enumerate()
+    {
+        head[i * 2..i * 2 + 2].copy_from_slice(&v.to_le_bytes());
+    }
+    write_frame(w, KIND_POINTER, &[&head, &p.rgba])
+}
+
 /// Czyta kolejną wiadomość; `Ok(None)` przy czystym końcu strumienia.
 pub fn read_message(r: &mut impl Read) -> io::Result<Option<Message>> {
     let mut len_buf = [0u8; 4];
@@ -332,6 +413,29 @@ pub fn read_message(r: &mut impl Read) -> io::Result<Option<Message>> {
                 rgba,
             })))
         }
+        KIND_POINTER => {
+            if payload.len() < 8 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "obcięty nagłówek wskaźnika",
+                ));
+            }
+            let u16_at = |i: usize| u16::from_le_bytes([payload[i], payload[i + 1]]);
+            let pointer = Pointer {
+                width: u16_at(0),
+                height: u16_at(2),
+                hot_x: u16_at(4),
+                hot_y: u16_at(6),
+                rgba: payload[8..].to_vec(),
+            };
+            if !pointer.is_valid() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "wymiary wskaźnika niedozwolone albo niezgodne z rozmiarem danych",
+                ));
+            }
+            Ok(Some(Message::Pointer(pointer)))
+        }
         KIND_CLIP => {
             let kind = payload
                 .first()
@@ -371,6 +475,7 @@ mod tests {
             kdc: None,
             width: 1280,
             height: 800,
+            profile: LinkProfile::Fast,
         }
     }
 
@@ -547,6 +652,105 @@ mod tests {
         assert!(read_message(&mut [1u8, 0, 0, 0, 3].as_slice()).is_err());
     }
 
+    fn pointer(w: u16, h: u16) -> Pointer {
+        Pointer {
+            width: w,
+            height: h,
+            hot_x: 1,
+            hot_y: 2,
+            rgba: (0..usize::from(w) * usize::from(h) * 4)
+                .map(|i| (i % 251) as u8)
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn pointer_frame_round_trip() {
+        for (w, h) in [(1, 1), (32, 24), (MAX_POINTER_SIDE, MAX_POINTER_SIDE)] {
+            let p = pointer(w, h);
+            let mut buf = Vec::new();
+            write_pointer(&mut buf, &p).unwrap();
+            // Układ ramki: długość, rodzaj 4, cztery pola u16 LE, dane.
+            assert_eq!(buf[4], 4);
+            assert_eq!(
+                &buf[5..13],
+                &[w.to_le_bytes(), h.to_le_bytes(), [1, 0], [2, 0]].concat()
+            );
+            assert_eq!(
+                read_message(&mut buf.as_slice()).unwrap(),
+                Some(Message::Pointer(p))
+            );
+        }
+    }
+
+    /// Ramka rodzaju 4 złożona ręcznie (obejście walidacji zapisu).
+    fn raw_pointer_frame(w: u16, h: u16, data_len: usize) -> Vec<u8> {
+        let mut head = Vec::new();
+        for v in [w, h, 0, 0] {
+            head.extend_from_slice(&v.to_le_bytes());
+        }
+        let data = vec![0u8; data_len];
+        let mut out = Vec::new();
+        write_frame(&mut out, KIND_POINTER, &[&head, &data]).unwrap();
+        out
+    }
+
+    #[test]
+    fn pointer_frame_rejects_bad_sizes() {
+        let side = usize::from(MAX_POINTER_SIDE);
+        for (w, h, len) in [
+            (0u16, 4u16, 0usize),
+            (4, 0, 0),
+            (0, 0, 0),
+            // Zgodny z wymiarami, ale ponad limit boku.
+            (MAX_POINTER_SIDE + 1, 1, (side + 1) * 4),
+            (1, MAX_POINTER_SIDE + 1, (side + 1) * 4),
+            // Dane krótsze albo dłuższe niż wymiary.
+            (2, 2, 15),
+            (2, 2, 17),
+            (2, 2, 0),
+        ] {
+            let frame = raw_pointer_frame(w, h, len);
+            assert!(
+                read_message(&mut frame.as_slice()).is_err(),
+                "{w}x{h} z {len} B"
+            );
+        }
+        // Obcięty nagłówek.
+        assert!(read_message(&mut [4u8, 0, 0, 0, 4, 1, 0, 1, 0].as_slice()).is_err());
+        // Zapis stosuje te same reguły.
+        let mut bad = pointer(2, 2);
+        bad.rgba.pop();
+        assert!(write_pointer(&mut Vec::new(), &bad).is_err());
+        assert!(write_pointer(&mut Vec::new(), &pointer(0, 0)).is_err());
+        let mut huge = pointer(1, 1);
+        huge.width = MAX_POINTER_SIDE + 1;
+        huge.rgba = vec![0; (side + 1) * 4];
+        assert!(write_pointer(&mut Vec::new(), &huge).is_err());
+    }
+
+    #[test]
+    fn pointer_events_and_link_profile_json() {
+        assert_eq!(
+            serde_json::to_string(&FromWorker::PointerDefault).unwrap(),
+            r#"{"t":"pointer_default"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&FromWorker::PointerHidden).unwrap(),
+            r#"{"t":"pointer_hidden"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&LinkProfile::Slow).unwrap(),
+            r#""slow""#
+        );
+        // Starszy nadawca nie podaje profilu: domyślnie `Fast`.
+        let old = r#"{"host":"h","port":1,"username":"u","domain":null,"password":"p","kerberos":false,"kdc":null,"width":1,"height":2}"#;
+        assert_eq!(
+            parse_json::<ConnectParams>(old.as_bytes()).unwrap().profile,
+            LinkProfile::Fast
+        );
+    }
+
     #[test]
     fn events_are_tagged_snake_case() {
         let json = serde_json::to_string(&FromWorker::Connected {
@@ -644,7 +848,7 @@ mod tests {
                 FromWorker::ClipFiles { .. } => Some(FromWorker::ClipFilesDone {
                     paths: vec!["/x".into()],
                 }),
-                FromWorker::ClipFilesDone { .. } => Some(FromWorker::Hello { protocol: 1 }),
+                FromWorker::ClipFilesDone { .. } => Some(FromWorker::Hello { protocol: 2 }),
                 FromWorker::Hello { .. } => Some(FromWorker::Notice {
                     message: "n".into(),
                 }),
@@ -655,7 +859,9 @@ mod tests {
                     message: "e".into(),
                 }),
                 FromWorker::Error { .. } => Some(FromWorker::Closed { reason: "r".into() }),
-                FromWorker::Closed { .. } => None,
+                FromWorker::Closed { .. } => Some(FromWorker::PointerDefault),
+                FromWorker::PointerDefault => Some(FromWorker::PointerHidden),
+                FromWorker::PointerHidden => None,
             }
         }
         let mut to = Vec::new();
@@ -693,8 +899,8 @@ mod tests {
             from_json, EXPECTED_FROM,
             "zmiana migawki wymaga podbicia PROTOCOL"
         );
-        // Migawka zapisana dla PROTOCOL = 1; przy podbiciu zaktualizuj obie stałe i tę liczbę.
-        assert_eq!(PROTOCOL, 1, "po podbiciu PROTOCOL zaktualizuj migawkę");
+        // Migawka zapisana dla PROTOCOL = 2; przy podbiciu zaktualizuj obie stałe i tę liczbę.
+        assert_eq!(PROTOCOL, 2, "po podbiciu PROTOCOL zaktualizuj migawkę");
     }
 
     /// Miejsce wariantu `ClipData` w migawce: nie ma postaci JSON.
@@ -702,7 +908,7 @@ mod tests {
     /// Znacznik w migawce zastępowany hasłem z `params()`.
     const FIXTURE_PASSWORD: &str = "<FIXTURE>";
     const EXPECTED_TO: &[&str] = &[
-        r#"{"t":"connect","host":"dc01","port":3389,"username":"u","domain":"D","password":"<FIXTURE>","kerberos":false,"kdc":null,"width":1280,"height":800}"#,
+        r#"{"t":"connect","host":"dc01","port":3389,"username":"u","domain":"D","password":"<FIXTURE>","kerberos":false,"kdc":null,"width":1280,"height":800,"profile":"fast"}"#,
         r#"{"t":"trust","accept":true}"#,
         r#"{"t":"mouse_move","x":1,"y":2}"#,
         r#"{"t":"mouse_button","button":2,"down":true}"#,
@@ -726,10 +932,12 @@ mod tests {
         r#"{"t":"clip_request","kind":"html"}"#,
         r#"{"t":"clip_files","files":[{"path":"a/b","size":5,"dir":false}]}"#,
         r#"{"t":"clip_files_done","paths":["/x"]}"#,
-        r#"{"t":"hello","protocol":1}"#,
+        r#"{"t":"hello","protocol":2}"#,
         r#"{"t":"notice","message":"n"}"#,
         r#"{"t":"log","message":"l"}"#,
         r#"{"t":"error","message":"e"}"#,
         r#"{"t":"closed","reason":"r"}"#,
+        r#"{"t":"pointer_default"}"#,
+        r#"{"t":"pointer_hidden"}"#,
     ];
 }

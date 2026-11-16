@@ -40,7 +40,11 @@ pub struct AppState {
     pub rdp: Mutex<HashMap<Uuid, rdp::RdpClient>>,
     pub rdp_clip: Mutex<HashMap<Uuid, Arc<crate::clipboard::ClipSync>>>,
     /// Kontrola przepływu obrazu sesji RDP (potwierdzenia z interfejsu).
-    pub rdp_flow: Mutex<HashMap<Uuid, Arc<crate::rdp_sessions::Flow>>>,
+    pub rdp_flow: Mutex<HashMap<Uuid, Arc<crate::flow::Flow>>>,
+    /// Kontrola przepływu wyjścia terminala sesji SSH (potwierdzenia z interfejsu).
+    pub ssh_flow: Mutex<HashMap<Uuid, Arc<crate::flow::Flow>>>,
+    /// Przechwytywanie klawiszy systemowych przez sesję RDP (najwyżej jedno naraz).
+    pub keys: crate::keys::Grabs,
     /// Licznik przeładowań interfejsu. Połączenie, które zaczęło się przed przeładowaniem, a skończyło
     /// po nim, nie ma karty w nowym interfejsie i zamyka się samo (jak przy blokadzie pliku).
     pub reloads: AtomicU64,
@@ -62,6 +66,8 @@ impl AppState {
             rdp: Mutex::new(HashMap::new()),
             rdp_clip: Mutex::new(HashMap::new()),
             rdp_flow: Mutex::new(HashMap::new()),
+            ssh_flow: Mutex::new(HashMap::new()),
+            keys: crate::keys::Grabs::default(),
             reloads: AtomicU64::new(0),
         };
         if let Some(w) = warning {
@@ -425,6 +431,7 @@ mod tests {
             kdc: None,
             width: 800,
             height: 600,
+            profile: rdp::LinkProfile::Fast,
         };
         let mut attempts = 0;
         let client = loop {
@@ -478,6 +485,25 @@ mod tests {
         // Zamknięta sesja zostawia wpis w dzienniku (na Windows atrapy nie ma, więc brak wpisu).
         let logged = state.diag.lock().unwrap().len();
         assert_eq!(logged, usize::from(cfg!(unix)));
+    }
+
+    #[tokio::test]
+    async fn reload_and_close_release_key_grab() {
+        let state = unlocked("keys").await;
+        let released = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let r = released.clone();
+        state.keys.set(
+            Uuid::new_v4(),
+            Box::new(move || {
+                r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }),
+        );
+        // `lock_all` i `reset_after_reload` zamykają sesje przez `close_all_sessions`.
+        crate::commands::reset_after_reload(&state).await;
+        assert_eq!(released.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Drugi raz nie ma czego zwalniać.
+        crate::commands::close_all_sessions(&state).await;
+        assert_eq!(released.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

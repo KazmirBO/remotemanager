@@ -89,6 +89,8 @@ name = "app"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "gtk",
+ "keygrab",
  "model",
  "rdp",
  "serde",
