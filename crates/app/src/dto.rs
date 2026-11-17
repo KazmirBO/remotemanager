@@ -14,6 +14,9 @@ pub struct FieldsIo {
     pub rdp_kerberos: Option<bool>,
     pub rdp_kdc: Option<String>,
     pub rdp_profile: Option<LinkProfile>,
+    /// Przekierowanie kluczy bezpieczeństwa (WebAuthn) do sesji RDP; `None` dziedziczy.
+    #[serde(default)]
+    pub rdp_webauthn: Option<bool>,
     /// Tylko wyjście.
     #[serde(default)]
     pub has_password: bool,
@@ -37,6 +40,7 @@ impl FieldsIo {
             rdp_kerberos: f.rdp_kerberos,
             rdp_kdc: f.rdp_kdc.clone(),
             rdp_profile: f.rdp_profile,
+            rdp_webauthn: f.rdp_webauthn,
             has_password: f.password.is_some(),
             password: None,
             clear_password: false,
@@ -64,6 +68,7 @@ impl FieldsIo {
             rdp_kerberos: self.rdp_kerberos,
             rdp_kdc: self.rdp_kdc.filter(|s| !s.is_empty()),
             rdp_profile: self.rdp_profile,
+            rdp_webauthn: self.rdp_webauthn,
         }
     }
 }

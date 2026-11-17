@@ -22,7 +22,7 @@ pub const MAX_FRAME: usize = 64 * 1024 * 1024;
 /// (`FromWorker::Hello`), a aplikacja odrzuca proces, który jej nie podał albo podał inną. Zwiększaj
 /// przy każdej zmianie `ToWorker`, `FromWorker` albo ramek: stary proces obok nowej aplikacji działał
 /// po cichu bez nowszych funkcji (np. bez schowka), co wyglądało jak błąd w aplikacji.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 const KIND_JSON: u8 = 1;
 const KIND_IMAGE: u8 = 2;
 const KIND_CLIP: u8 = 3;
@@ -58,6 +58,9 @@ pub struct ConnectParams {
     /// Profil łącza; brak pola (starszy nadawca) oznacza `Fast`.
     #[serde(default)]
     pub profile: LinkProfile,
+    /// Przekierowanie kluczy bezpieczeństwa (kanał WebAuthn); brak pola oznacza wyłączone.
+    #[serde(default)]
+    pub webauthn: bool,
 }
 
 impl fmt::Debug for ConnectParams {
@@ -72,6 +75,7 @@ impl fmt::Debug for ConnectParams {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("profile", &self.profile)
+            .field("webauthn", &self.webauthn)
             .finish()
     }
 }
@@ -476,6 +480,7 @@ mod tests {
             width: 1280,
             height: 800,
             profile: LinkProfile::Fast,
+            webauthn: false,
         }
     }
 
@@ -900,7 +905,7 @@ mod tests {
             "zmiana migawki wymaga podbicia PROTOCOL"
         );
         // Migawka zapisana dla PROTOCOL = 2; przy podbiciu zaktualizuj obie stałe i tę liczbę.
-        assert_eq!(PROTOCOL, 2, "po podbiciu PROTOCOL zaktualizuj migawkę");
+        assert_eq!(PROTOCOL, 3, "po podbiciu PROTOCOL zaktualizuj migawkę");
     }
 
     /// Miejsce wariantu `ClipData` w migawce: nie ma postaci JSON.
@@ -908,7 +913,7 @@ mod tests {
     /// Znacznik w migawce zastępowany hasłem z `params()`.
     const FIXTURE_PASSWORD: &str = "<FIXTURE>";
     const EXPECTED_TO: &[&str] = &[
-        r#"{"t":"connect","host":"dc01","port":3389,"username":"u","domain":"D","password":"<FIXTURE>","kerberos":false,"kdc":null,"width":1280,"height":800,"profile":"fast"}"#,
+        r#"{"t":"connect","host":"dc01","port":3389,"username":"u","domain":"D","password":"<FIXTURE>","kerberos":false,"kdc":null,"width":1280,"height":800,"profile":"fast","webauthn":false}"#,
         r#"{"t":"trust","accept":true}"#,
         r#"{"t":"mouse_move","x":1,"y":2}"#,
         r#"{"t":"mouse_button","button":2,"down":true}"#,

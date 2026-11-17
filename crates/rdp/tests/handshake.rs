@@ -44,6 +44,7 @@ fn params() -> ConnectParams {
         width: 800,
         height: 600,
         profile: LinkProfile::Fast,
+        webauthn: false,
     }
 }
 

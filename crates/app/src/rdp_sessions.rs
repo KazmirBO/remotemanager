@@ -79,6 +79,7 @@ pub async fn connect_rdp(
                 width: width.clamp(200, 8192),
                 height: height.clamp(200, 8192),
                 profile: link_profile(r.fields.rdp_profile, doc.settings.rdp_profile),
+                webauthn: r.fields.rdp_webauthn.unwrap_or(false),
             })
         })
         .await?;

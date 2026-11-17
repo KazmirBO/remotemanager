@@ -432,6 +432,7 @@ mod tests {
             width: 800,
             height: 600,
             profile: rdp::LinkProfile::Fast,
+            webauthn: false,
         };
         let mut attempts = 0;
         let client = loop {

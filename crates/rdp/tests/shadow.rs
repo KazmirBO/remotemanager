@@ -165,6 +165,7 @@ fn params_with(s: &Server, password: &str, profile: LinkProfile) -> ConnectParam
         width: 200,
         height: 200,
         profile,
+        webauthn: false,
     }
 }
 

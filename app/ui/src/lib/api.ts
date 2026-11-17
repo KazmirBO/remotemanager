@@ -18,6 +18,8 @@ export interface FieldsIo {
   rdp_kdc: string | null;
   /** Profil łącza RDP; `null` dziedziczy z katalogu albo z ustawień. */
   rdp_profile: RdpProfile | null;
+  /** Przekierowanie kluczy bezpieczeństwa (WebAuthn) do sesji RDP; `null` dziedziczy z katalogu. */
+  rdp_webauthn: boolean | null;
   has_password: boolean;
   /** Tylko wejście. */
   password?: string | null;
@@ -51,7 +53,7 @@ export type ShellControl = { t: 'exit'; code: number } | { t: 'closed' };
 
 export const emptyFields = (): FieldsIo => ({
   port: null, username: null, domain: null, jump_host: null,
-  terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, rdp_profile: null, has_password: false,
+  terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, rdp_profile: null, rdp_webauthn: null, has_password: false,
 });
 
 /** Backend zwraca błędy jako tekst; sprowadzamy wszystko do `string`. */

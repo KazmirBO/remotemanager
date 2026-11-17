@@ -12,7 +12,7 @@ let password: string | null = params.get('state') === 'locked' || params.get('se
 let unlocked = params.has('seed');
 
 const emptyFields = (): FieldsIo => ({
-  port: null, username: null, domain: null, jump_host: null, terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, rdp_profile: null, has_password: false,
+  port: null, username: null, domain: null, jump_host: null, terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, rdp_profile: null, rdp_webauthn: null, has_password: false,
 });
 const secrets = new Map<string, string>();
 const doc: DocView = { folders: [], hosts: [], settings: { theme: 'dark', terminal_font_size: 13, terminal_scheme: 'domyslny', shortcuts: {}, rdp_profile: 'fast', rdp_keys: 'never' }, trusted_count: 0 };

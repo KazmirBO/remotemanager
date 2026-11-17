@@ -15,6 +15,7 @@ Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane.
 - Karty sesji mają własne menu pod prawym przyciskiem myszy: połącz ponownie, duplikuj kartę, zamknij kartę, zamknij pozostałe, zamknij wszystkie.
 - Pasek kart przy wielu sesjach nie dostaje suwaków: karty zwężają się, a gdy się nie mieszczą, pasek przewija się kółkiem myszy.
 - Terminal SSH: Ctrl+Shift+C kopiuje zaznaczenie.
+- RDP na Windows: przekierowanie kluczy bezpieczeństwa FIDO2/WebAuthn (np. YubiKey) do zdalnego pulpitu, włączane dla hosta albo katalogu polem "Klucze bezpieczeństwa FIDO2 (RDP)", domyślnie wyłączone. Każde użycie klucza potwierdza się w oknie systemu. Funkcja nie była jeszcze sprawdzona z prawdziwym kluczem i serwerem.
 
 ### Pakiety
 

@@ -11,12 +11,22 @@ anyhow = "1.0.104"
 ironrdp = { version = "0.17", features = ["connector", "session", "graphics", "pdu", "input", "dvc", "displaycontrol", "svc", "cliprdr"] }
 ironrdp-blocking = "0.10"
 ironrdp-graphics = "0.9"
+# Kanał WebAuthn ([MS-RDPEWA], przekierowanie kluczy bezpieczeństwa) istnieje tylko dla nowszego stosu
+# IronRDP. Reszta procesu zostaje na dotychczasowym, więc te dwa crate'y służą wyłącznie przepisaniu
+# komunikatów kanału na obecny stos (moduł `webauthn`).
+ironrdp-core03 = { package = "ironrdp-core", version = "0.3" }
+ironrdp-dvc10 = { package = "ironrdp-dvc", version = "0.10" }
+ironrdp-rdpewa = "0.2"
 rdp-proto = { path = "../../../crates/rdp-proto" }
 sha2 = "0.11.1"
 socket2 = "0.6"
 sspi = { version = "0.21", features = ["network_client"] }
 tokio-rustls = "0.26"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
+
+# Operacje WebAuthn wykonuje systemowe API Windows (okno "Zabezpieczenia Windows", klucz albo Windows Hello).
+[target.'cfg(windows)'.dependencies]
+ironrdp-rdpewa-native = "0.2"
 
 [dev-dependencies]
 socket2 = { version = "0.6", features = ["all"] }
