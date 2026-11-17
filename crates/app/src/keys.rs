@@ -290,7 +290,17 @@ mod platform {
         }
         let a = app.clone();
         let release_fn: Release = Box::new(move || {
-            let _ = a.run_on_main_thread(keygrab::stop);
+            let b = a.clone();
+            let _ = a.run_on_main_thread(move || {
+                // Liczniki odróżniają hak, którego system nie woła (zero wywołań), od haka, który
+                // przepuszcza zdarzenia do systemu.
+                if let Some(s) = keygrab::stop() {
+                    b.state::<AppState>().log(format!(
+                        "RDP: klawisze systemowe: liczniki haka: wywołań {}, zatrzymanych {}, przepuszczonych {}, bez scancodu {}, wstrzykniętych {}",
+                        s.calls, s.swallowed, s.passed, s.no_scancode, s.injected
+                    ));
+                }
+            });
         });
         // Zwolnienie musi być zarejestrowane, zanim ruszy pętla przekazująca zdarzenia.
         let generation = state.keys.set(session, release_fn);

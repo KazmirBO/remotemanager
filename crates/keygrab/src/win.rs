@@ -27,20 +27,22 @@ use std::thread::JoinHandle;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{MAPVK_VK_TO_VSC_EX, MapVirtualKeyW};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GA_ROOT, GetAncestor, GetForegroundWindow, GetMessageW, HC_ACTION,
-    KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetWindowsHookExW,
-    UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_QUIT, WM_USER,
+    KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW,
+    SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_QUIT, WM_USER,
 };
 
 use crate::logic::{Action, Logic, RawKey};
-use crate::{Combo, Error, Event, Sink};
+use crate::{Combo, Error, Event, Sink, Stats};
 
 struct Hooked {
     logic: Logic,
     sink: Sink,
     /// Okno najwyższego poziomu (HWND jako liczba, żeby stan był `Send`).
     window: isize,
+    stats: Stats,
 }
 
 static STATE: Mutex<Option<Hooked>> = Mutex::new(None);
@@ -74,6 +76,7 @@ pub fn start(window: isize, release: Option<Combo>, sink: Sink) -> Result<(), Er
         logic: Logic::new(release),
         sink,
         window,
+        stats: Stats::default(),
     });
     let (ready_tx, ready_rx) = sync_channel(1);
     let started = match std::thread::Builder::new()
@@ -107,7 +110,7 @@ pub fn start(window: isize, release: Option<Combo>, sink: Sink) -> Result<(), Er
     }
 }
 
-pub fn stop() {
+pub fn stop() -> Option<Stats> {
     let mut thread = THREAD.lock().unwrap_or_else(PoisonError::into_inner);
     ACTIVE.store(false, Ordering::Release);
     if let Some((id, handle)) = thread.take() {
@@ -124,7 +127,7 @@ pub fn stop() {
     }
     unhook();
     drop(thread);
-    clear_state();
+    clear_state()
 }
 
 /// Zdejmuje hak, jeśli jeszcze istnieje.
@@ -138,10 +141,10 @@ fn unhook() {
     }
 }
 
-/// Usuwa stan; odbiorca jest zwalniany poza blokadą.
-fn clear_state() {
+/// Usuwa stan i zwraca jego liczniki; odbiorca jest zwalniany poza blokadą.
+fn clear_state() -> Option<Stats> {
     let taken = STATE.lock().unwrap_or_else(PoisonError::into_inner).take();
-    drop(taken);
+    taken.map(|hooked| hooked.stats)
 }
 
 /// Wątek haka: zakłada hak, zgłasza wynik przez `ready` i odbiera komunikaty do `WM_QUIT`.
@@ -196,7 +199,7 @@ unsafe fn handle(lparam: LPARAM) -> bool {
     // SAFETY: wymóg przejęty od wywołującego (patrz `# Safety`); kopiujemy z struktury pola i nie
     // trzymamy referencji dłużej.
     let info = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-    let raw = RawKey {
+    let mut raw = RawKey {
         vk: info.vkCode,
         scancode: info.scanCode,
         flags: info.flags,
@@ -213,10 +216,23 @@ unsafe fn handle(lparam: LPARAM) -> bool {
     if !hooked.logic.capturing() {
         return false;
     }
+    hooked.stats.calls += 1;
+    if raw.flags & LLKHF_INJECTED != 0 {
+        hooked.stats.injected += 1;
+    }
+    if raw.scancode == 0 {
+        // Zdarzenie wstrzyknięte samym kodem wirtualnym: scancode bierzemy z układu klawiatury,
+        // inaczej klawisz szedłby do systemu zamiast do sesji.
+        hooked.stats.no_scancode += 1;
+        // SAFETY: MapVirtualKeyW przyjmuje dowolne liczby i nie ma wymagań wobec pamięci.
+        raw = raw.with_mapped_scancode(unsafe { MapVirtualKeyW(raw.vk, MAPVK_VK_TO_VSC_EX) });
+    }
     // SAFETY: GetForegroundWindow nie ma argumentów ani wymagań; wynik porównujemy tylko jako
     // liczbę (okno mogło zniknąć, ale nie dereferencjujemy uchwytu).
     let foreground = unsafe { GetForegroundWindow() } as isize == hooked.window;
-    let Hooked { logic, sink, .. } = hooked;
+    let Hooked {
+        logic, sink, stats, ..
+    } = hooked;
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         let mut emit = |e: Event| sink(e);
         logic.handle(raw, foreground, &mut emit)
@@ -232,5 +248,93 @@ unsafe fn handle(lparam: LPARAM) -> bool {
     if !logic.capturing() {
         ACTIVE.store(false, Ordering::Release);
     }
+    match action {
+        Action::Swallow => stats.swallowed += 1,
+        Action::Pass => stats.passed += 1,
+    }
     action == Action::Swallow
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, SendInput,
+        VK_F13,
+    };
+
+    use super::*;
+    use crate::Key;
+
+    /// Scancode klawisza F13 (zestaw 1): na maszynie testowej nic na niego nie reaguje.
+    const F13: u8 = 0x64;
+
+    /// Wstrzykuje jedno zdarzenie klawisza. Zwraca false, gdy system go nie przyjął (sesja bez
+    /// pulpitu interaktywnego).
+    fn inject(vk: u16, scan: u16, flags: u32) -> bool {
+        let input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: scan,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        // SAFETY: wskaźnik wskazuje jedną ważną strukturę INPUT, a rozmiar jest jej rozmiarem.
+        unsafe { SendInput(1, &input, size_of::<INPUT>() as i32) == 1 }
+    }
+
+    /// Hak na prawdziwym systemie: wstrzyknięte klawisze mają zostać zatrzymane i trafić do
+    /// odbiorcy, także te bez scancodu (sam kod wirtualny).
+    #[test]
+    fn injected_keys_are_swallowed_and_forwarded() {
+        let (tx, rx) = channel();
+        // Okno na pierwszym planie w chwili testu; bez żadnego okna po obu stronach porównania
+        // jest NULL.
+        // SAFETY: funkcja bez argumentów i bez wymagań.
+        let window = unsafe { GetForegroundWindow() } as isize;
+        start(
+            window,
+            None,
+            Box::new(move |e| {
+                let _ = tx.send(e);
+            }),
+        )
+        .expect("hak klawiatury");
+        if !inject(0, u16::from(F13), KEYEVENTF_SCANCODE) {
+            stop();
+            eprintln!("pominięto: system nie przyjął wstrzykniętego klawisza");
+            return;
+        }
+        let wait = Duration::from_secs(5);
+        let key = |down| {
+            Some(Event::Key(Key {
+                scancode: F13,
+                extended: false,
+                down,
+            }))
+        };
+        assert_eq!(rx.recv_timeout(wait).ok(), key(true));
+        assert!(inject(
+            0,
+            u16::from(F13),
+            KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP
+        ));
+        assert_eq!(rx.recv_timeout(wait).ok(), key(false));
+        // Sam kod wirtualny, bez scancodu.
+        assert!(inject(VK_F13, 0, 0));
+        assert_eq!(rx.recv_timeout(wait).ok(), key(true));
+        assert!(inject(VK_F13, 0, KEYEVENTF_KEYUP));
+        assert_eq!(rx.recv_timeout(wait).ok(), key(false));
+        let stats = stop().expect("liczniki haka");
+        assert!(stats.calls >= 4, "{stats:?}");
+        assert!(stats.swallowed >= 4, "{stats:?}");
+        assert!(stats.injected >= 4, "{stats:?}");
+    }
 }
