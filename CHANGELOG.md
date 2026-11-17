@@ -2,6 +2,20 @@
 
 Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `wydanie`).
 
+## 0.1.2 - 2026-11-17
+
+Wydanie diagnostyczne, nadal wstępne: pakiety są niepodpisane. Poprawka haka z wersji 0.1.1 nie pomogła: na Windows w trybie przechwytywania Alt+Tab dalej działa lokalnie, a przyczyna nie jest jeszcze znana.
+
+### Zmiany
+
+- Dziennik diagnostyczny dostaje przy zdjęciu haka wpis `RDP: klawisze systemowe: liczniki haka: ...` (wywołań, zatrzymanych, przepuszczonych, bez scancodu, wstrzykniętych; bez treści klawiszy). Zero wywołań oznacza, że system nie woła funkcji haka.
+- Windows: klawisz, który przychodzi bez scancodu (wstrzyknięty przez program samym kodem wirtualnym), dostaje scancode z układu klawiatury i trafia do sesji; wcześniej hak przepuszczał go do systemu.
+
+### Pakiety
+
+- `multiremotemanager_0.1.2_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.1.2_amd64.deb` - pakiet dla Debiana i Ubuntu.
+
 ## 0.1.1 - 2026-11-17
 
 Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane. Lista rzeczy niesprawdzonych w działaniu z wersji 0.1.0 pozostaje aktualna.
