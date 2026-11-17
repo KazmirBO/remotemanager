@@ -34,7 +34,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_QUIT, WM_USER,
 };
 
-use crate::logic::{Action, Logic, RawKey};
+use crate::logic::{Action, FLAG_EXTENDED, Logic, RawKey};
 use crate::{Combo, Error, Event, Sink, Stats};
 
 struct Hooked {
@@ -220,6 +220,9 @@ unsafe fn handle(lparam: LPARAM) -> bool {
     if raw.flags & LLKHF_INJECTED != 0 {
         hooked.stats.injected += 1;
     }
+    if raw.flags & FLAG_EXTENDED != 0 {
+        hooked.stats.extended += 1;
+    }
     if raw.scancode == 0 {
         // Zdarzenie wstrzyknięte samym kodem wirtualnym: scancode bierzemy z układu klawiatury,
         // inaczej klawisz szedłby do systemu zamiast do sesji.
@@ -344,5 +347,30 @@ mod tests {
         assert!(stats.swallowed >= 4, "{stats:?}");
         assert!(stats.injected >= 4, "{stats:?}");
         report(&format!("hak sprawdzony na prawdziwym systemie: {stats:?}"));
+
+        // Prawy Shift: system oznacza go jako klawisz rozszerzony, a do sesji ma trafić bez tego
+        // znacznika. Osobne założenie haka, żeby liczniki dotyczyły tylko tego klawisza.
+        let (tx, rx) = channel();
+        start(
+            window,
+            None,
+            Box::new(move |e| {
+                let _ = tx.send(e);
+            }),
+        )
+        .expect("hak klawiatury");
+        let shift = |down| {
+            Some(Event::Key(Key {
+                scancode: 0x36,
+                extended: false,
+                down,
+            }))
+        };
+        assert!(inject(0, 0x36, KEYEVENTF_SCANCODE));
+        assert_eq!(rx.recv_timeout(wait).ok(), shift(true));
+        assert!(inject(0, 0x36, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP));
+        assert_eq!(rx.recv_timeout(wait).ok(), shift(false));
+        let stats = stop().expect("liczniki haka");
+        report(&format!("prawy Shift na prawdziwym systemie: {stats:?}"));
     }
 }

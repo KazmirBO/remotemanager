@@ -2,13 +2,32 @@
 
 Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `wydanie`).
 
+## 0.1.4 - 2026-11-17
+
+Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane.
+
+### Zmiany
+
+- Terminal SSH: po zakończeniu sesji (np. po `exit`) przyciski "Połącz ponownie" i "Zamknij kartę" znowu reagują na kliknięcia; wcześniej kliknięcie trafiało w terminal pod spodem.
+- Windows: przechwytywanie klawiszy w sesji RDP (Alt+Tab, klawisz Windows) działa od wersji 0.1.3, co potwierdził test na prawdziwej maszynie.
+- Windows: w trybie przechwytywania klawiszy prawy Shift działa w sesji RDP; wcześniej trafiał do sesji jako inny klawisz, więc np. prawy Shift+1 dawał 1.
+- Prawy przycisk myszy nie pokazuje już menu przeglądarki (Wstecz, Odśwież, Drukuj); zostaje ono w polach tekstowych i w terminalu, gdzie daje kopiowanie i wklejanie.
+- Karty sesji mają własne menu pod prawym przyciskiem myszy: połącz ponownie, duplikuj kartę, zamknij kartę, zamknij pozostałe, zamknij wszystkie.
+- Pasek kart przy wielu sesjach nie dostaje suwaków: karty zwężają się, a gdy się nie mieszczą, pasek przewija się kółkiem myszy.
+- Terminal SSH: Ctrl+Shift+C kopiuje zaznaczenie.
+
+### Pakiety
+
+- `multiremotemanager_0.1.4_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.1.4_amd64.deb` - pakiet dla Debiana i Ubuntu.
+
 ## 0.1.3 - 2026-11-17
 
 Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane.
 
 ### Zmiany
 
-- Windows: aplikacja nie rejestruje już surowego wejścia klawiatury i myszy. Liczniki z wersji 0.1.2 pokazały, że system w ogóle nie wołał haka klawiatury w trybie przechwytywania; przyczyną jest ta rejestracja, którą biblioteka okna robi domyślnie i przy której system pomija hak własnego procesu, gdy jego okno jest aktywne. Poprawka nie została jeszcze potwierdzona na Windows.
+- Windows: aplikacja nie rejestruje już surowego wejścia klawiatury i myszy. Liczniki z wersji 0.1.2 pokazały, że system w ogóle nie wołał haka klawiatury w trybie przechwytywania; przyczyną jest ta rejestracja, którą biblioteka okna robi domyślnie i przy której system pomija hak własnego procesu, gdy jego okno jest aktywne.
 
 ### Pakiety
 

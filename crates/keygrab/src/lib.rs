@@ -64,6 +64,8 @@ pub struct Stats {
     pub no_scancode: u64,
     /// Zdarzenia wstrzyknięte programowo (np. przez program współdzielący klawiaturę).
     pub injected: u64,
+    /// Zdarzenia, które system oznaczył jako klawisz rozszerzony.
+    pub extended: u64,
 }
 
 /// Odbiorca zdarzeń. Jest wołany bezpośrednio z funkcji haka, we własnym wątku haka, a system

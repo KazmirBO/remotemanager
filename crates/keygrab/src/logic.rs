@@ -17,6 +17,9 @@ const VK_PAUSE: u32 = 0x13;
 const VK_NUMLOCK: u32 = 0x90;
 const VK_PACKET: u32 = 0xE7;
 
+/// Scancode prawego Shiftu (zestaw 1).
+const RIGHT_SHIFT: u8 = 0x36;
+
 /// Znaczniki dopisywane przez Windows do scancodu przy zdarzeniach generowanych przez system
 /// (fałszywy lewy Ctrl przy AltGr ma 0x21D, fałszywe Shifty przy NumLocku 0x22A i 0x236).
 const FAKE_SCANCODE_BIT: u32 = 0x200;
@@ -81,6 +84,10 @@ fn translate(raw: RawKey) -> Translated {
         return Translated::Fake;
     }
     match u8::try_from(raw.scancode) {
+        // Prawy Shift: Windows zgłasza go ze znacznikiem klawisza rozszerzonego, choć jego scancode
+        // nie ma prefiksu E0, a RDP zna go bez E0 (jak `ShiftRight` w scancodes.ts). Przekazany
+        // z E0 nie działał w zdalnej sesji jako Shift.
+        Ok(RIGHT_SHIFT) => Translated::Key(RIGHT_SHIFT, false),
         Ok(sc) if sc != 0 => Translated::Key(sc, raw.flags & FLAG_EXTENDED != 0),
         _ => Translated::Unsupported,
     }
@@ -267,6 +274,33 @@ mod tests {
     const CTRL: u32 = 0x11;
     const ALT: u32 = 0x12;
     const SHIFT: u32 = 0x10;
+
+    #[test]
+    fn right_shift_is_forwarded_without_the_extended_flag() {
+        // Tak prawy Shift przychodzi z haka: scancode 0x36 ze znacznikiem rozszerzonym.
+        let mut l = Logic::new(None);
+        let (acts, ev) = run(&mut l, &[down(0xA1, 0x36, true), up(0xA1, 0x36, true)]);
+        assert_eq!(acts, [Action::Swallow, Action::Swallow]);
+        assert_eq!(ev, [k(0x36, false, true), k(0x36, false, false)]);
+        // Bez znacznika (np. zdarzenie wstrzyknięte) wynik jest ten sam.
+        assert_eq!(
+            translate(down(0xA1, 0x36, false)),
+            Translated::Key(0x36, false)
+        );
+        // Lewy Shift i sąsiednie klawisze zostają bez zmian.
+        assert_eq!(
+            translate(down(0xA0, 0x2A, false)),
+            Translated::Key(0x2A, false)
+        );
+        assert_eq!(
+            translate(down(0x6A, 0x37, false)),
+            Translated::Key(0x37, false)
+        );
+        assert_eq!(
+            translate(down(0x2C, 0x37, true)),
+            Translated::Key(0x37, true)
+        );
+    }
 
     #[test]
     fn mapped_scancode_fills_in_events_without_one() {

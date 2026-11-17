@@ -170,7 +170,8 @@
   }
 </script>
 
-<svelte:window onclick={closeMenu} onkeydown={(e) => e.key === 'Escape' && closeMenu()} />
+<!-- Prawy przycisk gdziekolwiek zamyka otwarte menu (faza przechwytywania), zanim element drzewa otworzy nowe. -->
+<svelte:window onclick={closeMenu} oncontextmenucapture={closeMenu} onkeydown={(e) => e.key === 'Escape' && closeMenu()} />
 
 {#snippet hostRow(h: HostView, depth: number)}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -336,10 +337,6 @@
   .sync { position: relative; }
   .dot { position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); border: 1px solid var(--panel); }
   .foot { display: flex; gap: 4px; padding: 8px 12px; border-top: 1px solid var(--border); }
-  .menu { position: fixed; z-index: 70; min-width: 200px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-menu); box-shadow: var(--shadow-float); padding: 4px; display: flex; flex-direction: column; }
-  .menu button { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; background: transparent; border: none; border-radius: var(--radius-control); text-align: left; }
-  .menu button:hover { background: var(--hover); }
-  .menu hr { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
 
   /* Poniżej 900 px pasek boczny zwija się do ikon. */
   @media (max-width: 899px) {

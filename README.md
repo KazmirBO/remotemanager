@@ -6,7 +6,7 @@ Nazwa "Menedżer sesji" i polecenie `multiremotemanager` są robocze.
 
 ## Stan projektu
 
-Wczesna wersja rozwojowa. Wydania wstępne (ostatnie: 0.1.3) mają niepodpisane pakiety: instalator dla Windows i deb; opis zmian jest w [CHANGELOG.md](CHANGELOG.md). Rozwijana i używana na Linuksie (Gentoo, KDE na Waylandzie). Kod jest pisany także pod Windows, ale na Windows nie był dotąd uruchamiany.
+Wczesna wersja rozwojowa. Wydania wstępne (ostatnie: 0.1.4) mają niepodpisane pakiety: instalator dla Windows i deb; opis zmian jest w [CHANGELOG.md](CHANGELOG.md). Rozwijana i używana na Linuksie (Gentoo, KDE na Waylandzie). Kod jest pisany także pod Windows, ale na Windows nie był dotąd uruchamiany.
 
 Sprawdzone w działaniu: sesje SSH (także przez bastion), sesje RDP z NLA, zmiana rozdzielczości pulpitu razem z oknem i schowek w obie strony. Niesprawdzone: Kerberos z prawdziwym KDC oraz dodane 16.11.2026 lokalny kursor RDP, profil łącza, przechwytywanie klawiszy i renderer WebGL terminala. Szczegóły i lista rzeczy niezweryfikowanych są w [PROJECT.md](PROJECT.md).
 
