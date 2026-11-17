@@ -36,6 +36,7 @@ use tokio_rustls::rustls;
 type Tls = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 mod clip;
 mod memlimit;
+mod webauthn;
 
 type Framed = ironrdp_blocking::Framed<Tls>;
 
@@ -159,8 +160,27 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
     };
     let (clip_tx, clip_rx) = mpsc::channel::<clip::ClipEvent>();
     let mut clip = clip::ClipState::new();
-    let (result, mut framed) =
-        connect(&config, &params, kerberos, rx, clip_tx).context("połączenie")?;
+    // Przekierowanie kluczy bezpieczeństwa: kanał powstaje tylko dla hostów z włączonym ustawieniem
+    // i tylko tam, gdzie jest wykonawca operacji (Windows). Bez niego sesja działa jak dotąd.
+    let (webauthn_tx, webauthn_rx) = mpsc::channel::<webauthn::Reply>();
+    let webauthn_listener = if params.webauthn {
+        let handlers = webauthn_handlers();
+        if handlers.is_none() {
+            emit(&FromWorker::Notice {
+                message:
+                    "Przekierowanie kluczy bezpieczeństwa działa tylko w aplikacji na Windows."
+                        .into(),
+            });
+        }
+        handlers.map(|handlers| webauthn::Listener::new(webauthn_tx, handlers))
+    } else {
+        None
+    };
+    if webauthn_listener.is_some() {
+        log("WebAuthn: przekierowanie kluczy bezpieczeństwa włączone dla tej sesji");
+    }
+    let (result, mut framed) = connect(&config, &params, kerberos, rx, clip_tx, webauthn_listener)
+        .context("połączenie")?;
     set_timeout(&framed, POLL);
 
     let factory =
@@ -232,6 +252,19 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
                     }
                 }
                 Err(TryRecvError::Empty) => break,
+            }
+        }
+
+        // Odpowiedzi WebAuthn gotowe po czasie: użytkownik odpowiedział w oknie systemu.
+        while let Ok(reply) = webauthn_rx.try_recv() {
+            match webauthn::encode_reply(reply) {
+                Ok(messages) => {
+                    let frame = stage.encode_dvc_messages(messages)?;
+                    framed
+                        .write_all(&frame)
+                        .context("wysyłka odpowiedzi WebAuthn")?;
+                }
+                Err(e) => log(format!("WebAuthn: nie udało się zakodować odpowiedzi: {e}")),
             }
         }
 
@@ -948,12 +981,37 @@ fn build_config(p: &ConnectParams) -> connector::Config {
     }
 }
 
+/// Wykonawcy operacji WebAuthn dla kolejnych otwarć kanału: systemowe API Windows (okno
+/// "Zabezpieczenia Windows"). Stan operacji w toku jest wspólny, bo serwer otwiera kanał od nowa
+/// przy każdej operacji, a anulowanie może przyjść już innym otwarciem. Okno nadrzędne 0 oznacza
+/// okno na pierwszym planie, czyli okno aplikacji z tą sesją.
+#[cfg(windows)]
+fn webauthn_handlers() -> Option<webauthn::HandlerFactory> {
+    use ironrdp_rdpewa::RdpewaClientHandler;
+    use ironrdp_rdpewa_native::{WindowsRdpewaBackend, WindowsRdpewaSessionState};
+
+    let state = Arc::new(WindowsRdpewaSessionState::default());
+    Some(Box::new(move || {
+        Box::new(WindowsRdpewaBackend::new_with_session_state(
+            0,
+            Arc::clone(&state),
+        )) as Box<dyn RdpewaClientHandler>
+    }))
+}
+
+/// Poza Windows nie ma wykonawcy operacji, więc kanał nie jest rejestrowany.
+#[cfg(not(windows))]
+fn webauthn_handlers() -> Option<webauthn::HandlerFactory> {
+    None
+}
+
 fn connect(
     config: &connector::Config,
     p: &ConnectParams,
     kerberos: Option<KerberosConfig>,
     rx: &Receiver<ToWorker>,
     clip_tx: mpsc::Sender<clip::ClipEvent>,
+    webauthn: Option<webauthn::Listener>,
 ) -> anyhow::Result<(ConnectionResult, Framed)> {
     let addrs: Vec<_> = (p.host.as_str(), p.port)
         .to_socket_addrs()
@@ -983,11 +1041,13 @@ fn connect(
     let client_addr = tcp.local_addr()?;
     let mut framed = ironrdp_blocking::Framed::new(tcp);
     // Kanał dynamiczny Display Control pozwala zmieniać rozmiar pulpitu bez ponownego łączenia.
+    let mut dynamic =
+        DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+    if let Some(listener) = webauthn {
+        dynamic = dynamic.with_listener(listener);
+    }
     let mut connector = connector::ClientConnector::new(config.clone(), client_addr)
-        .with_static_channel(
-            DrdynvcClient::new()
-                .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
-        )
+        .with_static_channel(dynamic)
         .with_static_channel(Cliprdr::<Client>::new(Box::new(clip::ClipBackend {
             tx: clip_tx,
             tmp: std::env::temp_dir().to_string_lossy().into_owned(),
@@ -1410,6 +1470,7 @@ mod tests {
             width: 800,
             height: 600,
             profile: LinkProfile::Slow,
+            webauthn: false,
         });
         assert!(c.enable_server_pointer);
         assert!(!c.pointer_software_rendering);

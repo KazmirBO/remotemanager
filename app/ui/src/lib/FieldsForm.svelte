@@ -32,6 +32,7 @@
   const profileName = (v: unknown) => (v === 'slow' ? 'wolne' : 'szybkie');
   const profileHint = $derived(inherited(folders, startFolder, 'rdp_profile'));
   const kerberosHint = $derived(inherited(folders, startFolder, 'rdp_kerberos'));
+  const webauthnHint = $derived(inherited(folders, startFolder, 'rdp_webauthn'));
 </script>
 
 <div class="field">
@@ -101,6 +102,20 @@
       </span>
     {/if}
     <span class="hint">Wolne wyłącza efekty pulpitu (tapetę, animacje, motywy) i wygładzanie czcionek, żeby serwer wysyłał mniej zmian obrazu. Dotyczy nowych połączeń.</span>
+  </div>
+  <div class="field">
+    <label for="f-webauthn">Klucze bezpieczeństwa FIDO2 (RDP)</label>
+    <!-- Trzy stany jak przy Kerberosie: "nie" wyłącza przekierowanie odziedziczone z katalogu. -->
+    <select id="f-webauthn" value={fields.rdp_webauthn === null ? 'inherit' : fields.rdp_webauthn ? 'yes' : 'no'}
+      onchange={(e) => { const v = e.currentTarget.value; fields.rdp_webauthn = v === 'inherit' ? null : v === 'yes'; }}>
+      <option value="inherit">Dziedzicz{webauthnHint ? ` (${webauthnHint.value ? 'tak' : 'nie'})` : ' (nie)'}</option>
+      <option value="yes">Przekierowuj</option>
+      <option value="no">Nie przekierowuj</option>
+    </select>
+    {#if fields.rdp_webauthn === null && webauthnHint}
+      <span class="hint"><Icon name="route" size={12} /> Dziedziczone z „{webauthnHint.from}”: {webauthnHint.value ? 'tak' : 'nie'}</span>
+    {/if}
+    <span class="hint">Zdalny pulpit może wtedy prosić o potwierdzenie logowania kluczem (np. YubiKey) podłączonym do tego komputera; każde użycie potwierdzasz w oknie systemu. Włączaj tylko dla zaufanych serwerów. Działa w aplikacji na Windows, dotyczy nowych połączeń.</span>
   </div>
   {#if fields.rdp_kerberos ?? kerberosHint?.value}
     <div class="field">

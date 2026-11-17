@@ -140,6 +140,7 @@ fields! {
     rdp_kerberos: bool,
     rdp_kdc: String,
     rdp_profile: LinkProfile,
+    rdp_webauthn: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
