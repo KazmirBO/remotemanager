@@ -51,11 +51,11 @@ pub enum Event {
     Released(Released),
 }
 
-/// Odbiorca zdarzeń. Jest wołany bezpośrednio z funkcji haka, w wątku z pętlą komunikatów, a
-/// system po cichu usuwa hak, którego wywołanie trwa zbyt długo (domyślnie ok. 300 ms, najwyżej
-/// 1 s). Dlatego implementacja MUSI być nieblokująca: bez I/O, bez czekania na blokadę i bez
-/// długich obliczeń; wystarczy włożyć zdarzenie do kanału. Nie wolno z niej wołać `stop()`
-/// (blokada stanu jest wtedy już zajęta); `stop()` woła się po otrzymaniu `Event::Released`
+/// Odbiorca zdarzeń. Jest wołany bezpośrednio z funkcji haka, we własnym wątku haka, a system
+/// po cichu usuwa hak, którego wywołanie trwa zbyt długo (domyślnie ok. 300 ms, najwyżej 1 s).
+/// Dlatego implementacja MUSI być nieblokująca: bez I/O, bez czekania na blokadę i bez długich
+/// obliczeń; wystarczy włożyć zdarzenie do kanału. Nie wolno z niej wołać `stop()` (czeka ono na
+/// koniec wątku haka, czyli na samo siebie); `stop()` woła się po otrzymaniu `Event::Released`
 /// z innego kontekstu.
 pub type Sink = Box<dyn Fn(Event) + Send + Sync + 'static>;
 
@@ -94,10 +94,10 @@ pub fn supported() -> bool {
     cfg!(windows)
 }
 
-/// Włącza przechwytywanie dla okna (`window` to uchwyt HWND jako `isize`). Wołać z wątku z pętlą
-/// komunikatów okna: system woła hak w wątku, który go założył. Modyfikatory wciśnięte przed
-/// `start` nie są znane (śledzimy tylko to, co hak sam zobaczył), więc skrót zwalniający
-/// zadziała po ich ponownym naciśnięciu.
+/// Włącza przechwytywanie dla okna (`window` to uchwyt HWND jako `isize`). Można wołać z dowolnego
+/// wątku: hak dostaje własny wątek z pętlą komunikatów, a funkcja wraca po jego założeniu.
+/// Modyfikatory wciśnięte przed `start` nie są znane (śledzimy tylko to, co hak sam zobaczył),
+/// więc skrót zwalniający zadziała po ich ponownym naciśnięciu.
 pub fn start(window: isize, release: Option<Combo>, sink: Sink) -> Result<(), Error> {
     #[cfg(windows)]
     {
