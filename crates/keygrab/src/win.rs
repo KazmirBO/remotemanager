@@ -290,6 +290,13 @@ mod tests {
         unsafe { SendInput(1, &input, size_of::<INPUT>() as i32) == 1 }
     }
 
+    /// Wypisuje wynik prosto na stderr, z pominięciem przechwytywania wyjścia testów: z samego
+    /// "ok" nie widać, czy hak został sprawdzony, czy test się pominął.
+    fn report(text: &str) {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "keygrab: {text}");
+    }
+
     /// Hak na prawdziwym systemie: wstrzyknięte klawisze mają zostać zatrzymane i trafić do
     /// odbiorcy, także te bez scancodu (sam kod wirtualny).
     #[test]
@@ -309,7 +316,7 @@ mod tests {
         .expect("hak klawiatury");
         if !inject(0, u16::from(F13), KEYEVENTF_SCANCODE) {
             stop();
-            eprintln!("pominięto: system nie przyjął wstrzykniętego klawisza");
+            report("test haka pominięty: system nie przyjął wstrzykniętego klawisza");
             return;
         }
         let wait = Duration::from_secs(5);
@@ -336,5 +343,6 @@ mod tests {
         assert!(stats.calls >= 4, "{stats:?}");
         assert!(stats.swallowed >= 4, "{stats:?}");
         assert!(stats.injected >= 4, "{stats:?}");
+        report(&format!("hak sprawdzony na prawdziwym systemie: {stats:?}"));
     }
 }
