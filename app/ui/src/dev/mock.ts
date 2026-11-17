@@ -45,6 +45,8 @@ function nextIndexSender(callbackId: number) {
 }
 
 const sessions = new Map<string, (m: unknown) => void>();
+/** Wpisywana linia w sesji SSH atrapy; `exit` kończy sesję jak prawdziwa powłoka. */
+const typed = new Map<string, string>();
 const text = (s: string) => new TextEncoder().encode(s).buffer;
 
 function emitEvent(event: string, payload: unknown) {
@@ -153,7 +155,20 @@ const handlers: Record<string, Handler> = {
     const send = id ? sessions.get(id) : undefined;
     if (!send || !ctx.raw) return;
     const s = new TextDecoder().decode(ctx.raw);
-    send(text(s === '\r' ? '\r\n$ ' : s));
+    if (s !== '\r') {
+      typed.set(id!, (typed.get(id!) ?? '') + s);
+      send(text(s));
+      return;
+    }
+    const line = typed.get(id!) ?? '';
+    typed.delete(id!);
+    if (line.trim() === 'exit') {
+      send(text('\r\nwylogowano\r\n'));
+      send({ t: 'exit', code: 0 });
+      sessions.delete(id!);
+      return;
+    }
+    send(text('\r\n$ '));
   },
   sync_status: () => syncView(),
   sync_set_folder: ({ folder }) => { syncFolder = folder; syncStatus = 'brak_pliku'; return syncView(); },
@@ -182,7 +197,7 @@ const handlers: Record<string, Handler> = {
   },
   take_pending_link: () => params.get('link'),
   ssh_resize: () => {},
-  ssh_close: ({ id }) => { sessions.delete(id); },
+  ssh_close: ({ id }) => { sessions.delete(id); typed.delete(id); },
   ssh_ack: () => {},
   rdp_grab_keys: () => ({ system: false }),
   rdp_send: () => {},

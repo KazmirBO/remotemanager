@@ -149,7 +149,9 @@
 <style>
   .wrap { position: absolute; inset: 0; background: var(--terminal); }
   .wrap.hidden { visibility: hidden; pointer-events: none; }
-  .term { position: absolute; inset: 8px 0 0 8px; }
+  /* Własny kontekst warstw: xterm układa swoje warstwy przez `z-index` (kanwy renderera WebGL, pasek
+     przewijania) i bez tego lądowały one nad nakładką stanu sesji, przechwytując kliknięcia w jej przyciski. */
+  .term { position: absolute; inset: 8px 0 0 8px; isolation: isolate; }
   .overlay { position: absolute; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--terminal) 80%, transparent); }
   .card { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 460px; text-align: center; padding: 24px; border: 1px solid var(--border-strong); border-radius: var(--radius-window); background: var(--panel); }
   .card p { margin: 0; }
