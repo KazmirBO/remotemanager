@@ -1,4 +1,5 @@
 import { api, type DocView, type SyncView, type HostView, type Id, type Protocol, type Settings, type VaultState } from './api';
+import { loadBarPos, saveBarPos, type BarPos } from './rdpBar';
 
 export interface Tab {
   id: string;
@@ -36,7 +37,15 @@ export const ui = $state({
   reveal: null as Id | null,
   notice: null as string | null,
   noticeError: false,
+  /** Miejsce panelu z przyciskami w widoku RDP, wspólne dla wszystkich kart. */
+  rdpBar: loadBarPos(),
 });
+
+/** Ustawia miejsce panelu sesji RDP i zapamiętuje je na tej maszynie. */
+export function setRdpBar(pos: BarPos) {
+  ui.rdpBar = pos;
+  saveBarPos(pos);
+}
 
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 /** Powiadomienie w dymku i w historii; `error` zmienia ikonę na ostrzeżenie. */
