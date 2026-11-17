@@ -7,6 +7,9 @@ export type Id = string;
 export type RdpProfile = 'fast' | 'slow';
 export type RdpKeys = 'never' | 'fullscreen' | 'always';
 
+/** Przekierowanie czytników kart do sesji RDP: wyłączone, pod prawdziwymi albo neutralnymi nazwami. */
+export type RdpSmartcard = 'off' | 'on' | 'neutral';
+
 export interface FieldsIo {
   port: number | null;
   username: string | null;
@@ -20,6 +23,8 @@ export interface FieldsIo {
   rdp_profile: RdpProfile | null;
   /** Przekierowanie kluczy bezpieczeństwa (WebAuthn) do sesji RDP; `null` dziedziczy z katalogu. */
   rdp_webauthn: boolean | null;
+  /** Przekierowanie czytników kart inteligentnych do sesji RDP; `null` dziedziczy z katalogu. */
+  rdp_smartcard: RdpSmartcard | null;
   has_password: boolean;
   /** Tylko wejście. */
   password?: string | null;
@@ -53,7 +58,7 @@ export type ShellControl = { t: 'exit'; code: number } | { t: 'closed' };
 
 export const emptyFields = (): FieldsIo => ({
   port: null, username: null, domain: null, jump_host: null,
-  terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, rdp_profile: null, rdp_webauthn: null, has_password: false,
+  terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, rdp_profile: null, rdp_webauthn: null, rdp_smartcard: null, has_password: false,
 });
 
 /** Backend zwraca błędy jako tekst; sprowadzamy wszystko do `string`. */

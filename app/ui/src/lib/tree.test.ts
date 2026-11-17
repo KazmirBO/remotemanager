@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTree, descendantIds, inherited, inheritsPassword, matches } from './tree';
+import { buildTree, descendantIds, inherited, inheritsPassword, matches, EDGE_SCROLL_MAX, edgeScrollSpeed } from './tree';
 import { emptyFields, type FolderView, type HostView } from './api';
 
 const folder = (id: string, name: string, parent: string | null, patch: Partial<ReturnType<typeof emptyFields>> = {}): FolderView => ({
@@ -72,5 +72,28 @@ describe('matches', () => {
     expect(matches(h, 'baza')).toBe(true);
     expect(matches(h, 'zzz')).toBe(false);
     expect(matches(h, '  ')).toBe(true);
+  });
+});
+
+describe('edgeScrollSpeed', () => {
+  it('nie przewija w środku listy', () => {
+    expect(edgeScrollSpeed(300, 100, 500)).toBe(0);
+    expect(edgeScrollSpeed(141, 100, 500)).toBe(0);
+    expect(edgeScrollSpeed(459, 100, 500)).toBe(0);
+  });
+  it('przewija w górę przy górnej krawędzi i w dół przy dolnej, szybciej bliżej krawędzi', () => {
+    expect(edgeScrollSpeed(139, 100, 500)).toBeLessThan(0);
+    expect(edgeScrollSpeed(461, 100, 500)).toBeGreaterThan(0);
+    expect(Math.abs(edgeScrollSpeed(105, 100, 500))).toBeGreaterThan(Math.abs(edgeScrollSpeed(135, 100, 500)));
+    expect(edgeScrollSpeed(100, 100, 500)).toBe(-EDGE_SCROLL_MAX);
+    expect(edgeScrollSpeed(500, 100, 500)).toBe(EDGE_SCROLL_MAX);
+  });
+  it('wskaźnik poza listą przewija z największą prędkością', () => {
+    expect(edgeScrollSpeed(20, 100, 500)).toBe(-EDGE_SCROLL_MAX);
+    expect(edgeScrollSpeed(900, 100, 500)).toBe(EDGE_SCROLL_MAX);
+  });
+  it('w niskiej liście każda połowa przewija w swoją stronę', () => {
+    expect(edgeScrollSpeed(110, 100, 140)).toBeLessThan(0);
+    expect(edgeScrollSpeed(130, 100, 140)).toBeGreaterThan(0);
   });
 });

@@ -1,6 +1,6 @@
 //! Typy wymieniane z frontendem. Hasła nigdy nie opuszczają backendu: widok ma tylko `has_password`.
 
-use model::{Fields, Folder, Host, Id, LinkProfile, Protocol, Settings};
+use model::{CardRedirect, Fields, Folder, Host, Id, LinkProfile, Protocol, Settings};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -17,6 +17,9 @@ pub struct FieldsIo {
     /// Przekierowanie kluczy bezpieczeństwa (WebAuthn) do sesji RDP; `None` dziedziczy.
     #[serde(default)]
     pub rdp_webauthn: Option<bool>,
+    /// Przekierowanie czytników kart inteligentnych do sesji RDP; `None` dziedziczy.
+    #[serde(default)]
+    pub rdp_smartcard: Option<CardRedirect>,
     /// Tylko wyjście.
     #[serde(default)]
     pub has_password: bool,
@@ -41,6 +44,7 @@ impl FieldsIo {
             rdp_kdc: f.rdp_kdc.clone(),
             rdp_profile: f.rdp_profile,
             rdp_webauthn: f.rdp_webauthn,
+            rdp_smartcard: f.rdp_smartcard,
             has_password: f.password.is_some(),
             password: None,
             clear_password: false,
@@ -69,6 +73,7 @@ impl FieldsIo {
             rdp_kdc: self.rdp_kdc.filter(|s| !s.is_empty()),
             rdp_profile: self.rdp_profile,
             rdp_webauthn: self.rdp_webauthn,
+            rdp_smartcard: self.rdp_smartcard,
         }
     }
 }
@@ -177,6 +182,19 @@ mod tests {
         }
         .apply(&existing);
         assert_eq!(clear.password, None);
+    }
+
+    #[test]
+    fn rdp_smartcard_goes_both_ways() {
+        let io: FieldsIo = serde_json::from_str(r#"{"rdp_smartcard":"neutral"}"#).unwrap();
+        assert_eq!(io.rdp_smartcard, Some(CardRedirect::Neutral));
+        let applied = io.apply(&Fields::default());
+        assert_eq!(applied.rdp_smartcard, Some(CardRedirect::Neutral));
+        let json = serde_json::to_string(&FieldsIo::view(&applied)).unwrap();
+        assert!(json.contains(r#""rdp_smartcard":"neutral""#), "{json}");
+        // Frontend sprzed tej funkcji nie przysyła pola: to dziedziczenie, czyli wyłączone.
+        let none: FieldsIo = serde_json::from_str("{}").unwrap();
+        assert_eq!(none.apply(&applied).rdp_smartcard, None);
     }
 
     #[test]

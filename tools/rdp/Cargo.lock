@@ -1343,6 +1343,8 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu 0.9.0",
+ "ironrdp-rdpdr",
+ "ironrdp-rdpsnd",
  "ironrdp-session",
  "ironrdp-svc 0.8.0",
 ]
@@ -1542,6 +1544,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpdr"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ece9e67ccf992eb8ce5ec0416d3950e2e199d4b1e2523f91af192205279fc970"
+dependencies = [
+ "bitflags 2.13.2",
+ "ironrdp-core 0.2.1",
+ "ironrdp-error",
+ "ironrdp-pdu 0.9.0",
+ "ironrdp-svc 0.8.0",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-rdpewa"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1563,6 +1579,19 @@ dependencies = [
  "ironrdp-rdpewa",
  "tracing",
  "windows",
+]
+
+[[package]]
+name = "ironrdp-rdpsnd"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d1a4f7092ae8fdc0a2f61be8e100277dc6f4ad51b85455dc9e8157979993ea2"
+dependencies = [
+ "bitflags 2.13.2",
+ "ironrdp-core 0.2.1",
+ "ironrdp-pdu 0.9.0",
+ "ironrdp-svc 0.8.0",
+ "tracing",
 ]
 
 [[package]]
@@ -1938,6 +1967,25 @@ checksum = "112d82ceb8c5bf524d9af484d4e4970c9fd5a0cc15ba14ad93dccd28873b0629"
 dependencies = [
  "digest 0.11.3",
  "hmac 0.13.0",
+]
+
+[[package]]
+name = "pcsc"
+version = "2.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dd833ecf8967e65934c49d3521a175929839bf6d0e497f3bd0d3a2ca08943da"
+dependencies = [
+ "bitflags 2.13.2",
+ "pcsc-sys",
+]
+
+[[package]]
+name = "pcsc-sys"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e14ef017e15d2e5592a9e39a346c1dbaea5120bab7ed7106b210ef58ebd97003"
+dependencies = [
+ "pkg-config",
 ]
 
 [[package]]
@@ -2338,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "rdp-probe"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -2355,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "rdp-proto"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -2363,7 +2411,7 @@ dependencies = [
 
 [[package]]
 name = "rdp-worker"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "ironrdp",
@@ -2373,6 +2421,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-rdpewa",
  "ironrdp-rdpewa-native",
+ "pcsc",
  "rdp-proto",
  "sha2",
  "socket2",

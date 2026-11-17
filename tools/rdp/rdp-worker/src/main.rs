@@ -24,10 +24,12 @@ use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::session::fast_path;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, SessionError};
+use ironrdp::svc::SvcProcessorMessages;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::{DecodedPointer, PointerError};
 use rdp_proto::{
-    ClipKind, ConnectParams, FromWorker, Image, LinkProfile, Message, Pointer, ToWorker,
+    CardRedirect, ClipKind, ConnectParams, FromWorker, Image, LinkProfile, Message, Pointer,
+    ToWorker,
 };
 use sha2::{Digest as _, Sha256};
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
@@ -36,6 +38,11 @@ use tokio_rustls::rustls;
 type Tls = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 mod clip;
 mod memlimit;
+// Poza Windows nie ma usługi kart, więc tam moduł pracuje tylko w testach.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod scard;
+#[cfg(windows)]
+mod scard_pcsc;
 mod webauthn;
 
 type Framed = ironrdp_blocking::Framed<Tls>;
@@ -49,6 +56,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// i oczekiwanie na Display Control liczą się zegarem (`Instant`), nie obrotami pętli.
 const POLL: Duration = Duration::from_millis(5);
 const FLUSH_EVERY: Duration = Duration::from_millis(16);
+/// Kod systemu Windows `WSA_IO_PENDING` ("pokrywająca się operacja we/wy jest w toku").
+const WSA_IO_PENDING: i32 = 997;
+/// Tyle kolejnych odczytów może skończyć się `WSA_IO_PENDING`, zanim uznamy gniazdo za zepsute
+/// (z przerwą 1 ms po każdym to co najmniej 2 s bez żadnego udanego odczytu ani zwykłego limitu czasu).
+const MAX_PENDING_READS: u32 = 2000;
 /// Pierwsza sonda keepalive po tak długiej ciszy; potem co `KEEPALIVE_INTERVAL`. Bez tego pół-martwe
 /// połączenie (np. po zmianie sieci albo uśpieniu serwera) wisiałoby bez końca.
 const KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
@@ -179,8 +191,38 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
     if webauthn_listener.is_some() {
         log("WebAuthn: przekierowanie kluczy bezpieczeństwa włączone dla tej sesji");
     }
-    let (result, mut framed) = connect(&config, &params, kerberos, rx, clip_tx, webauthn_listener)
-        .context("połączenie")?;
+    // Przekierowanie czytników kart: kanały powstają tylko dla hostów z włączonym ustawieniem i tylko
+    // tam, gdzie jest usługa kart (Windows). Bez nich sesja działa jak dotąd.
+    let (scard_tx, scard_rx) = mpsc::channel::<scard::Reply>();
+    let smartcard = match params.smartcard {
+        CardRedirect::Off => None,
+        mode => {
+            let neutral = mode == CardRedirect::Neutral;
+            let channels = smartcard_channels(neutral, scard_tx);
+            if channels.is_some() {
+                log(format!(
+                    "karty: przekierowanie czytników włączone dla tej sesji (nazwy {})",
+                    if neutral { "neutralne" } else { "prawdziwe" }
+                ));
+            } else {
+                emit(&FromWorker::Notice {
+                    message: "Przekierowanie czytników kart działa tylko w aplikacji na Windows."
+                        .into(),
+                });
+            }
+            channels
+        }
+    };
+    let (result, mut framed) = connect(
+        &config,
+        &params,
+        kerberos,
+        rx,
+        clip_tx,
+        webauthn_listener,
+        smartcard,
+    )
+    .context("połączenie")?;
     set_timeout(&framed, POLL);
 
     let factory =
@@ -214,6 +256,8 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
     let software_pointer = result.pointer_software_rendering;
     let mut share_id = result.share_id;
     let mut last_flush = Instant::now();
+    // Kolejne odczyty zakończone `WSA_IO_PENDING` (patrz `is_pending_read`).
+    let mut pending_reads = 0u32;
     // Prośba o zmianę rozdzielczości czekająca na gotowość kanału (rozmiar i chwila zgłoszenia).
     let mut pending_resize: Option<(u32, u32, Instant)> = None;
     let mut resize_refused = false;
@@ -268,6 +312,18 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
             }
         }
 
+        // Odpowiedzi usługi kart gotowe po czasie (karta odpowiedziała albo ktoś dotknął klucza).
+        // Każda idzie osobno: błąd kodowania jednej trafia do dziennika i nie zabiera pozostałych.
+        while let Ok(reply) = scard_rx.try_recv() {
+            let messages = SvcProcessorMessages::<scard::Channel>::new(vec![scard::encode(reply)]);
+            match stage.process_svc_processor_messages(messages) {
+                Ok(frame) => framed
+                    .write_all(&frame)
+                    .context("wysyłka odpowiedzi czytnika kart")?,
+                Err(e) => log(format!("karty: nie udało się zakodować odpowiedzi: {e}")),
+            }
+        }
+
         if let Some((w, h, since)) = pending_resize {
             let sent = match resize_step(display_control_ready(&mut stage), since.elapsed()) {
                 ResizeStep::Wait => None,
@@ -300,6 +356,7 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
 
         match framed.read_pdu() {
             Ok((action, payload)) => {
+                pending_reads = 0;
                 let outs = match stage.process(&mut image, action, &payload) {
                     Ok(outs) => outs,
                     // Wadliwy kształt wskaźnika (np. 8 bpp, maska niezgodna z wymiarami) nie może
@@ -356,12 +413,14 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
                     });
                 }
             }
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
+            Err(e) if no_data_yet(&e, pending_reads) => {
+                if is_pending_read(&e) {
+                    // Krótka przerwa, żeby powtarzający się kod nie zamienił pętli w czekanie aktywne.
+                    pending_reads += 1;
+                    std::thread::sleep(Duration::from_millis(1));
+                } else {
+                    pending_reads = 0;
+                }
                 flush_all(&image, &mut dirty, &mut pointer);
                 last_flush = Instant::now();
             }
@@ -886,6 +945,24 @@ fn strips(data: &[u8], iw: u16, ih: u16, (l, t, r, b): Rect, max_bytes: usize) -
     out
 }
 
+/// Windows: gniazda biblioteki standardowej mają atrybut "overlapped", a odczyt z limitem czasu
+/// (`SO_RCVTIMEO`, nasze odpytywanie co `POLL`) bywa na nich przerywany w chwili, gdy system
+/// anuluje operację po upływie limitu. Zamiast przekroczenia czasu wraca wtedy `WSA_IO_PENDING`.
+/// To nie jest błąd połączenia: kolejny odczyt działa, a sesja kończona tym kodem urywała się
+/// "czasami", bez związku z serwerem.
+fn is_pending_read(e: &io::Error) -> bool {
+    cfg!(windows) && e.raw_os_error() == Some(WSA_IO_PENDING)
+}
+
+/// Czy błąd odczytu oznacza tylko, że na razie nie ma danych: limit czasu odpytywania albo
+/// `WSA_IO_PENDING`, o ile nie powtarza się bez końca (`pending_reads` to liczba kolejnych wystąpień).
+fn no_data_yet(e: &io::Error, pending_reads: u32) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    ) || (is_pending_read(e) && pending_reads < MAX_PENDING_READS)
+}
+
 fn set_timeout(framed: &Framed, d: Duration) {
     let _ = framed.get_inner().0.sock.set_read_timeout(Some(d));
 }
@@ -1005,6 +1082,29 @@ fn webauthn_handlers() -> Option<webauthn::HandlerFactory> {
     None
 }
 
+/// Kanały przekierowania czytników kart: `rdpdr` z usługą kart Windows i wymagany obok niego
+/// kanał dźwięku. `neutral` pokazuje serwerowi czytniki pod neutralnymi nazwami.
+#[cfg(windows)]
+fn smartcard_channels(
+    neutral: bool,
+    replies: mpsc::Sender<scard::Reply>,
+) -> Option<(scard::Channel, scard::Sound)> {
+    let engine = scard::Engine::new(scard_pcsc::System, replies, neutral);
+    Some((
+        scard::Channel::new(scard::Backend::new(engine), hostname()),
+        scard::Sound::new(),
+    ))
+}
+
+/// Poza Windows nie ma usługi kart, więc kanały nie są rejestrowane.
+#[cfg(not(windows))]
+fn smartcard_channels(
+    _neutral: bool,
+    _replies: mpsc::Sender<scard::Reply>,
+) -> Option<(scard::Channel, scard::Sound)> {
+    None
+}
+
 fn connect(
     config: &connector::Config,
     p: &ConnectParams,
@@ -1012,6 +1112,7 @@ fn connect(
     rx: &Receiver<ToWorker>,
     clip_tx: mpsc::Sender<clip::ClipEvent>,
     webauthn: Option<webauthn::Listener>,
+    smartcard: Option<(scard::Channel, scard::Sound)>,
 ) -> anyhow::Result<(ConnectionResult, Framed)> {
     let addrs: Vec<_> = (p.host.as_str(), p.port)
         .to_socket_addrs()
@@ -1052,6 +1153,11 @@ fn connect(
             tx: clip_tx,
             tmp: std::env::temp_dir().to_string_lossy().into_owned(),
         })));
+    if let Some((cards, sound)) = smartcard {
+        connector = connector
+            .with_static_channel(sound)
+            .with_static_channel(cards);
+    }
     let should_upgrade =
         ironrdp_blocking::connect_begin(&mut framed, &mut connector).context("negocjacja")?;
 
@@ -1179,6 +1285,23 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poll_timeouts_and_pending_reads_mean_no_data_yet() {
+        for kind in [io::ErrorKind::WouldBlock, io::ErrorKind::TimedOut] {
+            assert!(no_data_yet(&io::Error::from(kind), 0));
+        }
+        assert!(!no_data_yet(
+            &io::Error::from(io::ErrorKind::ConnectionReset),
+            0
+        ));
+        // Kod 997 znaczy "brak danych" tylko na Windows i tylko, dopóki nie powtarza się bez końca.
+        let pending = io::Error::from_raw_os_error(WSA_IO_PENDING);
+        assert_eq!(is_pending_read(&pending), cfg!(windows));
+        assert_eq!(no_data_yet(&pending, 0), cfg!(windows));
+        assert_eq!(no_data_yet(&pending, MAX_PENDING_READS - 1), cfg!(windows));
+        assert!(!no_data_yet(&pending, MAX_PENDING_READS));
+    }
 
     #[test]
     fn desktop_size_is_validated() {
@@ -1471,6 +1594,7 @@ mod tests {
             height: 600,
             profile: LinkProfile::Slow,
             webauthn: false,
+            smartcard: rdp_proto::CardRedirect::Off,
         });
         assert!(c.enable_server_pointer);
         assert!(!c.pointer_software_rendering);

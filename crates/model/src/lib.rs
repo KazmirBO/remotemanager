@@ -66,6 +66,18 @@ pub enum LinkProfile {
     Slow,
 }
 
+/// Przekierowanie czytników kart inteligentnych tego komputera do sesji RDP.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CardRedirect {
+    #[default]
+    Off,
+    /// Czytniki pod prawdziwymi nazwami.
+    On,
+    /// Czytniki pod neutralnymi nazwami, dla programów pomijających czytniki po nazwie.
+    Neutral,
+}
+
 /// Kiedy sesja RDP przechwytuje klawisze systemowe (Win, Alt+Tab itp.).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -141,6 +153,7 @@ fields! {
     rdp_kdc: String,
     rdp_profile: LinkProfile,
     rdp_webauthn: bool,
+    rdp_smartcard: CardRedirect,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

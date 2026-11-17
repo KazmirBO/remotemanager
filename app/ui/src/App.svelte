@@ -20,7 +20,7 @@
   import Terminal from './lib/Terminal.svelte';
   import TrustDialog from './lib/TrustDialog.svelte';
   import Unlock from './lib/Unlock.svelte';
-  import { allowedWithModal, binding, matchAppAction } from './lib/shortcuts';
+  import { allowedWithModal, binding, matchAppAction, tabNumber } from './lib/shortcuts';
   import { api } from './lib/api';
   import { applyTheme, closeTab, host as hostById, init, lockVault, modalOpen, notify, onLocked, openHost, reconnect, refreshSync, ui } from './lib/store.svelte';
 
@@ -130,6 +130,24 @@
       case 'prev_tab': if (tabs.length) ui.activeTab = tabs[(i - 1 + tabs.length) % tabs.length].id; break;
       case 'lock': void lockVault(); break;
       case 'settings': dialog = { kind: 'settings' }; break;
+      case 'reconnect_tab': if (ui.activeTab) reconnect(ui.activeTab); break;
+      case 'duplicate_tab': {
+        const host = tabs[i] && hostById(tabs[i].hostId);
+        if (host) openHost(host);
+        break;
+      }
+      case 'focus_search': {
+        const search = document.getElementById('host-search');
+        if (search instanceof HTMLInputElement) {
+          search.focus();
+          search.select();
+        }
+        break;
+      }
+      default: {
+        const n = tabNumber(action);
+        if (n !== null && tabs[n - 1]) ui.activeTab = tabs[n - 1].id;
+      }
     }
   }
 
@@ -235,7 +253,11 @@
         {#if ui.tabs.length === 0}
           <div class="welcome muted">
             <Icon name="terminal" size={28} />
-            <p>Kliknij dwukrotnie hosta w panelu albo naciśnij <kbd>{binding(ui.doc?.settings, 'quick_connect')}</kbd>, aby połączyć.</p>
+            {#if binding(ui.doc?.settings, 'quick_connect')}
+              <p>Kliknij dwukrotnie hosta w panelu albo naciśnij <kbd>{binding(ui.doc?.settings, 'quick_connect')}</kbd>, aby połączyć.</p>
+            {:else}
+              <p>Kliknij dwukrotnie hosta w panelu, aby połączyć.</p>
+            {/if}
           </div>
         {/if}
       </div>

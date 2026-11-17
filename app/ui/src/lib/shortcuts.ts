@@ -1,10 +1,16 @@
 import type { Settings } from './api';
 import { SCANCODES } from './scancodes';
 
+/** `default` pusty oznacza akcję bez skrótu domyślnego: działa dopiero po przypisaniu kombinacji. */
 export interface ActionDef { id: string; label: string; default: string }
 
+/** Wartość zapisana dla akcji, której skrót użytkownik wyłączył (pusta wartość oznacza "domyślny"). */
+export const OFF = 'off';
+
 /** Skróty domyślne nie mogą być samym Ctrl+litera: terminal i sesja RDP oddają aplikacji każdy klawisz
- * pasujący do skrótu, a Ctrl+litera to klawisze sterujące powłoki (Ctrl+K wycina linię w bashu i nano). */
+ * pasujący do skrótu, a Ctrl+litera to klawisze sterujące powłoki (Ctrl+K wycina linię w bashu i nano).
+ * Z tego samego powodu nowe akcje nie dostają skrótów domyślnych: każdy przypisany skrót przestaje
+ * docierać do zdalnej powłoki i pulpitu, więc o tym decyduje użytkownik. */
 export const ACTIONS: ActionDef[] = [
   { id: 'quick_connect', label: 'Szybkie łączenie', default: 'Ctrl+Shift+K' },
   { id: 'close_tab', label: 'Zamknij kartę', default: 'Ctrl+Shift+W' },
@@ -15,7 +21,19 @@ export const ACTIONS: ActionDef[] = [
   { id: 'settings', label: 'Ustawienia', default: 'Ctrl+,' },
   // Działa tylko w sesji RDP w trybie przechwytywania klawiszy (patrz `rdpKeys.ts`); poza nim nic nie robi.
   { id: 'release_keys', label: 'Zwolnij klawisze (RDP)', default: 'Ctrl+Shift+F12' },
+  // Działa tylko w terminalu SSH (samo Ctrl+C przerywa polecenie w powłoce); poza nim nic nie robi.
+  { id: 'copy_terminal', label: 'Kopiuj zaznaczenie (terminal SSH)', default: 'Ctrl+Shift+C' },
+  { id: 'reconnect_tab', label: 'Połącz ponownie (bieżąca karta)', default: '' },
+  { id: 'duplicate_tab', label: 'Duplikuj kartę', default: '' },
+  { id: 'focus_search', label: 'Szukaj hosta', default: '' },
+  ...Array.from({ length: 9 }, (_, i) => ({ id: `tab_${i + 1}`, label: `Przejdź do karty ${i + 1}`, default: '' })),
 ];
+
+/** Numer karty (od 1) dla akcji `tab_N`; `null` dla pozostałych. */
+export function tabNumber(action: string): number | null {
+  const m = /^tab_([1-9])$/.exec(action);
+  return m ? Number(m[1]) : null;
+}
 
 interface KeyLike {
   ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; code: string;
@@ -56,9 +74,14 @@ export function validCombo(combo: string): boolean {
   return parts.length >= 2 ? mods.some((m) => m === 'Ctrl' || m === 'Alt' || m === 'Meta') : /^F\d{1,2}$/.test(key);
 }
 
-/** Akcje kontekstowe: mają znaczenie tylko w określonej sesji (tu `release_keys` w sesji RDP w trybie
- * przechwytywania). Globalna obsługa skrótów i terminal ich nie zatrzymują, kombinacja idzie dalej. */
-export const CONTEXTUAL_ACTIONS: ReadonlySet<string> = new Set(['release_keys']);
+/** Akcje kontekstowe: mają znaczenie tylko w określonej sesji (`release_keys` w sesji RDP w trybie
+ * przechwytywania, `copy_terminal` w terminalu SSH). Globalna obsługa skrótów ich nie zatrzymuje,
+ * więc poza swoim miejscem kombinacja idzie dalej, np. do zdalnego pulpitu. */
+export const CONTEXTUAL_ACTIONS: ReadonlySet<string> = new Set(['release_keys', 'copy_terminal']);
+
+/** Akcje, których skrótu nie da się wyłączyć: bez `release_keys` nie byłoby wyjścia klawiaturą z trybu
+ * przechwytywania. */
+export const REQUIRED_ACTIONS: ReadonlySet<string> = new Set(['release_keys']);
 
 /** Czy kombinacja kończy się klawiszem ze scancode (tylko taką rozpoznaje hak i da się ją wysłać do pulpitu). */
 export function hasScancode(combo: string): boolean {
@@ -66,14 +89,15 @@ export function hasScancode(combo: string): boolean {
   return !!key && Object.keys(SCANCODES).some((c) => keyName(c) === key);
 }
 
-/** Skrót obowiązujący dla akcji. Zapisana wartość `release_keys` bez scancode (stary plik, ręczna edycja)
- * jest ignorowana na rzecz domyślnej: inaczej na Windows nie dałoby się wyjść z trybu klawiaturą. */
+/** Skrót obowiązujący dla akcji; pusty tekst, gdy akcja nie ma skrótu (wyłączony albo bez domyślnego).
+ * Zapisana wartość `release_keys` bez scancode (stary plik, ręczna edycja, także wyłączenie) jest
+ * ignorowana na rzecz domyślnej: inaczej na Windows nie dałoby się wyjść z trybu klawiaturą. */
 export function binding(settings: Settings | undefined, id: string): string {
   const def = ACTIONS.find((a) => a.id === id)!.default;
   const custom = settings?.shortcuts?.[id];
   if (!custom) return def;
   if (id === 'release_keys' && !hasScancode(custom)) return def;
-  return custom;
+  return custom === OFF ? '' : custom;
 }
 
 /** Akcja przypisana do zdarzenia klawiatury albo `null`. */

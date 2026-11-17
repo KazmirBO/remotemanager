@@ -45,6 +45,7 @@ fn params() -> ConnectParams {
         height: 600,
         profile: LinkProfile::Fast,
         webauthn: false,
+        smartcard: rdp::CardRedirect::Off,
     }
 }
 

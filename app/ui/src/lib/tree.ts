@@ -56,7 +56,7 @@ export function matches(h: HostView, query: string): boolean {
 }
 
 export type InheritableKey =
-  | 'port' | 'username' | 'domain' | 'jump_host' | 'terminal_scheme' | 'rdp_multimon' | 'rdp_kerberos' | 'rdp_kdc' | 'rdp_profile' | 'rdp_webauthn';
+  | 'port' | 'username' | 'domain' | 'jump_host' | 'terminal_scheme' | 'rdp_multimon' | 'rdp_kerberos' | 'rdp_kdc' | 'rdp_profile' | 'rdp_webauthn' | 'rdp_smartcard';
 
 /**
  * Wartość dziedziczona dla pola, licząc od katalogu `start` w górę.
@@ -89,4 +89,22 @@ export function inheritsPassword(folders: FolderView[], start: Id | null): strin
     cur = cur.parent ? map.get(cur.parent) : undefined;
   }
   return null;
+}
+
+/** Strefa przy krawędzi listy (w pikselach), w której przeciągany element przewija listę. */
+export const EDGE_SCROLL_ZONE = 40;
+/** Największy krok przewijania na klatkę (w pikselach), tuż przy krawędzi. */
+export const EDGE_SCROLL_MAX = 14;
+
+/** Krok przewijania listy na klatkę dla wskaźnika na wysokości `y` podczas przeciągania: ujemny przy
+ * górnej krawędzi, dodatni przy dolnej, zero w środku. Im bliżej krawędzi, tym szybciej; wskaźnik
+ * poza listą przewija z największą prędkością. */
+export function edgeScrollSpeed(y: number, top: number, bottom: number): number {
+  const speed = (distance: number) =>
+    Math.ceil(((EDGE_SCROLL_ZONE - Math.max(0, distance)) / EDGE_SCROLL_ZONE) * EDGE_SCROLL_MAX);
+  // Lista niższa od dwóch stref: przewija tylko połowa bliższa danej krawędzi.
+  const zone = Math.min(EDGE_SCROLL_ZONE, (bottom - top) / 2);
+  if (y - top < zone) return -speed(y - top);
+  if (bottom - y < zone) return speed(bottom - y);
+  return 0;
 }

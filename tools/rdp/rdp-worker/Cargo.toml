@@ -1,6 +1,6 @@
 [package]
 name = "rdp-worker"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.90"
@@ -8,7 +8,7 @@ description = "Proces pomocniczy z klientem RDP (IronRDP) komunikujący się z a
 
 [dependencies]
 anyhow = "1.0.104"
-ironrdp = { version = "0.17", features = ["connector", "session", "graphics", "pdu", "input", "dvc", "displaycontrol", "svc", "cliprdr"] }
+ironrdp = { version = "0.17", features = ["connector", "session", "graphics", "pdu", "input", "dvc", "displaycontrol", "svc", "cliprdr", "rdpdr", "rdpsnd"] }
 ironrdp-blocking = "0.10"
 ironrdp-graphics = "0.9"
 # Kanał WebAuthn ([MS-RDPEWA], przekierowanie kluczy bezpieczeństwa) istnieje tylko dla nowszego stosu
@@ -25,8 +25,10 @@ tokio-rustls = "0.26"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 
 # Operacje WebAuthn wykonuje systemowe API Windows (okno "Zabezpieczenia Windows", klucz albo Windows Hello).
+# Czytniki kart inteligentnych obsługuje usługa kart Windows (WinSCard) przez bibliotekę `pcsc`.
 [target.'cfg(windows)'.dependencies]
 ironrdp-rdpewa-native = "0.2"
+pcsc = "2.9"
 
 [dev-dependencies]
 socket2 = { version = "0.6", features = ["all"] }
