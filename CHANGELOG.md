@@ -2,14 +2,21 @@
 
 Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `wydanie`).
 
-## Niewydane
+## 0.1.5 - 2026-11-17
 
-Zmiany na gałęzi roboczej, które wejdą do następnego wydania.
+Wydanie nadal wstępne: pakiety są niepodpisane.
+
+### Zmiany
 
 - Windows: sesje RDP nie urywają się już czasami błędem "Pokrywająca się operacja We/Wy jest w toku (os error 997)".
 - Drzewo hostów: podczas przeciągania hosta albo katalogu lista przewija się sama, gdy wskaźnik jest przy jej górnej albo dolnej krawędzi.
 - RDP na Windows: przekierowanie czytników kart inteligentnych do zdalnego pulpitu (zgłoszenie #3), włączane dla hosta albo katalogu polem "Karty inteligentne (RDP)", domyślnie wyłączone. Zdalny system widzi czytniki tego komputera, także klucz sprzętowy z interfejsem kart (np. YubiKey z włączonym CCID): certyfikaty PIV, logowanie kartą. Wariant "pod neutralnymi nazwami" jest dla programów, które pomijają czytniki z "YubiKey" w nazwie (KeePassXC). Serwer z włączonym przekierowaniem może wysyłać do karty dowolne polecenia, więc funkcja jest dla zaufanych serwerów. Nie była jeszcze sprawdzona z prawdziwym czytnikiem i serwerem; nie wiadomo, czy klucz podłączony po USB odpowie tą drogą na wyzwanie KeePassXC.
 - Skróty klawiszowe: nowe akcje do przypisania (połącz ponownie, duplikuj kartę, szukaj hosta, przejście do karty 1-9), edytowalny skrót kopiowania w terminalu SSH oraz możliwość wyłączenia skrótu. Nowe akcje nie mają skrótów domyślnych.
+
+### Pakiety
+
+- `multiremotemanager_0.1.5_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.1.5_amd64.deb` - pakiet dla Debiana i Ubuntu.
 
 ## 0.1.4 - 2026-11-17
 
