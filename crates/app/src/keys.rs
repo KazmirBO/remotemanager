@@ -245,7 +245,9 @@ mod platform {
 }
 
 /// Windows: hak `WH_KEYBOARD_LL` z crate'a `keygrab`, który trzyma go we własnym wątku z pętlą
-/// komunikatów (hak w wątku głównym system może zdjąć po cichu przy przycięciu interfejsu). Etapy
+/// komunikatów (hak w wątku głównym system może zdjąć po cichu przy przycięciu interfejsu). Hak
+/// działa tylko dlatego, że `main.rs` wyłącza rejestrację surowego wejścia klawiatury
+/// (`device_event_filter`): z nią system nie woła haka własnego procesu przy aktywnym oknie. Etapy
 /// trafiają do dziennika diagnostycznego jako `RDP: klawisze systemowe: ...`, bez treści klawiszy.
 #[cfg(windows)]
 mod platform {

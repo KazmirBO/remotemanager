@@ -24,6 +24,12 @@ fn link_in(args: impl IntoIterator<Item = String>) -> Option<String> {
 
 fn main() {
     tauri::Builder::default()
+        // Wyłącza rejestrację surowego wejścia (Raw Input) myszy i klawiatury, którą biblioteka okna
+        // robi domyślnie na Windows. Dopóki proces ma zarejestrowane surowe wejście klawiatury,
+        // system nie woła jego własnego haka `WH_KEYBOARD_LL`, gdy okno aplikacji jest aktywne, więc
+        // przechwytywanie klawiszy sesji RDP (crate `keygrab`) nie widziało żadnego klawisza.
+        // Aplikacja nie używa zdarzeń urządzeń; na pozostałych platformach ustawienie nic nie robi.
+        .device_event_filter(tauri::DeviceEventFilter::Always)
         // Musi być pierwsza: kolejne uruchomienie przekazuje link działającemu oknu i kończy się.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             use tauri::{Emitter, Manager};
