@@ -12,6 +12,7 @@ Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane.
 - Windows: przechwytywanie klawiszy w sesji RDP (Alt+Tab, klawisz Windows) działa od wersji 0.1.3, co potwierdził test na prawdziwej maszynie.
 - Windows: w trybie przechwytywania klawiszy prawy Shift działa w sesji RDP; wcześniej trafiał do sesji jako inny klawisz, więc np. prawy Shift+1 dawał 1.
 - Prawy przycisk myszy nie pokazuje już menu przeglądarki (Wstecz, Odśwież, Drukuj); zostaje ono w polach tekstowych i w terminalu, gdzie daje kopiowanie i wklejanie.
+- Karty sesji mają własne menu pod prawym przyciskiem myszy: połącz ponownie, duplikuj kartę, zamknij kartę, zamknij pozostałe, zamknij wszystkie.
 - Pasek kart przy wielu sesjach nie dostaje suwaków: karty zwężają się, a gdy się nie mieszczą, pasek przewija się kółkiem myszy.
 - Terminal SSH: Ctrl+Shift+C kopiuje zaznaczenie.
 

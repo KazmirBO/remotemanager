@@ -22,7 +22,7 @@
   import Unlock from './lib/Unlock.svelte';
   import { allowedWithModal, binding, matchAppAction } from './lib/shortcuts';
   import { api } from './lib/api';
-  import { applyTheme, closeTab, host as hostById, init, lockVault, modalOpen, notify, onLocked, openHost, refreshSync, ui } from './lib/store.svelte';
+  import { applyTheme, closeTab, host as hostById, init, lockVault, modalOpen, notify, onLocked, openHost, reconnect, refreshSync, ui } from './lib/store.svelte';
 
   type Dialog =
     | { kind: 'host'; host: HostView | null; folder: Id | null; prefill?: Prefill | null }
@@ -142,6 +142,21 @@
     e.preventDefault();
   }
 
+  // Menu karty pod prawym przyciskiem myszy.
+  let tabMenu = $state<{ x: number; y: number; tabId: string } | null>(null);
+  const menuTab = $derived(tabMenu ? ui.tabs.find((t) => t.id === tabMenu!.tabId) : undefined);
+  const menuTabHost = $derived(menuTab ? hostById(menuTab.hostId) : undefined);
+
+  function openTabMenu(e: MouseEvent, tabId: string) {
+    e.preventDefault();
+    tabMenu = { x: Math.min(e.clientX, innerWidth - 220), y: Math.min(e.clientY, innerHeight - 200), tabId };
+  }
+
+  /** Zamyka wszystkie karty poza wskazaną (`null` zamyka wszystkie). */
+  function closeTabsExcept(keep: string | null) {
+    for (const t of [...ui.tabs]) if (t.id !== keep) closeTab(t.id);
+  }
+
   // Pasek kart: karty zwężają się, a gdy i to nie wystarcza, pasek przewija się bez widocznego suwaka.
   let tabsEl = $state<HTMLDivElement>();
 
@@ -164,7 +179,16 @@
   });
 </script>
 
-<svelte:window onkeydown={keydown} oncontextmenu={contextmenu} />
+<!-- Prawy przycisk gdziekolwiek zamyka otwarte menu karty (faza przechwytywania), zanim karta otworzy nowe. -->
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === 'Escape') tabMenu = null;
+    keydown(e);
+  }}
+  onclick={() => (tabMenu = null)}
+  oncontextmenucapture={() => (tabMenu = null)}
+  oncontextmenu={contextmenu}
+/>
 
 {#if ui.phase === 'loading'}
   <div class="center muted">Ładowanie...</div>
@@ -184,7 +208,7 @@
     <main>
       <div class="tabs" role="tablist" aria-label="Sesje" bind:this={tabsEl} onwheel={tabsWheel}>
         {#each ui.tabs as t (t.id)}
-          <div class="tab" class:active={ui.activeTab === t.id} role="presentation" data-tab={t.id}>
+          <div class="tab" class:active={ui.activeTab === t.id} role="presentation" data-tab={t.id} oncontextmenu={(e) => openTabMenu(e, t.id)}>
             <button role="tab" aria-selected={ui.activeTab === t.id} title={t.title} onclick={() => (ui.activeTab = t.id)}>
               <span class="badge {t.protocol}">{t.protocol.toUpperCase()}</span> <span class="tab-title">{t.title}</span>
             </button>
@@ -267,6 +291,18 @@
 {/if}
 
 <PasswordPrompt />
+
+{#if tabMenu && menuTab}
+  {@const tab = menuTab}
+  <div class="menu" role="menu" style="left:{tabMenu.x}px; top:{tabMenu.y}px">
+    <button role="menuitem" onclick={() => reconnect(tab.id)}><Icon name="refresh" /> Połącz ponownie</button>
+    <button role="menuitem" disabled={!menuTabHost} onclick={() => menuTabHost && openHost(menuTabHost)}><Icon name="copy" /> Duplikuj kartę</button>
+    <hr />
+    <button role="menuitem" onclick={() => closeTab(tab.id)}><Icon name="close" /> Zamknij kartę</button>
+    <button role="menuitem" disabled={ui.tabs.length < 2} onclick={() => closeTabsExcept(tab.id)}><Icon name="close" /> Zamknij pozostałe</button>
+    <button role="menuitem" onclick={() => closeTabsExcept(null)}><Icon name="close" /> Zamknij wszystkie</button>
+  </div>
+{/if}
 
 {#if ui.notice}
   <!-- Błąd odróżnia ikona (kształt), nie sam kolor. -->
