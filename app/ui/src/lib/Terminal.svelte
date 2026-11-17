@@ -67,7 +67,24 @@
     // trzeba przepuścić jawnie: `false` oznacza, że xterm nie wyśle ich do serwera. Dlatego skróty
     // domyślne omijają klawisze sterujące powłoki (patrz `ACTIONS`). Akcje kontekstowe (zwolnienie
     // klawiszy RDP) tu nic nie znaczą i idą do powłoki.
-    term.attachCustomKeyEventHandler((e) => !matchAppAction(ui.doc?.settings, e));
+    // Ctrl+Shift+C kopiuje zaznaczenie, bo samo Ctrl+C przerywa polecenie w powłoce. Kombinacja nie
+    // idzie do serwera (dałaby właśnie Ctrl+C) ani do przeglądarki; skrót aplikacji przypisany do tej
+    // samej kombinacji ma pierwszeństwo.
+    const isCopy = (e: KeyboardEvent) => e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyC';
+    const copySelection = () => {
+      const text = term?.getSelection();
+      if (!text) return;
+      // Gdy schowek przeglądarki odmówi, zostaje polecenie dokumentu: xterm podaje w nim zaznaczenie.
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => document.execCommand('copy'));
+      else document.execCommand('copy');
+    };
+    term.attachCustomKeyEventHandler((e) => {
+      if (matchAppAction(ui.doc?.settings, e)) return false;
+      if (!isCopy(e)) return true;
+      e.preventDefault();
+      if (e.type === 'keydown' && !e.repeat) copySelection();
+      return false;
+    });
     term.onData((s) => sessionId && void sshWrite(sessionId, encoder.encode(s)));
     term.onBinary((s) => sessionId && void sshWrite(sessionId, Uint8Array.from(s, (c) => c.charCodeAt(0))));
 

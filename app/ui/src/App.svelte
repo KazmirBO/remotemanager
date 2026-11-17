@@ -132,9 +132,39 @@
       case 'settings': dialog = { kind: 'settings' }; break;
     }
   }
+
+  /** Menu przeglądarki (Wstecz, Odśwież, Drukuj) nie ma sensu w aplikacji, więc zostaje tylko tam,
+   * gdzie daje kopiowanie i wklejanie: w polach tekstowych i w terminalu (xterm podstawia pod
+   * wskaźnik własne pole tekstowe). Własne menu aplikacji (drzewo hostów) obsługują swoje elementy. */
+  function contextmenu(e: MouseEvent) {
+    const target = e.target;
+    if (target instanceof Element && target.closest('input, textarea, [contenteditable]')) return;
+    e.preventDefault();
+  }
+
+  // Pasek kart: karty zwężają się, a gdy i to nie wystarcza, pasek przewija się bez widocznego suwaka.
+  let tabsEl = $state<HTMLDivElement>();
+
+  /** Kółko myszy przewija pasek kart w poziomie, gdy karty się nie mieszczą. */
+  function tabsWheel(e: WheelEvent) {
+    if (!tabsEl || e.deltaY === 0 || tabsEl.scrollWidth <= tabsEl.clientWidth) return;
+    e.preventDefault();
+    tabsEl.scrollLeft += e.deltaY;
+  }
+
+  // Aktywna karta ma być widoczna także po przełączeniu skrótem albo otwarciu nowej sesji.
+  $effect(() => {
+    const id = ui.activeTab;
+    void ui.tabs.length;
+    if (!id) return;
+    queueMicrotask(() => {
+      const el = Array.from(tabsEl?.children ?? []).find((c) => (c as HTMLElement).dataset.tab === id);
+      el?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  });
 </script>
 
-<svelte:window onkeydown={keydown} />
+<svelte:window onkeydown={keydown} oncontextmenu={contextmenu} />
 
 {#if ui.phase === 'loading'}
   <div class="center muted">Ładowanie...</div>
@@ -152,18 +182,21 @@
       onLock={lockVault}
     />
     <main>
-      <div class="tabs" role="tablist" aria-label="Sesje">
+      <div class="tabs" role="tablist" aria-label="Sesje" bind:this={tabsEl} onwheel={tabsWheel}>
         {#each ui.tabs as t (t.id)}
-          <div class="tab" class:active={ui.activeTab === t.id} role="presentation">
-            <button role="tab" aria-selected={ui.activeTab === t.id} onclick={() => (ui.activeTab = t.id)}>
-              <span class="badge {t.protocol}">{t.protocol.toUpperCase()}</span> {t.title}
+          <div class="tab" class:active={ui.activeTab === t.id} role="presentation" data-tab={t.id}>
+            <button role="tab" aria-selected={ui.activeTab === t.id} title={t.title} onclick={() => (ui.activeTab = t.id)}>
+              <span class="badge {t.protocol}">{t.protocol.toUpperCase()}</span> <span class="tab-title">{t.title}</span>
             </button>
             <button class="icon-btn x" aria-label="Zamknij kartę {t.title}" onclick={() => closeTab(t.id)}><Icon name="close" size={14} /></button>
           </div>
         {/each}
-        <button class="icon-btn add" aria-label="Szybkie łączenie" title="Szybkie łączenie" onclick={() => (dialog = { kind: 'quick' })}>
-          <Icon name="plus" />
-        </button>
+        <!-- Przycisk zostaje przy prawej krawędzi także wtedy, gdy pasek kart jest przewinięty. -->
+        <div class="add">
+          <button class="icon-btn" aria-label="Szybkie łączenie" title="Szybkie łączenie" onclick={() => (dialog = { kind: 'quick' })}>
+            <Icon name="plus" />
+          </button>
+        </div>
       </div>
       <div class="stage">
         {#each ui.tabs as t (t.id)}
@@ -245,12 +278,21 @@
   .link-q { margin: 0; overflow-wrap: anywhere; }
   .shell { display: flex; height: 100%; }
   main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .tabs { height: 38px; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; align-items: stretch; overflow-x: auto; flex-shrink: 0; }
-  .tab { display: flex; align-items: center; border-right: 1px solid var(--border); padding-right: 4px; }
-  .tab > button[role='tab'] { background: transparent; border: none; height: 100%; padding: 0 8px 0 12px; display: flex; align-items: center; gap: 8px; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Suwak paska kart jest ukryty: widoczny zabierał wysokość paska i wywoływał drugi, pionowy.
+     Pasek przewija się kółkiem myszy, a aktywna karta sama wchodzi w widok (`scroll-padding-right`
+     zostawia miejsce na przyklejony przycisk szybkiego łączenia). */
+  .tabs { height: 38px; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; align-items: stretch; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; scroll-padding-right: 44px; flex-shrink: 0; }
+  .tabs::-webkit-scrollbar { display: none; }
+  /* Karty zwężają się do stałej szerokości minimalnej (odznaka, kilka znaków nazwy, przycisk zamknięcia);
+     nazwa jest ucinana wielokropkiem, a pełną pokazuje podpowiedź. */
+  .tab { display: flex; align-items: center; flex: 0 1 auto; min-width: 9.5rem; border-right: 1px solid var(--border); padding-right: 4px; }
+  .tab > button[role='tab'] { background: transparent; border: none; height: 100%; padding: 0 8px 0 12px; display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; max-width: 220px; white-space: nowrap; }
+  .tab > button[role='tab'] > .badge { flex-shrink: 0; }
+  .tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .tab > .x { flex-shrink: 0; }
   .tab.active { background: var(--terminal); box-shadow: inset 0 -2px 0 var(--accent); }
   .tab:not(.active):hover { background: var(--hover); }
-  .add { align-self: center; margin: 0 6px; }
+  .add { position: sticky; right: 0; flex-shrink: 0; display: flex; align-items: center; padding: 0 6px; background: var(--panel); }
   .stage { flex: 1; position: relative; background: var(--terminal); min-height: 0; }
   .welcome { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center; text-align: center; padding: 16px; }
   .welcome p { margin: 0; }
