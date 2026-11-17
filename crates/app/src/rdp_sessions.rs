@@ -4,7 +4,9 @@
 //! obrazu (`x,y,w,h` jako `u16 LE`, potem RGBA).
 
 use model::{Id, Protocol};
-use rdp::{ConnectParams, Event, FromWorker, LinkProfile, Pointer, RdpClient, ToWorker};
+use rdp::{
+    CardRedirect, ConnectParams, Event, FromWorker, LinkProfile, Pointer, RdpClient, ToWorker,
+};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::mpsc::channel;
@@ -80,6 +82,7 @@ pub async fn connect_rdp(
                 height: height.clamp(200, 8192),
                 profile: link_profile(r.fields.rdp_profile, doc.settings.rdp_profile),
                 webauthn: r.fields.rdp_webauthn.unwrap_or(false),
+                smartcard: card_redirect(r.fields.rdp_smartcard),
             })
         })
         .await?;
@@ -302,6 +305,15 @@ pub async fn connect_rdp(
     Ok(id)
 }
 
+/// Przekierowanie czytników kart: wyłączone, dopóki żaden poziom go nie ustawi.
+fn card_redirect(resolved: Option<model::CardRedirect>) -> CardRedirect {
+    match resolved.unwrap_or_default() {
+        model::CardRedirect::Off => CardRedirect::Off,
+        model::CardRedirect::On => CardRedirect::On,
+        model::CardRedirect::Neutral => CardRedirect::Neutral,
+    }
+}
+
 /// Profil łącza sesji: wartość rozwiązana dla hosta, a gdy żaden poziom jej nie ustawia, domyślna z ustawień.
 fn link_profile(resolved: Option<model::LinkProfile>, default: model::LinkProfile) -> LinkProfile {
     match resolved.unwrap_or(default) {
@@ -498,6 +510,15 @@ mod tests {
             serde_json::to_string(&FromWorker::PointerHidden).unwrap(),
             r#"{"t":"pointer_hidden"}"#
         );
+    }
+
+    #[test]
+    fn card_redirect_is_off_unless_set() {
+        use model::CardRedirect as M;
+        assert_eq!(card_redirect(None), CardRedirect::Off);
+        assert_eq!(card_redirect(Some(M::Off)), CardRedirect::Off);
+        assert_eq!(card_redirect(Some(M::On)), CardRedirect::On);
+        assert_eq!(card_redirect(Some(M::Neutral)), CardRedirect::Neutral);
     }
 
     #[test]

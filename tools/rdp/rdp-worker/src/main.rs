@@ -24,10 +24,12 @@ use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::session::fast_path;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, SessionError};
+use ironrdp::svc::SvcProcessorMessages;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::{DecodedPointer, PointerError};
 use rdp_proto::{
-    ClipKind, ConnectParams, FromWorker, Image, LinkProfile, Message, Pointer, ToWorker,
+    CardRedirect, ClipKind, ConnectParams, FromWorker, Image, LinkProfile, Message, Pointer,
+    ToWorker,
 };
 use sha2::{Digest as _, Sha256};
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
@@ -36,6 +38,11 @@ use tokio_rustls::rustls;
 type Tls = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 mod clip;
 mod memlimit;
+// Poza Windows nie ma usługi kart, więc tam moduł pracuje tylko w testach.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod scard;
+#[cfg(windows)]
+mod scard_pcsc;
 mod webauthn;
 
 type Framed = ironrdp_blocking::Framed<Tls>;
@@ -184,8 +191,38 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
     if webauthn_listener.is_some() {
         log("WebAuthn: przekierowanie kluczy bezpieczeństwa włączone dla tej sesji");
     }
-    let (result, mut framed) = connect(&config, &params, kerberos, rx, clip_tx, webauthn_listener)
-        .context("połączenie")?;
+    // Przekierowanie czytników kart: kanały powstają tylko dla hostów z włączonym ustawieniem i tylko
+    // tam, gdzie jest usługa kart (Windows). Bez nich sesja działa jak dotąd.
+    let (scard_tx, scard_rx) = mpsc::channel::<scard::Reply>();
+    let smartcard = match params.smartcard {
+        CardRedirect::Off => None,
+        mode => {
+            let neutral = mode == CardRedirect::Neutral;
+            let channels = smartcard_channels(neutral, scard_tx);
+            if channels.is_some() {
+                log(format!(
+                    "karty: przekierowanie czytników włączone dla tej sesji (nazwy {})",
+                    if neutral { "neutralne" } else { "prawdziwe" }
+                ));
+            } else {
+                emit(&FromWorker::Notice {
+                    message: "Przekierowanie czytników kart działa tylko w aplikacji na Windows."
+                        .into(),
+                });
+            }
+            channels
+        }
+    };
+    let (result, mut framed) = connect(
+        &config,
+        &params,
+        kerberos,
+        rx,
+        clip_tx,
+        webauthn_listener,
+        smartcard,
+    )
+    .context("połączenie")?;
     set_timeout(&framed, POLL);
 
     let factory =
@@ -272,6 +309,18 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
                         .context("wysyłka odpowiedzi WebAuthn")?;
                 }
                 Err(e) => log(format!("WebAuthn: nie udało się zakodować odpowiedzi: {e}")),
+            }
+        }
+
+        // Odpowiedzi usługi kart gotowe po czasie (karta odpowiedziała albo ktoś dotknął klucza).
+        // Każda idzie osobno: błąd kodowania jednej trafia do dziennika i nie zabiera pozostałych.
+        while let Ok(reply) = scard_rx.try_recv() {
+            let messages = SvcProcessorMessages::<scard::Channel>::new(vec![scard::encode(reply)]);
+            match stage.process_svc_processor_messages(messages) {
+                Ok(frame) => framed
+                    .write_all(&frame)
+                    .context("wysyłka odpowiedzi czytnika kart")?,
+                Err(e) => log(format!("karty: nie udało się zakodować odpowiedzi: {e}")),
             }
         }
 
@@ -1033,6 +1082,29 @@ fn webauthn_handlers() -> Option<webauthn::HandlerFactory> {
     None
 }
 
+/// Kanały przekierowania czytników kart: `rdpdr` z usługą kart Windows i wymagany obok niego
+/// kanał dźwięku. `neutral` pokazuje serwerowi czytniki pod neutralnymi nazwami.
+#[cfg(windows)]
+fn smartcard_channels(
+    neutral: bool,
+    replies: mpsc::Sender<scard::Reply>,
+) -> Option<(scard::Channel, scard::Sound)> {
+    let engine = scard::Engine::new(scard_pcsc::System, replies, neutral);
+    Some((
+        scard::Channel::new(scard::Backend::new(engine), hostname()),
+        scard::Sound::new(),
+    ))
+}
+
+/// Poza Windows nie ma usługi kart, więc kanały nie są rejestrowane.
+#[cfg(not(windows))]
+fn smartcard_channels(
+    _neutral: bool,
+    _replies: mpsc::Sender<scard::Reply>,
+) -> Option<(scard::Channel, scard::Sound)> {
+    None
+}
+
 fn connect(
     config: &connector::Config,
     p: &ConnectParams,
@@ -1040,6 +1112,7 @@ fn connect(
     rx: &Receiver<ToWorker>,
     clip_tx: mpsc::Sender<clip::ClipEvent>,
     webauthn: Option<webauthn::Listener>,
+    smartcard: Option<(scard::Channel, scard::Sound)>,
 ) -> anyhow::Result<(ConnectionResult, Framed)> {
     let addrs: Vec<_> = (p.host.as_str(), p.port)
         .to_socket_addrs()
@@ -1080,6 +1153,11 @@ fn connect(
             tx: clip_tx,
             tmp: std::env::temp_dir().to_string_lossy().into_owned(),
         })));
+    if let Some((cards, sound)) = smartcard {
+        connector = connector
+            .with_static_channel(sound)
+            .with_static_channel(cards);
+    }
     let should_upgrade =
         ironrdp_blocking::connect_begin(&mut framed, &mut connector).context("negocjacja")?;
 
@@ -1516,6 +1594,7 @@ mod tests {
             height: 600,
             profile: LinkProfile::Slow,
             webauthn: false,
+            smartcard: rdp_proto::CardRedirect::Off,
         });
         assert!(c.enable_server_pointer);
         assert!(!c.pointer_software_rendering);

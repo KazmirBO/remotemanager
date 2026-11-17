@@ -433,6 +433,7 @@ mod tests {
             height: 600,
             profile: rdp::LinkProfile::Fast,
             webauthn: false,
+            smartcard: rdp::CardRedirect::Off,
         };
         let mut attempts = 0;
         let client = loop {

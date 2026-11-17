@@ -33,6 +33,8 @@
   const profileHint = $derived(inherited(folders, startFolder, 'rdp_profile'));
   const kerberosHint = $derived(inherited(folders, startFolder, 'rdp_kerberos'));
   const webauthnHint = $derived(inherited(folders, startFolder, 'rdp_webauthn'));
+  const cardName = (v: unknown) => (v === 'on' ? 'tak' : v === 'neutral' ? 'neutralne nazwy' : 'nie');
+  const cardHint = $derived(inherited(folders, startFolder, 'rdp_smartcard'));
 </script>
 
 <div class="field">
@@ -116,6 +118,20 @@
       <span class="hint"><Icon name="route" size={12} /> Dziedziczone z „{webauthnHint.from}”: {webauthnHint.value ? 'tak' : 'nie'}</span>
     {/if}
     <span class="hint">Zdalny pulpit może wtedy prosić o potwierdzenie logowania kluczem (np. YubiKey) podłączonym do tego komputera; każde użycie potwierdzasz w oknie systemu. Włączaj tylko dla zaufanych serwerów. Działa w aplikacji na Windows, dotyczy nowych połączeń.</span>
+  </div>
+  <div class="field">
+    <label for="f-smartcard">Karty inteligentne (RDP)</label>
+    <select id="f-smartcard" value={fields.rdp_smartcard ?? 'inherit'}
+      onchange={(e) => { const v = e.currentTarget.value; fields.rdp_smartcard = v === 'inherit' ? null : (v as 'off' | 'on' | 'neutral'); }}>
+      <option value="inherit">Dziedzicz ({cardName(cardHint?.value)})</option>
+      <option value="on">Przekierowuj czytniki</option>
+      <option value="neutral">Przekierowuj pod neutralnymi nazwami</option>
+      <option value="off">Nie przekierowuj</option>
+    </select>
+    {#if fields.rdp_smartcard === null && cardHint}
+      <span class="hint"><Icon name="route" size={12} /> Dziedziczone z „{cardHint.from}”: {cardName(cardHint.value)}</span>
+    {/if}
+    <span class="hint">Zdalny pulpit widzi wtedy czytniki kart tego komputera, także klucz sprzętowy z interfejsem kart (np. YubiKey z włączonym CCID). Neutralne nazwy są dla programów, które pomijają czytniki z „YubiKey” w nazwie (KeePassXC). Serwer może wysyłać do karty dowolne polecenia, więc włączaj tylko dla zaufanych serwerów. Działa w aplikacji na Windows, dotyczy nowych połączeń.</span>
   </div>
   {#if fields.rdp_kerberos ?? kerberosHint?.value}
     <div class="field">

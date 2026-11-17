@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::Sender;
 
 pub use rdp_proto::{
-    ClipKind, ConnectParams, FromWorker, Image, LinkProfile, Pointer, RemoteFile, ToWorker, clipfmt,
+    CardRedirect, ClipKind, ConnectParams, FromWorker, Image, LinkProfile, Pointer, RemoteFile,
+    ToWorker, clipfmt,
 };
 
 /// Pojemność kolejki zdarzeń między wątkiem czytającym stdout procesu a odbiorcą. Kolejka jest

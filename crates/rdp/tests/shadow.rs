@@ -166,6 +166,7 @@ fn params_with(s: &Server, password: &str, profile: LinkProfile) -> ConnectParam
         height: 200,
         profile,
         webauthn: false,
+        smartcard: rdp::CardRedirect::Off,
     }
 }
 

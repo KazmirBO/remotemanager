@@ -8,6 +8,7 @@ Zmiany na gałęzi roboczej, które wejdą do następnego wydania.
 
 - Windows: sesje RDP nie urywają się już czasami błędem "Pokrywająca się operacja We/Wy jest w toku (os error 997)".
 - Drzewo hostów: podczas przeciągania hosta albo katalogu lista przewija się sama, gdy wskaźnik jest przy jej górnej albo dolnej krawędzi.
+- RDP na Windows: przekierowanie czytników kart inteligentnych do zdalnego pulpitu (zgłoszenie #3), włączane dla hosta albo katalogu polem "Karty inteligentne (RDP)", domyślnie wyłączone. Zdalny system widzi czytniki tego komputera, także klucz sprzętowy z interfejsem kart (np. YubiKey z włączonym CCID): certyfikaty PIV, logowanie kartą. Wariant "pod neutralnymi nazwami" jest dla programów, które pomijają czytniki z "YubiKey" w nazwie (KeePassXC). Serwer z włączonym przekierowaniem może wysyłać do karty dowolne polecenia, więc funkcja jest dla zaufanych serwerów. Nie była jeszcze sprawdzona z prawdziwym czytnikiem i serwerem; nie wiadomo, czy klucz podłączony po USB odpowie tą drogą na wyzwanie KeePassXC.
 - Skróty klawiszowe: nowe akcje do przypisania (połącz ponownie, duplikuj kartę, szukaj hosta, przejście do karty 1-9), edytowalny skrót kopiowania w terminalu SSH oraz możliwość wyłączenia skrótu. Nowe akcje nie mają skrótów domyślnych.
 
 ## 0.1.4 - 2026-11-17
