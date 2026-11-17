@@ -17,7 +17,8 @@ describe('parseRelease', () => {
     expect(parseRelease('')).toBeNull();
   });
   it('każdy skrót domyślny da się zamienić', () => {
-    for (const a of ACTIONS) expect(parseRelease(a.default), a.id).not.toBeNull();
+    // Akcje bez skrótu domyślnego (pusty tekst) nie mają czego zamieniać.
+    for (const a of ACTIONS.filter((x) => x.default)) expect(parseRelease(a.default), a.id).not.toBeNull();
   });
 });
 

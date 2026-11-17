@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ACTIONS, allowedWithModal, binding, comboFromEvent, findConflict, matchAction, validCombo } from './shortcuts';
+import { ACTIONS, allowedWithModal, binding, comboFromEvent, findConflict, matchAction, validCombo, OFF, REQUIRED_ACTIONS, tabNumber, matchAppAction } from './shortcuts';
 import type { Settings } from './api';
 
 const ev = (code: string, mods: Partial<Record<'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey', boolean>> = {}) => ({
@@ -63,9 +63,32 @@ describe('bindings', () => {
     for (const a of ACTIONS.filter((x) => x.id !== 'lock')) expect(allowedWithModal(a.id), a.id).toBe(false);
   });
   it('domyślne skróty są unikalne i poprawne', () => {
-    const seen = new Set(ACTIONS.map((a) => a.default));
-    expect(seen.size).toBe(ACTIONS.length);
-    for (const a of ACTIONS) expect(validCombo(a.default), a.id).toBe(true);
+    const withDefault = ACTIONS.filter((a) => a.default);
+    const seen = new Set(withDefault.map((a) => a.default));
+    expect(seen.size).toBe(withDefault.length);
+    for (const a of withDefault) expect(validCombo(a.default), a.id).toBe(true);
+  });
+  it('akcja bez skrótu domyślnego działa dopiero po przypisaniu', () => {
+    expect(binding(settings({}), 'duplicate_tab')).toBe('');
+    expect(matchAction(settings({}), ev('KeyD', { ctrlKey: true, shiftKey: true }))).toBeNull();
+    const s = settings({ duplicate_tab: 'Ctrl+Shift+D', tab_3: 'Alt+3' });
+    expect(matchAction(s, ev('KeyD', { ctrlKey: true, shiftKey: true }))).toBe('duplicate_tab');
+    expect(matchAction(s, ev('Digit3', { altKey: true }))).toBe('tab_3');
+    expect(tabNumber('tab_3')).toBe(3);
+    expect(tabNumber('next_tab')).toBeNull();
+  });
+  it('wyłączony skrót nie działa i nie koliduje, a zwalniania klawiszy nie da się wyłączyć', () => {
+    const s = settings({ quick_connect: OFF, release_keys: OFF });
+    expect(binding(s, 'quick_connect')).toBe('');
+    expect(matchAction(s, ev('KeyK', { ctrlKey: true, shiftKey: true }))).toBeNull();
+    expect(findConflict(s, 'lock', 'Ctrl+Shift+K')).toBeNull();
+    expect(binding(s, 'release_keys')).toBe('Ctrl+Shift+F12');
+    expect(REQUIRED_ACTIONS.has('release_keys')).toBe(true);
+  });
+  it('kopiowanie w terminalu jest akcją kontekstową', () => {
+    const copy = ev('KeyC', { ctrlKey: true, shiftKey: true });
+    expect(matchAction(settings({}), copy)).toBe('copy_terminal');
+    expect(matchAppAction(settings({}), copy)).toBeNull();
   });
   it('domyślne skróty nie zabierają klawiszy sterujących powłoki', () => {
     // Ctrl+litera trafia do zdalnej powłoki (np. Ctrl+K w bashu i nano), więc nie może być domyślnym skrótem.

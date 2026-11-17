@@ -2,7 +2,7 @@
   import { api, type Settings } from './api';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
-  import { ACTIONS, binding, comboFromEvent, findConflict, hasScancode, validCombo } from './shortcuts';
+  import { ACTIONS, OFF, REQUIRED_ACTIONS, binding, comboFromEvent, findConflict, hasScancode, validCombo } from './shortcuts';
   import { applyTheme, notify, refresh, ui } from './store.svelte';
 
   let { onclose }: { onclose: () => void } = $props();
@@ -46,6 +46,14 @@
     delete settings.shortcuts[id];
   }
 
+  /** Wyłącza skrót akcji. Akcja bez skrótu domyślnego wraca po prostu do stanu "brak". */
+  function disable(id: string) {
+    const def = ACTIONS.find((a) => a.id === id)!.default;
+    if (def) settings.shortcuts[id] = OFF;
+    else delete settings.shortcuts[id];
+    error = '';
+  }
+
   async function save() {
     busy = true;
     try {
@@ -65,15 +73,18 @@
 <svelte:window onkeydowncapture={capture} />
 
 <Modal title="Skróty klawiszowe" {onclose} width={520}>
-  <p class="muted note">Kliknij „Zmień” i naciśnij nową kombinację. Esc anuluje.</p>
+  <p class="muted note">Kliknij „Zmień” i naciśnij nową kombinację. Esc anuluje. Przypisany skrót działa także w sesjach, więc ta kombinacja przestaje docierać do zdalnej powłoki i pulpitu (poza trybem przechwytywania klawiszy RDP).</p>
   <ul>
     {#each ACTIONS as a (a.id)}
       <li>
         <span>{a.label}</span>
         <span class="right">
-          <kbd class:capturing={capturing === a.id}>{capturing === a.id ? 'Naciśnij skrót...' : binding(settings, a.id)}</kbd>
+          <kbd class:capturing={capturing === a.id} class:none={capturing !== a.id && !binding(settings, a.id)}>{capturing === a.id ? 'Naciśnij skrót...' : binding(settings, a.id) || 'brak'}</kbd>
           <button class="btn compact" onclick={() => { capturing = a.id; error = ''; }}>Zmień</button>
-          <button class="icon-btn" aria-label="Przywróć domyślny skrót: {a.label}" title="Przywróć domyślny" disabled={!settings.shortcuts[a.id]} onclick={() => reset(a.id)}>
+          <button class="icon-btn" aria-label="Wyłącz skrót: {a.label}" title="Wyłącz skrót" disabled={REQUIRED_ACTIONS.has(a.id) || !binding(settings, a.id)} onclick={() => disable(a.id)}>
+            <Icon name="close" size={14} />
+          </button>
+          <button class="icon-btn" aria-label="Przywróć domyślny skrót: {a.label}" title={a.default ? `Przywróć domyślny (${a.default})` : 'Przywróć domyślny (brak)'} disabled={!settings.shortcuts[a.id]} onclick={() => reset(a.id)}>
             <Icon name="refresh" size={14} />
           </button>
         </span>
@@ -89,11 +100,14 @@
 
 <style>
   .note { font-size: 12px; margin: 0 0 12px; }
-  ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-control); }
+  /* Lista akcji jest długa: przewija się w oknie, a stopka z przyciskami zostaje widoczna. */
+  ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-control); max-height: min(56vh, 520px); overflow-y: auto; }
   li { display: flex; justify-content: space-between; align-items: center; min-height: 48px; padding: 0 12px; gap: 12px; }
   li + li { border-top: 1px solid var(--border); }
   .right { display: flex; align-items: center; gap: 8px; }
   kbd { font-family: var(--font-mono); font-size: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-badge); padding: 3px 8px; background: var(--surface); min-width: 70px; text-align: center; }
   kbd.capturing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  /* Brak skrótu: obramowanie przerywane i przygaszony tekst, nie sam kolor. */
+  kbd.none { border-style: dashed; color: var(--text-muted); background: transparent; }
   .error { font-size: 13px; display: flex; gap: 6px; align-items: center; margin-top: 12px; }
 </style>

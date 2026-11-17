@@ -2,6 +2,14 @@
 
 Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `wydanie`).
 
+## Niewydane
+
+Zmiany na gałęzi roboczej, które wejdą do następnego wydania.
+
+- Windows: sesje RDP nie urywają się już czasami błędem "Pokrywająca się operacja We/Wy jest w toku (os error 997)".
+- Drzewo hostów: podczas przeciągania hosta albo katalogu lista przewija się sama, gdy wskaźnik jest przy jej górnej albo dolnej krawędzi.
+- Skróty klawiszowe: nowe akcje do przypisania (połącz ponownie, duplikuj kartę, szukaj hosta, przejście do karty 1-9), edytowalny skrót kopiowania w terminalu SSH oraz możliwość wyłączenia skrótu. Nowe akcje nie mają skrótów domyślnych.
+
 ## 0.1.4 - 2026-11-17
 
 Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane.

@@ -4,7 +4,7 @@
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
   import { notify, openHost, refresh, ui } from './store.svelte';
-  import { buildTree, descendantIds, matches, type FolderNode } from './tree';
+  import { buildTree, descendantIds, edgeScrollSpeed, matches, type FolderNode } from './tree';
 
   let {
     onNewHost, onNewFolder, onEditHost, onEditFolder, onSettings, onSync, onLock,
@@ -117,6 +117,27 @@
   function dragEnd() {
     dragging = null;
     dropTarget = null;
+    scrollSpeed = 0;
+  }
+
+  // Przewijanie listy podczas przeciągania: przeglądarka nie dostarcza wtedy zdarzeń kółka myszy, więc
+  // lista przesuwa się sama, gdy przeciągany element jest przy jej górnej albo dolnej krawędzi.
+  let treeEl: HTMLDivElement;
+  let scrollSpeed = 0;
+  let scrollFrame = 0;
+
+  function dragScroll(e: DragEvent) {
+    if (!dragging) return;
+    const r = treeEl.getBoundingClientRect();
+    scrollSpeed = edgeScrollSpeed(e.clientY, r.top, r.bottom);
+    if (scrollSpeed && !scrollFrame) scrollFrame = requestAnimationFrame(scrollStep);
+  }
+
+  function scrollStep() {
+    scrollFrame = 0;
+    if (!dragging || !scrollSpeed) return;
+    treeEl.scrollTop += scrollSpeed;
+    scrollFrame = requestAnimationFrame(scrollStep);
   }
   function dragOver(e: DragEvent, target: Id | 'root') {
     e.stopPropagation();
@@ -134,6 +155,7 @@
     e.stopPropagation();
     dropTarget = null;
     dragging = null;
+    scrollSpeed = 0;
     let payload: { kind: 'host' | 'folder'; id: Id };
     try { payload = JSON.parse(e.dataTransfer?.getData('text/plain') ?? ''); } catch { return; }
     const dest = target === 'root' ? null : target;
@@ -229,12 +251,13 @@
   </div>
   <div class="search label">
     <Icon name="search" size={14} />
-    <input type="text" bind:value={query} placeholder="Szukaj" aria-label="Szukaj hostów" />
+    <input id="host-search" type="text" bind:value={query} placeholder="Szukaj" aria-label="Szukaj hostów" />
   </div>
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="tree" class:drop={dropTarget === 'root'} role="tree" tabindex="-1"
+    class="tree" class:drop={dropTarget === 'root'} role="tree" tabindex="-1" bind:this={treeEl}
+    ondragovercapture={dragScroll}
     ondragover={(e) => dragOver(e, 'root')} ondragleave={() => (dropTarget = null)} ondrop={(e) => drop(e, 'root')}
     oncontextmenu={(e) => e.target === e.currentTarget && openMenu(e, null)}
   >

@@ -5,7 +5,7 @@
   import { WebglAddon } from '@xterm/addon-webgl';
   import { api, connectSsh, sshWrite, type Id } from './api';
   import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsPassword, reconnect, requestPassword, ui } from './store.svelte';
-  import { matchAppAction } from './shortcuts';
+  import { matchAction, matchAppAction } from './shortcuts';
   import { inherited } from './tree';
   import { terminalTheme } from './terminalThemes';
   import Icon from './Icon.svelte';
@@ -67,10 +67,10 @@
     // trzeba przepuścić jawnie: `false` oznacza, że xterm nie wyśle ich do serwera. Dlatego skróty
     // domyślne omijają klawisze sterujące powłoki (patrz `ACTIONS`). Akcje kontekstowe (zwolnienie
     // klawiszy RDP) tu nic nie znaczą i idą do powłoki.
-    // Ctrl+Shift+C kopiuje zaznaczenie, bo samo Ctrl+C przerywa polecenie w powłoce. Kombinacja nie
-    // idzie do serwera (dałaby właśnie Ctrl+C) ani do przeglądarki; skrót aplikacji przypisany do tej
-    // samej kombinacji ma pierwszeństwo.
-    const isCopy = (e: KeyboardEvent) => e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyC';
+    // Kopiowanie zaznaczenia ma własny, edytowalny skrót (akcja `copy_terminal`, domyślnie
+    // Ctrl+Shift+C), bo samo Ctrl+C przerywa polecenie w powłoce. Kombinacja nie idzie do serwera
+    // (Ctrl+Shift+C dałoby właśnie Ctrl+C) ani do przeglądarki.
+    const isCopy = (e: KeyboardEvent) => matchAction(ui.doc?.settings, e) === 'copy_terminal';
     const copySelection = () => {
       const text = term?.getSelection();
       if (!text) return;
