@@ -2,6 +2,21 @@
 
 Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `wydanie`).
 
+## 0.1.1 - 2026-11-17
+
+Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane. Lista rzeczy niesprawdzonych w działaniu z wersji 0.1.0 pozostaje aktualna.
+
+### Zmiany
+
+- Panel z przyciskami w widoku RDP można przesunąć uchwytem po jego lewej stronie; wcześniej zasłaniał elementy zdalnego pulpitu. Położenie jest wspólne dla kart i zapamiętane na danej maszynie, a dwukrotne kliknięcie uchwytu przywraca miejsce domyślne.
+- Windows: hak klawiatury trybu przechwytywania działa we własnym wątku. To poprawka do zgłoszenia, że w tym trybie Alt+Tab działał lokalnie, a klawisz Windows po obu stronach naraz. Nie została jeszcze potwierdzona na Windows.
+- Dziennik diagnostyczny ma wpisy `RDP: klawisze systemowe: ...` (hak założony, zwolniony z powodem, zdjęty), bez treści klawiszy.
+
+### Pakiety
+
+- `multiremotemanager_0.1.1_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.1.1_amd64.deb` - pakiet dla Debiana i Ubuntu.
+
 ## 0.1.0 - 2026-11-16
 
 Pierwsze wydanie wstępne. Wczesna wersja rozwojowa: pakiety są niepodpisane i nie były dotąd uruchamiane poza środowiskiem budowania, a część funkcji czeka na sprawdzenie w działaniu (lista niżej).
