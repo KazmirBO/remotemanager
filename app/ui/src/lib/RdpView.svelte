@@ -3,15 +3,17 @@
   import { listen } from '@tauri-apps/api/event';
   import { connectRdp, rdpClipboardFocus, rdpClose, rdpGrabKeys, rdpSend, type Id, type RdpControl } from './api';
   import Icon from './Icon.svelte';
+  import { DEFAULT_BAR, anchorBar, barStyle, clampBar } from './rdpBar';
   import { desktopSize } from './rdpSize';
   import { scancodeFor } from './scancodes';
   import { createSerialQueue, grabActive, grabWanted, keyRoute, parseRelease } from './rdpKeys';
   import { validPointer } from './rdpPointer';
   import { binding, matchAction } from './shortcuts';
-  import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsPassword, notify, reconnect, requestPassword, ui } from './store.svelte';
+  import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsPassword, notify, reconnect, requestPassword, setRdpBar, ui } from './store.svelte';
 
   let { tabId, hostId, active }: { tabId: string; hostId: Id; active: boolean } = $props();
 
+  let wrap: HTMLDivElement;
   let stage: HTMLDivElement;
   let canvas: HTMLCanvasElement;
   let status = $state<'connecting' | 'connected' | 'closed' | 'error'>('connecting');
@@ -134,6 +136,52 @@
   const room = () => ({ width: stage.offsetWidth, height: stage.offsetHeight });
 
   let fullscreen = $state(false);
+
+  // Panel z przyciskami da się przesunąć uchwytem, bo w stałym miejscu zasłaniał elementy zdalnego
+  // pulpitu. Miejsce jest wspólne dla kart i zapamiętane (`ui.rdpBar`); `drag` to lewy górny róg
+  // panelu w trakcie przeciągania.
+  let bar = $state<HTMLDivElement>();
+  let barWidth = $state(0);
+  let barHeight = $state(0);
+  let drag = $state<{ left: number; top: number } | null>(null);
+  /** Punkt chwytu względem rogu panelu i to, czy panel faktycznie się przesunął. */
+  let grip = { dx: 0, dy: 0, moved: false };
+  const barCss = $derived(
+    drag ? `left: ${drag.left}px; top: ${drag.top}px;` : barStyle(ui.rdpBar, { width: barWidth, height: barHeight }),
+  );
+  const barSize = () => ({ width: bar?.offsetWidth ?? 0, height: bar?.offsetHeight ?? 0 });
+  const viewSize = () => ({ width: wrap.clientWidth, height: wrap.clientHeight });
+
+  function onGripDown(e: PointerEvent) {
+    if (e.button !== 0 || !bar) return;
+    const b = bar.getBoundingClientRect();
+    const w = wrap.getBoundingClientRect();
+    grip = { dx: e.clientX - b.left, dy: e.clientY - b.top, moved: false };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    drag = clampBar(b.left - w.left, b.top - w.top, barSize(), viewSize());
+  }
+
+  function onGripMove(e: PointerEvent) {
+    if (!drag) return;
+    const w = wrap.getBoundingClientRect();
+    const next = clampBar(e.clientX - w.left - grip.dx, e.clientY - w.top - grip.dy, barSize(), viewSize());
+    if (next.left === drag.left && next.top === drag.top) return;
+    grip.moved = true;
+    drag = next;
+  }
+
+  function onGripUp() {
+    if (!drag) return;
+    // Samo kliknięcie uchwytu niczego nie zapisuje.
+    if (grip.moved) setRdpBar(anchorBar(drag.left, drag.top, barSize(), viewSize()));
+    drag = null;
+    canvas.focus();
+  }
+
+  // Panel znika razem z połączeniem; przerwane przeciąganie nie może zostać jako jego położenie.
+  $effect(() => {
+    if (status !== 'connected') drag = null;
+  });
 
   // Tryb przechwytywania klawiszy. `manual` to wybór użytkownika dla tej sesji (przycisk albo skrót
   // zwalniający) i ma pierwszeństwo przed ustawieniem; `null` oznacza brak wyboru.
@@ -334,7 +382,7 @@
   nie stracić fokusu, więc żaden stan się nie zmienił; przejęcie włączamy tu ponownie, jeśli nadal jest chciane. -->
 <svelte:window onblur={releaseAll} onfocus={() => setGrab(grabbing)} />
 
-<div class="wrap" class:hidden={!active}>
+<div class="wrap" class:hidden={!active} bind:this={wrap}>
   <div class="stage" bind:this={stage}>
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <canvas
@@ -362,7 +410,22 @@
     ></canvas>
   </div>
   {#if status === 'connected'}
-    <div class="bar">
+    <div class="bar" class:dragging={drag !== null} style={barCss} bind:this={bar} bind:offsetWidth={barWidth} bind:offsetHeight={barHeight}>
+      <!-- Uchwyt jest tylko dla myszy: panel zasłania cele kliknięć, a klawiaturą się go nie omija. -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="grip"
+        aria-hidden="true"
+        title="Przeciągnij, aby przesunąć panel. Dwukrotne kliknięcie przywraca miejsce domyślne."
+        onpointerdown={onGripDown}
+        onpointermove={onGripMove}
+        onpointerup={onGripUp}
+        onpointercancel={onGripUp}
+        ondblclick={() => {
+          setRdpBar({ ...DEFAULT_BAR });
+          canvas.focus();
+        }}
+      ></div>
       <button class="icon-btn" title={fullscreen ? 'Wyjdź z pełnego ekranu' : 'Pełny ekran'} aria-label={fullscreen ? 'Wyjdź z pełnego ekranu' : 'Pełny ekran'} onclick={toggleFullscreen}>
         <Icon name="fullscreen" size={18} />
       </button>
@@ -409,11 +472,19 @@
   .stage { position: absolute; inset: 0; overflow: auto; }
   /* Bez `max-width`: obraz jest zawsze 1:1. */
   canvas { display: block; outline-offset: -2px; background: #000; cursor: default; }
-  .bar { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; padding: 4px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-control); opacity: 0.35; transition: opacity 0.15s; }
+  /* Miejsce panelu (krawędzie i odległości) ustawia styl elementu, patrz `barStyle`. */
+  .bar { position: absolute; display: flex; gap: 4px; padding: 4px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-control); opacity: 0.35; transition: opacity 0.15s; }
   /* Stan włączony: wypełnienie akcentem i pogrubione obramowanie, nie sam kolor. */
   .icon-btn.toggle.on { background: var(--accent); color: var(--on-accent); border-color: var(--text); box-shadow: inset 0 0 0 1px var(--on-accent); }
   .icon-btn.toggle.on:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
-  .bar:hover, .bar:focus-within { opacity: 1; }
+  .bar:hover, .bar:focus-within, .bar.dragging { opacity: 1; }
+  .bar.dragging { transition: none; }
+  /* Uchwyt: dwie kolumny kropek. `touch-action: none`, żeby przeciąganie dotykiem nie przewijało widoku. */
+  .grip { width: 12px; align-self: stretch; cursor: grab; touch-action: none; user-select: none; border-radius: var(--radius-badge);
+    background-image: radial-gradient(circle, var(--text-muted) 1px, transparent 1.5px), radial-gradient(circle, var(--text-muted) 1px, transparent 1.5px);
+    background-size: 4px 6px; background-repeat: repeat-y; background-position: 2px center, 7px center; }
+  .grip:hover { background-color: var(--hover); }
+  .bar.dragging .grip { cursor: grabbing; }
   .overlay { position: absolute; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--terminal) 80%, transparent); }
   .card { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 460px; text-align: center; padding: 24px; border: 1px solid var(--border-strong); border-radius: var(--radius-window); background: var(--panel); }
   .card p { margin: 0; overflow-wrap: anywhere; }

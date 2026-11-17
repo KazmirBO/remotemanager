@@ -244,7 +244,9 @@ mod platform {
     }
 }
 
-/// Windows: hak `WH_KEYBOARD_LL` zakładany w wątku głównym (ma pętlę komunikatów okna).
+/// Windows: hak `WH_KEYBOARD_LL` z crate'a `keygrab`, który trzyma go we własnym wątku z pętlą
+/// komunikatów (hak w wątku głównym system może zdjąć po cichu przy przycięciu interfejsu). Etapy
+/// trafiają do dziennika diagnostycznego jako `RDP: klawisze systemowe: ...`, bez treści klawiszy.
 #[cfg(windows)]
 mod platform {
     use super::*;
@@ -261,6 +263,7 @@ mod platform {
             .and_then(|w| w.hwnd().ok())
             .map(|h| h.0 as isize)
         else {
+            state.log("RDP: klawisze systemowe: nie znaleziono okna głównego");
             return false;
         };
         // `sink` jest wołany z funkcji haka: tylko wkłada zdarzenie do kolejki, bez blokowania.
@@ -278,9 +281,9 @@ mod platform {
             return false;
         }
         match rx.await {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => state.log("RDP: klawisze systemowe: hak założony"),
             Ok(Err(e)) => {
-                state.log(format!("RDP: przechwytywanie klawiszy systemowych: {e}"));
+                state.log(format!("RDP: klawisze systemowe: {e}"));
                 return false;
             }
             Err(_) => return false,
@@ -293,9 +296,14 @@ mod platform {
         let generation = state.keys.set(session, release_fn);
         let app = app.clone();
         std::thread::spawn(move || {
+            // Liczba przekazanych zdarzeń idzie do dziennika: zero przy zwolnieniu oznacza hak,
+            // który zwolnił się na pierwszym klawiszu.
+            let sent = std::cell::Cell::new(0u64);
+            let released = std::cell::Cell::new(false);
             forward_events(
                 events_rx,
                 |k| {
+                    sent.set(sent.get() + 1);
                     let _ = client.send(&ToWorker::Key {
                         scancode: k.scancode,
                         extended: k.extended,
@@ -303,6 +311,12 @@ mod platform {
                     });
                 },
                 |reason| {
+                    released.set(true);
+                    app.state::<AppState>().log(format!(
+                        "RDP: klawisze systemowe: hak zwolnił przechwytywanie (powód: {}), przekazanych zdarzeń: {}",
+                        reason_name(reason),
+                        sent.get()
+                    ));
                     // Zdarzenie tylko wtedy, gdy przechwytywanie nadal jest tym samym (sesja i
                     // generacja); zwolnione z zewnątrz albo zastąpione nowszym nie zgłasza powodu.
                     if app
@@ -320,6 +334,12 @@ mod platform {
                     }
                 },
             );
+            if !released.get() {
+                app.state::<AppState>().log(format!(
+                    "RDP: klawisze systemowe: hak zdjęty, przekazanych zdarzeń: {}",
+                    sent.get()
+                ));
+            }
         });
         true
     }
