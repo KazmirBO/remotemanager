@@ -29,6 +29,23 @@ pub struct RawKey {
     pub flags: u32,
 }
 
+impl RawKey {
+    /// Zdarzenie bez scancodu (wstrzyknięte samym kodem wirtualnym) uzupełnione wynikiem
+    /// `MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX)`: młodszy bajt to scancode, a starszy równy 0xE0
+    /// oznacza klawisz rozszerzony. Wynik 0 (brak odpowiednika) zostawia zdarzenie bez scancodu.
+    pub fn with_mapped_scancode(self, mapped: u32) -> Self {
+        Self {
+            scancode: mapped & 0xFF,
+            flags: if mapped >> 8 == 0xE0 {
+                self.flags | FLAG_EXTENDED
+            } else {
+                self.flags
+            },
+            ..self
+        }
+    }
+}
+
 /// Co hak ma zrobić z zdarzeniem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -250,6 +267,27 @@ mod tests {
     const CTRL: u32 = 0x11;
     const ALT: u32 = 0x12;
     const SHIFT: u32 = 0x10;
+
+    #[test]
+    fn mapped_scancode_fills_in_events_without_one() {
+        let raw = RawKey {
+            vk: 0x5B,
+            scancode: 0,
+            flags: FLAG_UP,
+        };
+        // Klawisz Windows: MapVirtualKeyW zwraca 0xE05B.
+        let win = raw.with_mapped_scancode(0xE05B);
+        assert_eq!((win.scancode, win.flags), (0x5B, FLAG_UP | FLAG_EXTENDED));
+        assert_eq!(translate(win), Translated::Key(0x5B, true));
+        // Zwykły klawisz bez znacznika rozszerzonego.
+        let plain = raw.with_mapped_scancode(0x1E);
+        assert_eq!((plain.scancode, plain.flags), (0x1E, FLAG_UP));
+        // Brak odpowiednika: zdarzenie zostaje nieobsługiwane i idzie do systemu.
+        assert_eq!(
+            translate(raw.with_mapped_scancode(0)),
+            Translated::Unsupported
+        );
+    }
 
     #[test]
     fn plain_key_is_swallowed_and_forwarded() {

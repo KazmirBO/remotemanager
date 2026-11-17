@@ -51,6 +51,21 @@ pub enum Event {
     Released(Released),
 }
 
+/// Liczniki pracy haka do diagnostyki. Nie zawierają treści klawiszy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// Zdarzenia klawiatury, które system przekazał funkcji haka.
+    pub calls: u64,
+    /// Zdarzenia zatrzymane (nie dotarły do systemu).
+    pub swallowed: u64,
+    /// Zdarzenia przepuszczone do systemu.
+    pub passed: u64,
+    /// Zdarzenia bez scancodu; scancode wzięty z układu klawiatury.
+    pub no_scancode: u64,
+    /// Zdarzenia wstrzyknięte programowo (np. przez program współdzielący klawiaturę).
+    pub injected: u64,
+}
+
 /// Odbiorca zdarzeń. Jest wołany bezpośrednio z funkcji haka, we własnym wątku haka, a system
 /// po cichu usuwa hak, którego wywołanie trwa zbyt długo (domyślnie ok. 300 ms, najwyżej 1 s).
 /// Dlatego implementacja MUSI być nieblokująca: bez I/O, bez czekania na blokadę i bez długich
@@ -110,10 +125,17 @@ pub fn start(window: isize, release: Option<Combo>, sink: Sink) -> Result<(), Er
     }
 }
 
-/// Wyłącza przechwytywanie; idempotentne. Po powrocie `sink` nie jest już wołany.
-pub fn stop() {
+/// Wyłącza przechwytywanie; idempotentne. Po powrocie `sink` nie jest już wołany. Zwraca liczniki
+/// zdjętego haka (`None`, gdy żaden hak nie był założony).
+pub fn stop() -> Option<Stats> {
     #[cfg(windows)]
-    win::stop();
+    {
+        win::stop()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 /// Czy przechwytywanie jest teraz aktywne, czyli hak istnieje i nadal zatrzymuje klawisze (po
