@@ -49,6 +49,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// i oczekiwanie na Display Control liczą się zegarem (`Instant`), nie obrotami pętli.
 const POLL: Duration = Duration::from_millis(5);
 const FLUSH_EVERY: Duration = Duration::from_millis(16);
+/// Kod systemu Windows `WSA_IO_PENDING` ("pokrywająca się operacja we/wy jest w toku").
+const WSA_IO_PENDING: i32 = 997;
+/// Tyle kolejnych odczytów może skończyć się `WSA_IO_PENDING`, zanim uznamy gniazdo za zepsute
+/// (z przerwą 1 ms po każdym to co najmniej 2 s bez żadnego udanego odczytu ani zwykłego limitu czasu).
+const MAX_PENDING_READS: u32 = 2000;
 /// Pierwsza sonda keepalive po tak długiej ciszy; potem co `KEEPALIVE_INTERVAL`. Bez tego pół-martwe
 /// połączenie (np. po zmianie sieci albo uśpieniu serwera) wisiałoby bez końca.
 const KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
@@ -214,6 +219,8 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
     let software_pointer = result.pointer_software_rendering;
     let mut share_id = result.share_id;
     let mut last_flush = Instant::now();
+    // Kolejne odczyty zakończone `WSA_IO_PENDING` (patrz `is_pending_read`).
+    let mut pending_reads = 0u32;
     // Prośba o zmianę rozdzielczości czekająca na gotowość kanału (rozmiar i chwila zgłoszenia).
     let mut pending_resize: Option<(u32, u32, Instant)> = None;
     let mut resize_refused = false;
@@ -300,6 +307,7 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
 
         match framed.read_pdu() {
             Ok((action, payload)) => {
+                pending_reads = 0;
                 let outs = match stage.process(&mut image, action, &payload) {
                     Ok(outs) => outs,
                     // Wadliwy kształt wskaźnika (np. 8 bpp, maska niezgodna z wymiarami) nie może
@@ -356,12 +364,14 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
                     });
                 }
             }
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
+            Err(e) if no_data_yet(&e, pending_reads) => {
+                if is_pending_read(&e) {
+                    // Krótka przerwa, żeby powtarzający się kod nie zamienił pętli w czekanie aktywne.
+                    pending_reads += 1;
+                    std::thread::sleep(Duration::from_millis(1));
+                } else {
+                    pending_reads = 0;
+                }
                 flush_all(&image, &mut dirty, &mut pointer);
                 last_flush = Instant::now();
             }
@@ -886,6 +896,24 @@ fn strips(data: &[u8], iw: u16, ih: u16, (l, t, r, b): Rect, max_bytes: usize) -
     out
 }
 
+/// Windows: gniazda biblioteki standardowej mają atrybut "overlapped", a odczyt z limitem czasu
+/// (`SO_RCVTIMEO`, nasze odpytywanie co `POLL`) bywa na nich przerywany w chwili, gdy system
+/// anuluje operację po upływie limitu. Zamiast przekroczenia czasu wraca wtedy `WSA_IO_PENDING`.
+/// To nie jest błąd połączenia: kolejny odczyt działa, a sesja kończona tym kodem urywała się
+/// "czasami", bez związku z serwerem.
+fn is_pending_read(e: &io::Error) -> bool {
+    cfg!(windows) && e.raw_os_error() == Some(WSA_IO_PENDING)
+}
+
+/// Czy błąd odczytu oznacza tylko, że na razie nie ma danych: limit czasu odpytywania albo
+/// `WSA_IO_PENDING`, o ile nie powtarza się bez końca (`pending_reads` to liczba kolejnych wystąpień).
+fn no_data_yet(e: &io::Error, pending_reads: u32) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    ) || (is_pending_read(e) && pending_reads < MAX_PENDING_READS)
+}
+
 fn set_timeout(framed: &Framed, d: Duration) {
     let _ = framed.get_inner().0.sock.set_read_timeout(Some(d));
 }
@@ -1179,6 +1207,23 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poll_timeouts_and_pending_reads_mean_no_data_yet() {
+        for kind in [io::ErrorKind::WouldBlock, io::ErrorKind::TimedOut] {
+            assert!(no_data_yet(&io::Error::from(kind), 0));
+        }
+        assert!(!no_data_yet(
+            &io::Error::from(io::ErrorKind::ConnectionReset),
+            0
+        ));
+        // Kod 997 znaczy "brak danych" tylko na Windows i tylko, dopóki nie powtarza się bez końca.
+        let pending = io::Error::from_raw_os_error(WSA_IO_PENDING);
+        assert_eq!(is_pending_read(&pending), cfg!(windows));
+        assert_eq!(no_data_yet(&pending, 0), cfg!(windows));
+        assert_eq!(no_data_yet(&pending, MAX_PENDING_READS - 1), cfg!(windows));
+        assert!(!no_data_yet(&pending, MAX_PENDING_READS));
+    }
 
     #[test]
     fn desktop_size_is_validated() {
