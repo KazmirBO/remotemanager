@@ -10,6 +10,7 @@ Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane.
 
 - Terminal SSH: po zakończeniu sesji (np. po `exit`) przyciski "Połącz ponownie" i "Zamknij kartę" znowu reagują na kliknięcia; wcześniej kliknięcie trafiało w terminal pod spodem.
 - Windows: przechwytywanie klawiszy w sesji RDP (Alt+Tab, klawisz Windows) działa od wersji 0.1.3, co potwierdził test na prawdziwej maszynie.
+- Windows: w trybie przechwytywania klawiszy prawy Shift działa w sesji RDP; wcześniej trafiał do sesji jako inny klawisz, więc np. prawy Shift+1 dawał 1.
 
 ### Pakiety
 
