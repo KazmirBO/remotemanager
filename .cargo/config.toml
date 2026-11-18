@@ -1,0 +1,8 @@
+# Budowa na Windows bez asemblera NASM. Biblioteka kryptograficzna `aws-lc-sys` (zależność `russh`
+# i procesu RDP) na Windows x86_64 wymaga polecenia `nasm`; gdy go nie ma, budowa kończy się błędem
+# "NASM command not found! Build cannot continue". Ta zmienna pozwala wtedy użyć gotowych obiektów
+# dołączonych do pakietu. Gdy `nasm` jest w PATH, biblioteka nadal używa jego, a poza Windows
+# zmienna nie ma żadnego skutku. Plik obowiązuje oba workspace'y (główny i `tools/rdp`), bo cargo
+# szuka konfiguracji w katalogu roboczym i katalogach nadrzędnych.
+[env]
+AWS_LC_SYS_PREBUILT_NASM = "1"

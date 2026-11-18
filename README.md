@@ -26,6 +26,7 @@ Poza zakresem: SFTP, tunele, podzielone widoki, import z mRemoteNG. Jeszcze niez
 
 - Rust 1.90 lub nowszy, Node.js 22 lub nowszy, pnpm.
 - Linux: biblioteki Tauri, czyli WebKitGTK 4.1, GTK 3 i libsoup 3 (w Debianie i Ubuntu pakiety `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libsoup-3.0-dev`), oraz biblioteka appindicator dla ikony w zasobniku.
+- Windows: narzędzia MSVC (Visual Studio Build Tools z obsługą C++). Asembler NASM nie jest potrzebny: `.cargo/config.toml` pozwala bibliotece kryptograficznej użyć gotowych obiektów, gdy polecenia `nasm` nie ma w `PATH`.
 - Do testów opcjonalnie: OpenSSH (`sshd`, `ssh-agent`) i `freerdp-shadow-cli`. Testy, które ich potrzebują, pomijają się, gdy ich nie ma.
 
 ## Budowa i uruchomienie
