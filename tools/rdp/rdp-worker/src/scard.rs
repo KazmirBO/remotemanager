@@ -1812,13 +1812,21 @@ mod tests {
         // W trakcie czekania ten sam kontekst łączy się z kartą i listuje czytniki.
         let handle = rig.connected(context, YUBI);
         assert_eq!(rig.list(context), Body::Readers(OK, vec![YUBI.to_owned()]));
-        assert_eq!(
-            rig.call(ScardIoCtlCode::Cancel, context_call(context)),
-            Body::Long(OK)
-        );
-        let (id, body) = rig.recv();
-        assert_eq!(id, waiting);
-        assert!(matches!(body, Body::States(E_CANCELLED, states) if states.len() == 1));
+        // Anulowanie budzi wątek czekania, zanim pętla sesji odeśle własną odpowiedź, więc obie
+        // odpowiedzi przychodzą w dowolnej kolejności; serwer i tak rozróżnia je po numerze.
+        let cancel = rig.send(ScardIoCtlCode::Cancel, context_call(context));
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let (id, body) = rig.recv();
+            seen.push(id);
+            if id == waiting {
+                assert!(matches!(body, Body::States(E_CANCELLED, states) if states.len() == 1));
+            } else {
+                assert_eq!(body, Body::Long(OK));
+            }
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, [waiting, cancel]);
         assert_eq!(
             rig.call(ScardIoCtlCode::Disconnect, card_call(context, handle, 0)),
             Body::Long(OK)
