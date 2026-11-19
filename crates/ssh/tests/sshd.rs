@@ -48,6 +48,13 @@ struct Env {
     many_bad_agent: PathBuf,
 }
 
+/// Katalog z kluczami prywatnymi znika także wtedy, gdy test spanikuje.
+impl Drop for Env {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 impl Env {
     /// Ścieżka klucza wygenerowanego w `setup`.
     fn key_path(&self, name: &str) -> PathBuf {
@@ -247,12 +254,15 @@ fn setup_with(sshd_options: &[&str]) -> Option<Env> {
             .spawn()
             .ok()?,
     );
+    let mut ready = false;
     for _ in 0..50 {
         if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            ready = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    assert!(ready, "sshd nie wystartował na porcie {port}");
     let good_agent = start_agent(&dir, "good", &[good], &mut guard, &add, &agent);
     let bad_agent = start_agent(&dir, "bad", &[bad], &mut guard, &add, &agent);
     let many_bad_agent = start_agent(&dir, "many_bad", &bads, &mut guard, &add, &agent);
@@ -577,7 +587,7 @@ async fn writes_keep_call_order_without_interleaving() {
     shell
         .write(
             format!(
-                "echo gotowe-$USER; stty raw -echo; cat > {}\n",
+                "stty raw -echo; echo gotowe-$USER; cat > {}\n",
                 out.display()
             )
             .into_bytes(),
@@ -586,7 +596,6 @@ async fn writes_keep_call_order_without_interleaving() {
     read_until(&mut rx, &format!("gotowe-{}", env.user)).await;
     // Odbiornik musi być drenowany, inaczej zdarzenia zapchają pętlę odczytu.
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    tokio::time::sleep(Duration::from_millis(300)).await;
 
     let mut expected = Vec::new();
     let mut push = |chunk: Vec<u8>| {

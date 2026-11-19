@@ -78,6 +78,8 @@ struct Markers {
     dek: Option<String>,
     /// Plik PuTTY z szyfrowaniem innym niż `none`.
     ppk_encrypted: bool,
+    /// Nagłówek `EC PRIVATE KEY` (stary format PEM klucza ECDSA).
+    ec_pem: bool,
 }
 
 impl Markers {
@@ -88,6 +90,7 @@ impl Markers {
             pkcs8_plain: false,
             dek: None,
             ppk_encrypted: false,
+            ec_pem: false,
         };
         for line in text.lines() {
             let line = line.trim();
@@ -96,6 +99,7 @@ impl Markers {
             } else if line == "-----BEGIN PRIVATE KEY-----"
                 || line == "-----BEGIN EC PRIVATE KEY-----"
             {
+                m.ec_pem |= line.contains(" EC ");
                 m.pkcs8_plain = true;
             } else if line.starts_with("DEK-Info:") {
                 m.dek = Some(line.to_owned());
@@ -142,8 +146,9 @@ fn classify(e: russh::keys::Error, m: &Markers, with_pass: bool) -> KeyError {
         E::SshKey(ssh_key::Error::Ppk(p)) => p.to_string() == "incorrect MAC",
         E::Pkcs8(_) | E::Der(_) | E::Sec1(_) | E::Spki(_) if m.pkcs8_encrypted => true,
         E::Pkcs1(_) | E::Der(_) | E::Rsa(_) if m.dek.is_some() => true,
-        // Nierozpoznany błąd przy podanym haśle i zaszyfrowanym nagłówku: najpewniej złe hasło.
+        // Nieobsługiwany algorytm to nie złe hasło.
         E::UnknownAlgorithm(_) | E::UnsupportedKeyType { .. } => false,
+        // Nierozpoznany błąd przy podanym haśle i zaszyfrowanym nagłówku: najpewniej złe hasło.
         _ => m.encrypted(),
     };
     if wrong {
@@ -159,6 +164,8 @@ pub fn parse_key(text: &str, passphrase: Option<&str>) -> Result<SecretKey, KeyE
     if text.len() > MAX_KEY_TEXT {
         return Err(KeyError::TooLarge);
     }
+    // BOM (UTF-8 z Notatnika Windows) i wiodące puste wiersze kończyłyby się błędem formatu.
+    let text = text.trim_start_matches('\u{feff}').trim_start();
     let passphrase = passphrase.filter(|p| !p.is_empty());
     let m = Markers::of(text);
     if passphrase.is_none() && (m.pkcs8_encrypted || m.ppk_encrypted) {
@@ -170,6 +177,13 @@ pub fn parse_key(text: &str, passphrase: Option<&str>) -> Result<SecretKey, KeyE
     {
         return Err(KeyError::Invalid(
             "nieobsługiwane szyfrowanie klucza PEM (obsługiwane jest tylko AES-128-CBC)".into(),
+        ));
+    }
+    // Biblioteka nie odszyfrowuje klucza ECDSA w starym formacie PEM, także z dobrym hasłem,
+    // więc pytanie o hasło wracałoby w kółko. Mówimy od razu, co z takim kluczem zrobić.
+    if m.ec_pem && m.dek.is_some() {
+        return Err(KeyError::Invalid(
+            "zaszyfrowany klucz ECDSA w starym formacie PEM nie jest obsługiwany; zapisz go w formacie OpenSSH poleceniem ssh-keygen -p -f <plik>".into(),
         ));
     }
     // Hasło podane do niezaszyfrowanego PKCS#8 kończyłoby się błędem dekodowania.
@@ -379,6 +393,51 @@ mod tests {
                 assert_eq!(info.fingerprint, fp, "{name}");
                 assert_eq!(info.algorithm, alg, "{name}");
             }
+        }
+    }
+
+    #[test]
+    fn encrypted_ec_pem_is_reported_as_unsupported() {
+        let Some(kg) = keygen() else {
+            return eprintln!("pominięto: brak ssh-keygen");
+        };
+        let dir = temp_dir();
+        let (text, _) = generate(
+            &kg,
+            &dir.0,
+            "ec_pem_enc",
+            &["-t", "ecdsa", "-b", "256", "-m", "PEM", "-N", PASS],
+        );
+        assert!(text.contains("BEGIN EC PRIVATE KEY") && text.contains("DEK-Info:"));
+        // Ani brak hasła, ani dobre hasło nie kończy się prośbą o hasło.
+        for pass in [None, Some(PASS), Some("zle")] {
+            let Err(KeyError::Invalid(msg)) = parse_key(&text, pass) else {
+                panic!("oczekiwano Invalid dla {pass:?}");
+            };
+            assert!(msg.contains("ssh-keygen -p"), "{msg}");
+        }
+        // Ten sam klucz bez hasła działa dalej.
+        let (plain, fp) = generate(
+            &kg,
+            &dir.0,
+            "ec_pem",
+            &["-t", "ecdsa", "-b", "256", "-m", "PEM", "-N", ""],
+        );
+        assert_eq!(parse_key(&plain, None).unwrap().info().fingerprint, fp);
+    }
+
+    #[test]
+    fn leading_bom_and_blank_lines_are_ignored() {
+        let Some(kg) = keygen() else {
+            return eprintln!("pominięto: brak ssh-keygen");
+        };
+        let dir = temp_dir();
+        let (text, fp) = generate(&kg, &dir.0, "ed", &["-t", "ed25519", "-N", ""]);
+        for prefix in ["\u{feff}", "\n\n  ", "\u{feff}\r\n \r\n"] {
+            let info = parse_key(&format!("{prefix}{text}"), None)
+                .unwrap_or_else(|e| panic!("{prefix:?}: {e}"))
+                .info();
+            assert_eq!(info.fingerprint, fp);
         }
     }
 
