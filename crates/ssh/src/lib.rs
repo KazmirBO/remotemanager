@@ -98,6 +98,8 @@ pub struct Hop {
     pub username: String,
     /// Metody w kolejności prób.
     pub methods: Vec<Auth>,
+    /// Dopuszcza starsze algorytmy dla serwerów, które nie znają nowych (patrz `legacy_preferred`).
+    pub legacy: bool,
 }
 
 /// Metoda, która zadziałała na danym przystanku.
@@ -159,11 +161,55 @@ impl client::Handler for Client {
     }
 }
 
-fn config() -> Arc<client::Config> {
+/// Typ terminala zgłaszany serwerowi (zmienna `TERM`), gdy host nie ustawia własnego.
+pub const DEFAULT_TERM: &str = "xterm-256color";
+
+/// Czy nazwa typu terminala jest poprawna: od 1 do 64 znaków ASCII z liter, cyfr oraz `-`, `_`,
+/// `.` i `+` (tak wyglądają nazwy w bazie terminfo, np. `vt100`, `aixterm`, `xterm-256color`).
+pub fn valid_term(term: &str) -> bool {
+    (1..=64).contains(&term.len())
+        && term
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'+'))
+}
+
+/// Algorytmy dla starych serwerów (np. AIX ze starym OpenSSH): zestaw domyślny, a po nim wymiana
+/// kluczy oparta na SHA-1, szyfry CBC i `hmac-sha1`. Starsze są na końcu listy, więc serwer, który
+/// zna nowe, nadal je wybierze. Te algorytmy są słabsze, dlatego wymagają włączenia dla hosta.
+fn legacy_preferred() -> russh::Preferred {
+    let default = russh::Preferred::DEFAULT;
+    let mut kex = default.kex.to_vec();
+    kex.extend([
+        russh::kex::DH_G14_SHA1,
+        russh::kex::DH_GEX_SHA1,
+        russh::kex::DH_G1_SHA1,
+    ]);
+    let mut cipher = default.cipher.to_vec();
+    cipher.extend([
+        russh::cipher::AES_256_CBC,
+        russh::cipher::AES_192_CBC,
+        russh::cipher::AES_128_CBC,
+    ]);
+    let mut mac = default.mac.to_vec();
+    mac.extend([russh::mac::HMAC_SHA1_ETM, russh::mac::HMAC_SHA1]);
+    russh::Preferred {
+        kex: kex.into(),
+        cipher: cipher.into(),
+        mac: mac.into(),
+        ..default
+    }
+}
+
+fn config(legacy: bool) -> Arc<client::Config> {
     Arc::new(client::Config {
         nodelay: true,
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 3,
+        preferred: if legacy {
+            legacy_preferred()
+        } else {
+            russh::Preferred::DEFAULT
+        },
         ..Default::default()
     })
 }
@@ -242,6 +288,7 @@ impl Signer for UserSigner<'_> {
 async fn rsa_hash<H: client::Handler>(
     handle: &Handle<H>,
     cache: &mut Option<Option<HashAlg>>,
+    legacy: bool,
 ) -> Result<Option<HashAlg>> {
     if let Some(h) = cache {
         return Ok(*h);
@@ -251,7 +298,9 @@ async fn rsa_hash<H: client::Handler>(
         Some(Some(h)) => Some(h),
         // Serwer zna tylko ssh-rsa.
         Some(None) => None,
-        // Brak server-sig-algs: rsa-sha2-512, bo OpenSSH >= 8.8 odrzuca ssh-rsa.
+        // Brak server-sig-algs: rsa-sha2-512, bo OpenSSH >= 8.8 odrzuca ssh-rsa. Stary serwer
+        // (tryb starszych algorytmów) tego rozszerzenia nie ma i zna tylko ssh-rsa.
+        None if legacy => None,
         None => Some(HashAlg::Sha512),
     };
     *cache = Some(h);
@@ -263,6 +312,8 @@ struct Attempts {
     /// Zużyte próby (każdy podpis kluczem i każde hasło).
     used: usize,
     rsa: Option<Option<HashAlg>>,
+    /// Przystanek w trybie starszych algorytmów.
+    legacy: bool,
 }
 
 /// Próbuje kluczy agenta, najwyżej `budget` razy. `Ok(None)`: żaden klucz nie zadziałał.
@@ -296,7 +347,7 @@ async fn try_agent<H: client::Handler>(
     };
     for key in keys.into_iter().take(budget) {
         let hash = if key.algorithm().is_rsa() {
-            rsa_hash(handle, &mut att.rsa).await?
+            rsa_hash(handle, &mut att.rsa, att.legacy).await?
         } else {
             None
         };
@@ -328,7 +379,11 @@ async fn authenticate<H: client::Handler>(
     if hop.methods.is_empty() {
         return Err(Error::Protocol("brak metod uwierzytelniania".into()));
     }
-    let mut att = Attempts { used: 0, rsa: None };
+    let mut att = Attempts {
+        used: 0,
+        rsa: None,
+        legacy: hop.legacy,
+    };
     let mut skipped: Option<Error> = None;
     for (i, method) in hop.methods.iter().enumerate() {
         if att.used >= MAX_AUTH_ATTEMPTS {
@@ -347,7 +402,7 @@ async fn authenticate<H: client::Handler>(
             }
             Auth::Key { key, origin } => {
                 let hash = if key.0.algorithm().is_rsa() {
-                    rsa_hash(handle, &mut att.rsa).await?
+                    rsa_hash(handle, &mut att.rsa, att.legacy).await?
                 } else {
                     None
                 };
@@ -548,7 +603,8 @@ impl Session {
             let connecting = async {
                 match handles.last() {
                     None => Ok::<_, Error>(
-                        client::connect(config(), (hop.host.as_str(), hop.port), handler).await,
+                        client::connect(config(hop.legacy), (hop.host.as_str(), hop.port), handler)
+                            .await,
                     ),
                     Some(prev) => {
                         let ch = prev
@@ -560,7 +616,10 @@ impl Session {
                             )
                             .await
                             .map_err(|_| Error::Connect(target.clone()))?;
-                        Ok(client::connect_stream(config(), ch.into_stream(), handler).await)
+                        Ok(
+                            client::connect_stream(config(hop.legacy), ch.into_stream(), handler)
+                                .await,
+                        )
                     }
                 }
             };
@@ -605,16 +664,19 @@ impl Session {
         &self.auth_used
     }
 
-    /// Otwiera powłokę z PTY. Zdarzenia płyną kanałem; kanał zamyka się po zakończeniu sesji.
+    /// Otwiera powłokę z PTY typu `term` (nazwa niepoprawna według `valid_term` jest zastępowana
+    /// przez `DEFAULT_TERM`). Zdarzenia płyną kanałem; kanał zamyka się po zakończeniu sesji.
     pub async fn open_shell(
         &self,
+        term: &str,
         cols: u32,
         rows: u32,
     ) -> Result<(ShellHandle, mpsc::Receiver<ShellEvent>)> {
         let target = self.handles.last().expect("co najmniej jeden przystanek");
         let channel = target.channel_open_session().await?;
+        let term = if valid_term(term) { term } else { DEFAULT_TERM };
         channel
-            .request_pty(true, "xterm-256color", cols, rows, 0, 0, &[])
+            .request_pty(true, term, cols, rows, 0, 0, &[])
             .await?;
         channel.request_shell(true).await?;
         let (mut reader, writer) = channel.split();

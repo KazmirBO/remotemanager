@@ -188,6 +188,10 @@ fields! {
     ssh_key: StoredKey,
     // Ścieżka do pliku klucza prywatnego SSH na dysku, czytanego przy łączeniu.
     ssh_key_path: String,
+    // Typ terminala zgłaszany serwerowi SSH (zmienna TERM), np. vt100 albo aixterm.
+    ssh_term: String,
+    // Starsze algorytmy SSH (wymiana kluczy i skróty SHA-1, szyfry CBC) dla starych serwerów.
+    ssh_legacy: bool,
     jump_host: Id,
     terminal_scheme: String,
     rdp_multimon: bool,

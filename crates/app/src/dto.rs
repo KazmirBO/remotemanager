@@ -33,6 +33,12 @@ pub struct FieldsIo {
     /// Ścieżka do pliku klucza; `None` dziedziczy. Wejście i wyjście.
     #[serde(default)]
     pub ssh_key_path: Option<String>,
+    /// Typ terminala zgłaszany serwerowi SSH (TERM); `None` dziedziczy.
+    #[serde(default)]
+    pub ssh_term: Option<String>,
+    /// Starsze algorytmy SSH dla starych serwerów; `None` dziedziczy.
+    #[serde(default)]
+    pub ssh_legacy: Option<bool>,
     /// Tylko wyjście: klucz zapisany w pliku hostów na tym poziomie.
     #[serde(default)]
     pub has_ssh_key: bool,
@@ -72,6 +78,8 @@ impl std::fmt::Debug for FieldsIo {
             .field("password", &mask(&self.password))
             .field("clear_password", &self.clear_password)
             .field("ssh_key_path", &self.ssh_key_path)
+            .field("ssh_term", &self.ssh_term)
+            .field("ssh_legacy", &self.ssh_legacy)
             .field("has_ssh_key", &self.has_ssh_key)
             .field("ssh_key_algorithm", &self.ssh_key_algorithm)
             .field("ssh_key_fingerprint", &self.ssh_key_fingerprint)
@@ -82,6 +90,7 @@ impl std::fmt::Debug for FieldsIo {
     }
 }
 
+const TERM_ERROR: &str = "Typ terminala może mieć najwyżej 64 znaki: litery, cyfry oraz - _ . + (np. vt100, aixterm, xterm-256color).";
 const PATH_ERROR: &str = "Ścieżka klucza musi być bezwzględna albo zaczynać się od ~/.";
 
 /// Sprawdza ścieżkę klucza: `~/` albo ścieżka bezwzględna, bez znaków sterujących. Plik hostów bywa
@@ -123,6 +132,8 @@ impl FieldsIo {
             password: None,
             clear_password: false,
             ssh_key_path: f.ssh_key_path.clone(),
+            ssh_term: f.ssh_term.clone(),
+            ssh_legacy: f.ssh_legacy,
             has_ssh_key: f.ssh_key.is_some(),
             ssh_key_algorithm: f.ssh_key.as_ref().map(|k| k.algorithm.clone()),
             ssh_key_fingerprint: f.ssh_key.as_ref().map(|k| k.fingerprint.clone()),
@@ -148,6 +159,17 @@ impl FieldsIo {
             return Err(PATH_ERROR.into());
         }
         self.ssh_key_path = path;
+        let term = self
+            .ssh_term
+            .take()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty());
+        if let Some(t) = &term
+            && !ssh::valid_term(t)
+        {
+            return Err(TERM_ERROR.into());
+        }
+        self.ssh_term = term;
         // Usunięcie zapisanego klucza wygrywa z wklejonym tekstem: nie importujemy go (błąd
         // importu nie może blokować usuwania), a bufory znikają razem z `text` i `pass`.
         if self.clear_ssh_key {
@@ -207,6 +229,8 @@ impl FieldsIo {
             password,
             ssh_key,
             ssh_key_path: self.ssh_key_path,
+            ssh_term: self.ssh_term,
+            ssh_legacy: self.ssh_legacy,
             jump_host: self.jump_host,
             terminal_scheme: self.terminal_scheme.filter(|s| !s.is_empty()),
             rdp_multimon: self.rdp_multimon,
@@ -428,6 +452,34 @@ mod tests {
         }
         for bad in ["id_ed25519", ".ssh/id", "~id", "C:id", "", "/home/ja/\nid"] {
             assert!(!valid_key_path(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn ssh_term_and_legacy_go_both_ways() {
+        let mut io: FieldsIo =
+            serde_json::from_str(r#"{"ssh_term":"  vt100 ","ssh_legacy":true}"#).unwrap();
+        io.prepare().unwrap();
+        let applied = io.apply(&Fields::default(), None);
+        assert_eq!(applied.ssh_term.as_deref(), Some("vt100"));
+        assert_eq!(applied.ssh_legacy, Some(true));
+        let json = serde_json::to_string(&FieldsIo::view(&applied)).unwrap();
+        assert!(
+            json.contains(r#""ssh_term":"vt100""#) && json.contains(r#""ssh_legacy":true"#),
+            "{json}"
+        );
+        // Puste pole i brak pola to dziedziczenie.
+        let mut none: FieldsIo = serde_json::from_str(r#"{"ssh_term":"  "}"#).unwrap();
+        none.prepare().unwrap();
+        let cleared = none.apply(&applied, None);
+        assert_eq!((cleared.ssh_term, cleared.ssh_legacy), (None, None));
+        // Nazwa spoza dozwolonych znaków jest odrzucana, zanim trafi do serwera.
+        for bad in ["vt100; rm -rf /", "x y", "ż", &"a".repeat(65)] {
+            let mut io = FieldsIo {
+                ssh_term: Some(bad.into()),
+                ..Default::default()
+            };
+            assert_eq!(io.prepare().unwrap_err(), TERM_ERROR, "{bad:?}");
         }
     }
 

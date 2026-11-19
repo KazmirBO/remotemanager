@@ -57,6 +57,7 @@
   const webauthnHint = $derived(inherited(folders, startFolder, 'rdp_webauthn'));
   const cardName = (v: unknown) => (v === 'on' ? 'tak' : v === 'neutral' ? 'neutralne nazwy' : 'nie');
   const cardHint = $derived(inherited(folders, startFolder, 'rdp_smartcard'));
+  const legacyHint = $derived(inherited(folders, startFolder, 'ssh_legacy'));
 </script>
 
 <div class="field">
@@ -135,6 +136,35 @@
     {#if !fields.ssh_key_path && hint('ssh_key_path')}<span class="hint"><Icon name="route" size={12} /> {hint('ssh_key_path')}</span>{/if}
     <span class="hint">Plik jest czytany przy łączeniu. Zaszyfrowany klucz wymaga hasła przy każdym połączeniu (na bastionie nie działa: zaimportuj go albo użyj agenta).</span>
     <span class="hint">Kolejność logowania: klucz z pliku z hostami, plik klucza, agent SSH, zapisane hasło.</span>
+  </div>
+  <div class="field">
+    <label for="f-term">Typ terminala (SSH)</label>
+    <input id="f-term" type="text" class="mono" list="f-term-list" bind:value={fields.ssh_term} autocomplete="off"
+      placeholder="xterm-256color" maxlength="64" />
+    <datalist id="f-term-list">
+      <option value="xterm-256color"></option>
+      <option value="xterm"></option>
+      <option value="vt220"></option>
+      <option value="vt100"></option>
+      <option value="aixterm"></option>
+      <option value="ansi"></option>
+    </datalist>
+    {#if !fields.ssh_term && hint('ssh_term')}<span class="hint"><Icon name="route" size={12} /> {hint('ssh_term')}</span>{/if}
+    <span class="hint">Nazwa wysyłana serwerowi jako TERM. Stary system (np. AIX), który nie zna xterm-256color, zwykle działa z vt100, vt220 albo aixterm; objawem złego typu jest rozsypany ekran i niedziałające klawisze. Dotyczy nowych połączeń.</span>
+  </div>
+  <div class="field">
+    <label for="f-legacy">Starsze algorytmy SSH</label>
+    <!-- Trzy stany jak przy Kerberosie: "nie" wyłącza ustawienie odziedziczone z katalogu. -->
+    <select id="f-legacy" value={fields.ssh_legacy === null ? 'inherit' : fields.ssh_legacy ? 'yes' : 'no'}
+      onchange={(e) => { const v = e.currentTarget.value; fields.ssh_legacy = v === 'inherit' ? null : v === 'yes'; }}>
+      <option value="inherit">Dziedzicz{legacyHint ? ` (${legacyHint.value ? 'tak' : 'nie'})` : ' (nie)'}</option>
+      <option value="yes">Dopuszczaj</option>
+      <option value="no">Nie dopuszczaj</option>
+    </select>
+    {#if fields.ssh_legacy === null && legacyHint}
+      <span class="hint"><Icon name="route" size={12} /> Dziedziczone z „{legacyHint.from}”: {legacyHint.value ? 'tak' : 'nie'}</span>
+    {/if}
+    <span class="hint">Dla starych serwerów, które nie znają nowych algorytmów i odrzucają połączenie już przy uzgadnianiu. Dopuszcza wymianę kluczy i skróty oparte na SHA-1 oraz szyfry CBC; są słabsze, więc włączaj tylko dla hostów, które inaczej się nie łączą. Serwer znający nowe algorytmy nadal ich użyje.</span>
   </div>
 {/if}
 

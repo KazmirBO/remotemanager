@@ -13,7 +13,7 @@ let unlocked = params.has('seed');
 
 const emptyFields = (): FieldsIo => ({
   port: null, username: null, domain: null, jump_host: null, terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, rdp_profile: null, rdp_webauthn: null, rdp_smartcard: null, has_password: false,
-  ssh_key_path: null, has_ssh_key: false, ssh_key_algorithm: null, ssh_key_fingerprint: null,
+  ssh_key_path: null, ssh_term: null, ssh_legacy: null, has_ssh_key: false, ssh_key_algorithm: null, ssh_key_fingerprint: null,
 });
 const secrets = new Map<string, string>();
 

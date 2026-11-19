@@ -207,6 +207,10 @@ struct HopPlan {
     stored_key: Option<Zeroizing<String>>,
     key_path: Option<String>,
     password: Option<Zeroizing<String>>,
+    /// Starsze algorytmy SSH dla tego przystanku.
+    legacy: bool,
+    /// Typ terminala (używany tylko dla celu).
+    term: Option<String>,
 }
 
 fn plan_for(doc: &model::Document, id: Id) -> Result<HopPlan, String> {
@@ -218,6 +222,8 @@ fn plan_for(doc: &model::Document, id: Id) -> Result<HopPlan, String> {
         ssh_key,
         ssh_key_path,
         password,
+        ssh_term,
+        ssh_legacy,
         ..
     } = r.fields;
     let username =
@@ -230,6 +236,8 @@ fn plan_for(doc: &model::Document, id: Id) -> Result<HopPlan, String> {
         stored_key: ssh_key.map(|k| Zeroizing::new(k.openssh)),
         key_path: ssh_key_path,
         password: password.map(Zeroizing::new),
+        legacy: ssh_legacy.unwrap_or(false),
+        term: ssh_term,
     })
 }
 
@@ -264,12 +272,15 @@ fn build_hop(
         stored_key,
         key_path,
         password,
+        legacy,
+        term: _,
     } = plan;
     let hop = |methods| Hop {
         host: host.clone(),
         port,
         username: username.clone(),
         methods,
+        legacy,
     };
     if let (true, Some(pw)) = (target, one_time_password) {
         return Ok((
@@ -392,6 +403,11 @@ pub async fn connect_ssh(
     let asked_password = password.is_some();
     let target_has_saved_password = plans.last().is_some_and(|p| p.password.is_some());
     let target_key_path = plans.last().and_then(|p| p.key_path.clone());
+    let term = plans
+        .last()
+        .and_then(|p| p.term.clone())
+        .unwrap_or_else(|| ssh::DEFAULT_TERM.to_owned());
+    let legacy_hops = plans.iter().filter(|p| p.legacy).count();
     let last = plans.len().saturating_sub(1);
     // Odczyt pliku klucza i jego odszyfrowanie (KDF) poza blokadą dokumentu.
     let built = tokio::task::spawn_blocking(move || {
@@ -436,6 +452,11 @@ pub async fn connect_ssh(
         .map(|h| format!("{}:{}", h.host, h.port))
         .collect();
     state.log(format!("SSH: łączenie z {host_name}"));
+    if legacy_hops > 0 {
+        state.log(format!(
+            "SSH: {host_name}: starsze algorytmy dozwolone (przystanków: {legacy_hops})"
+        ));
+    }
 
     let app2 = app.clone();
     let verifier: HostKeyVerifier = Arc::new(move |info| {
@@ -469,7 +490,7 @@ pub async fn connect_ssh(
             });
         }
     };
-    let (shell, mut rx) = match session.open_shell(cols, rows).await {
+    let (shell, mut rx) = match session.open_shell(&term, cols, rows).await {
         Ok(v) => v,
         Err(e) => {
             state.log(format!("SSH: {host_name}: {e}"));
@@ -714,7 +735,22 @@ mod tests {
             stored_key: None,
             key_path: None,
             password: None,
+            legacy: false,
+            term: None,
         }
+    }
+
+    #[test]
+    fn legacy_flag_reaches_the_hop() {
+        let (modern, _) = build_hop(plan(), true, None, None).unwrap();
+        assert!(!modern.legacy);
+        let old = HopPlan {
+            legacy: true,
+            ..plan()
+        };
+        // Także przy haśle jednorazowym, które zastępuje metody celu.
+        let (hop, _) = build_hop(old, true, Some("jednorazowe"), None).unwrap();
+        assert!(hop.legacy);
     }
 
     fn dir(tag: &str) -> std::path::PathBuf {

@@ -303,6 +303,7 @@ fn hop(env: &Env, methods: Vec<Auth>) -> Hop {
         port: env.port,
         username: env.user.clone(),
         methods,
+        legacy: false,
     }
 }
 
@@ -339,7 +340,10 @@ async fn agent_auth_shell_roundtrip_and_fingerprint() {
     )
     .await
     .unwrap();
-    let (shell, mut rx) = session.open_shell(100, 30).await.unwrap();
+    let (shell, mut rx) = session
+        .open_shell(ssh::DEFAULT_TERM, 100, 30)
+        .await
+        .unwrap();
     shell.write(b"echo hello-$USER\n".to_vec()).unwrap();
     read_until(&mut rx, &format!("hello-{}", env.user)).await;
     shell.resize(120, 40).unwrap();
@@ -433,7 +437,7 @@ async fn proxy_jump_through_bastion() {
     let session = Session::connect(&[hop(&env, vec![a.clone()]), hop(&env, vec![a])], verifier)
         .await
         .unwrap();
-    let (shell, mut rx) = session.open_shell(80, 24).await.unwrap();
+    let (shell, mut rx) = session.open_shell(ssh::DEFAULT_TERM, 80, 24).await.unwrap();
     shell.write(b"echo via-$USER\n".to_vec()).unwrap();
     read_until(&mut rx, &format!("via-{}", env.user)).await;
     assert_eq!(
@@ -462,6 +466,7 @@ async fn silent_server_times_out() {
         port,
         username: "ktos".into(),
         methods: vec![Auth::Agent],
+        legacy: false,
     };
     let started = std::time::Instant::now();
     let err = Session::connect_with_timeout(&[hop], verifier, Duration::from_secs(2))
@@ -582,7 +587,10 @@ async fn writes_keep_call_order_without_interleaving() {
     )
     .await
     .unwrap();
-    let (shell, mut rx) = session.open_shell(100, 30).await.unwrap();
+    let (shell, mut rx) = session
+        .open_shell(ssh::DEFAULT_TERM, 100, 30)
+        .await
+        .unwrap();
     let out = env.dir.join("order.out");
     shell
         .write(
@@ -646,7 +654,10 @@ async fn write_after_shell_closed_reports_error() {
     )
     .await
     .unwrap();
-    let (shell, mut rx) = session.open_shell(100, 30).await.unwrap();
+    let (shell, mut rx) = session
+        .open_shell(ssh::DEFAULT_TERM, 100, 30)
+        .await
+        .unwrap();
     shell.write(b"exit\n".to_vec()).unwrap();
     while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
         if matches!(ev, ShellEvent::Closed) {
@@ -690,7 +701,7 @@ async fn stored_key_auth_shell_roundtrip() {
         .await
         .unwrap();
     assert_eq!(session.auth_used(), &[AuthUsed::StoredKey(info)]);
-    let (shell, mut rx) = session.open_shell(80, 24).await.unwrap();
+    let (shell, mut rx) = session.open_shell(ssh::DEFAULT_TERM, 80, 24).await.unwrap();
     shell.write(b"echo klucz-$USER\n".to_vec()).unwrap();
     read_until(&mut rx, &format!("klucz-{}", env.user)).await;
     session.disconnect().await;
@@ -863,9 +874,74 @@ async fn proxy_jump_with_key_on_bastion() {
     assert_eq!(used.len(), 2);
     assert_eq!(used[0], AuthUsed::StoredKey(info.clone()));
     assert_eq!(used[1], AuthUsed::Agent(info));
-    let (shell, mut rx) = session.open_shell(80, 24).await.unwrap();
+    let (shell, mut rx) = session.open_shell(ssh::DEFAULT_TERM, 80, 24).await.unwrap();
     shell.write(b"echo przez-$USER\n".to_vec()).unwrap();
     read_until(&mut rx, &format!("przez-{}", env.user)).await;
     session.disconnect().await;
     let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+/// Typ terminala wybrany dla hosta trafia do serwera jako `TERM`; nazwa niepoprawna jest
+/// zastępowana domyślną.
+#[tokio::test]
+async fn terminal_type_reaches_the_server() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    for (asked, expected) in [("vt100", "vt100"), ("zły typ;", ssh::DEFAULT_TERM)] {
+        let (verifier, _) = accept_all();
+        let session = Session::connect(
+            &[hop(&env, vec![Auth::AgentSocket(env.good_agent.clone())])],
+            verifier,
+        )
+        .await
+        .unwrap();
+        let (shell, mut rx) = session.open_shell(asked, 80, 24).await.unwrap();
+        shell.write(b"echo term=[$TERM]\n".to_vec()).unwrap();
+        read_until(&mut rx, &format!("term=[{expected}]")).await;
+        shell.close().await.unwrap();
+        session.disconnect().await;
+    }
+}
+
+/// Serwer, który zna tylko stare algorytmy (wymiana kluczy z SHA-1, szyfr CBC, `hmac-sha1`),
+/// odrzuca połączenie w trybie domyślnym, a przyjmuje je po włączeniu starszych algorytmów.
+/// Tryb starszych algorytmów nie przeszkadza w połączeniu z nowoczesnym serwerem.
+#[tokio::test]
+async fn legacy_server_needs_legacy_algorithms() {
+    let Some(old) = setup_with(&[
+        "KexAlgorithms=diffie-hellman-group14-sha1",
+        "Ciphers=aes128-cbc",
+        "MACs=hmac-sha1",
+    ]) else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let methods = || vec![Auth::AgentSocket(old.good_agent.clone())];
+
+    let (verifier, _) = accept_all();
+    let modern_only = Session::connect(&[hop(&old, methods())], verifier).await;
+    assert!(modern_only.is_err(), "stary serwer przyjął nowe algorytmy");
+
+    let (verifier, _) = accept_all();
+    let legacy_hop = Hop {
+        legacy: true,
+        ..hop(&old, methods())
+    };
+    let session = Session::connect(&[legacy_hop], verifier).await.unwrap();
+    let (shell, mut rx) = session.open_shell("vt100", 80, 24).await.unwrap();
+    shell.write(b"echo stary-$USER\n".to_vec()).unwrap();
+    read_until(&mut rx, &format!("stary-{}", old.user)).await;
+    shell.close().await.unwrap();
+    session.disconnect().await;
+
+    let Some(new) = setup() else {
+        return;
+    };
+    let (verifier, _) = accept_all();
+    let hop_new = Hop {
+        legacy: true,
+        ..hop(&new, vec![Auth::AgentSocket(new.good_agent.clone())])
+    };
+    let session = Session::connect(&[hop_new], verifier).await.unwrap();
+    session.disconnect().await;
 }

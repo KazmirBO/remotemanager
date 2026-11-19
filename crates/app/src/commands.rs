@@ -280,6 +280,8 @@ pub async fn save_host(state: State<'_, AppState>, mut input: HostInput) -> Resu
         input.fields.ssh_key_passphrase = None;
         // Ukryta ścieżka klucza nie może blokować zapisu błędem o niewidocznym polu.
         input.fields.ssh_key_path = None;
+        // To samo dotyczy ukrytego typu terminala.
+        input.fields.ssh_term = None;
     }
     let (input, imported) = prepare_input(input, |i| &mut i.fields).await?;
     let name = input.name.trim().to_owned();
