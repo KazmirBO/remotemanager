@@ -4,7 +4,7 @@
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
   import { notify, openHost, refresh, ui } from './store.svelte';
-  import { buildTree, descendantIds, edgeScrollSpeed, matches, type FolderNode } from './tree';
+  import { buildTree, descendantIds, edgeScrollSpeed, matches, plural, type FolderNode } from './tree';
 
   let {
     onNewHost, onNewFolder, onEditHost, onEditFolder, onSettings, onSync, onLock,
@@ -266,8 +266,8 @@
       <div class="empty">
         <span class="label"><Icon name="host" size={28} /></span>
         <p class="label">Brak hostów.</p>
-        <button class="btn compact" aria-label="Dodaj hosta" title="Dodaj hosta" onclick={() => onNewHost(null)}>
-          <Icon name="plus" size={14} /><span class="label">Dodaj hosta</span>
+        <button class="btn compact" aria-label="Nowy host" title="Nowy host" onclick={() => onNewHost(null)}>
+          <Icon name="plus" size={14} /><span class="label">Nowy host</span>
         </button>
       </div>
     {:else}
@@ -327,7 +327,7 @@
       {#if confirm.kind === 'host'}
         Usunąć hosta <b>{confirm.name}</b>? Tej operacji nie można cofnąć.
       {:else}
-        Usunąć katalog <b>{confirm.name}</b> wraz z podkatalogami i {confirm.count} hostami? Tej operacji nie można cofnąć.
+        Usunąć katalog <b>{confirm.name}</b> wraz z podkatalogami i {confirm.count} {plural(confirm.count, 'hostem', 'hostami', 'hostami')}? Tej operacji nie można cofnąć.
       {/if}
     </p>
     {#snippet footer()}

@@ -117,7 +117,7 @@
         // Brak agenta albo kluczy: pytamy o hasło tylko na tę sesję i próbujemy jeszcze raz.
         const reason = needsPassword(e);
         if (reason === null || password !== null) throw e;
-        const pw = await requestPassword(h?.name ?? 'host', reason, tabId);
+        const pw = await requestPassword(`hosta ${h?.name ?? ''}`.trim(), reason, tabId);
         if (pw === null || disposed) throw 'Anulowano łączenie.';
         return attempt(pw, keyPassphrase);
       });

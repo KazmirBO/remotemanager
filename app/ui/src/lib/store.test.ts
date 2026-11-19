@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./api', () => ({ api: { lock: vi.fn(async () => {}) } }));
 
-const { cancelPasswordPrompts, keyImportError, lockVault, needsKeyPassphrase, openHost, requestPassword, ui } = await import('./store.svelte');
+const { cancelPasswordPrompts, keyImportError, lockVault, needsKeyPassphrase, closeTab, openHost, requestPassword, ui } = await import('./store.svelte');
 
 function host(id: string) {
   return { id, name: id, address: id, protocol: 'ssh' as const, folder: null, favorite: false, notes: '', fields: {} as never };
@@ -13,6 +13,16 @@ beforeEach(() => {
   ui.activeTab = null;
   cancelPasswordPrompts();
   ui.phase = 'unlocked';
+});
+
+describe('tytuły kart', () => {
+  it('po zamknięciu środkowej karty nie powtarza tytułu', () => {
+    for (let i = 0; i < 3; i++) openHost(host('a'));
+    expect(ui.tabs.map((t) => t.title)).toEqual(['a', 'a (2)', 'a (3)']);
+    closeTab(ui.tabs[1].id);
+    openHost(host('a'));
+    expect(ui.tabs.map((t) => t.title)).toEqual(['a', 'a (3)', 'a (2)']);
+  });
 });
 
 describe('blokada', () => {

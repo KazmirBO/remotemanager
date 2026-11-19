@@ -269,16 +269,17 @@ pub async fn save_folder(state: State<'_, AppState>, input: FolderInput) -> Resu
 }
 
 #[tauri::command]
-pub async fn save_host(state: State<'_, AppState>, input: HostInput) -> Result<Id, String> {
+pub async fn save_host(state: State<'_, AppState>, mut input: HostInput) -> Result<Id, String> {
     if input.name.trim().is_empty() || input.address.trim().is_empty() {
         return Err("Nazwa i adres hosta są wymagane.".into());
     }
     // Formularz RDP nie pokazuje sekcji klucza, więc wklejony wcześniej tekst (przed zmianą
     // protokołu) nie może trafić do pliku jako ukryty sekret.
-    let mut input = input;
     if input.protocol == Protocol::Rdp {
         input.fields.ssh_key = None;
         input.fields.ssh_key_passphrase = None;
+        // Ukryta ścieżka klucza nie może blokować zapisu błędem o niewidocznym polu.
+        input.fields.ssh_key_path = None;
     }
     let (input, imported) = prepare_input(input, |i| &mut i.fields).await?;
     let name = input.name.trim().to_owned();

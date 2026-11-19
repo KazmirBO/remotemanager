@@ -22,7 +22,7 @@
     <h3>Menedżer sesji</h3>
     <p class="muted">Wersja {version}</p>
     <p>Klient SSH i RDP z drzewem hostów, zaszyfrowanym plikiem i synchronizacją przez folder.</p>
-    <p class="muted small">Licencja MIT lub Apache-2.0. Hasła i klucze nie opuszczają tej maszyny, a klucze prywatne SSH zostają w agencie.</p>
+    <p class="muted small">Licencja MIT lub Apache-2.0. Hasła i klucze prywatne są zapisane tylko w pliku zaszyfrowanym hasłem głównym; poza tę maszynę trafiają wyłącznie do folderu synchronizacji, jeśli go ustawisz.</p>
   </div>
   {#snippet footer()}<button class="btn primary" onclick={onclose}>Zamknij</button>{/snippet}
 </Modal>

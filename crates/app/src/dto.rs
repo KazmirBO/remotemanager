@@ -176,10 +176,7 @@ impl FieldsIo {
             Err(ssh::KeyError::TooLarge) => {
                 Err("KEY_INVALID:Klucz jest za duży (limit 64 KiB).".into())
             }
-            Err(ssh::KeyError::Invalid(d)) => {
-                Err(format!("KEY_INVALID:Nie można odczytać klucza: {d}"))
-            }
-            Err(ssh::KeyError::Unreadable(d)) => {
+            Err(ssh::KeyError::Invalid(d) | ssh::KeyError::Unreadable(d)) => {
                 Err(format!("KEY_INVALID:Nie można odczytać klucza: {d}"))
             }
         }

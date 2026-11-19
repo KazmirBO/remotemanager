@@ -31,6 +31,8 @@ pub struct AppState {
     pub path: PathBuf,
     pub data_dir: PathBuf,
     pub config: Mutex<Config>,
+    /// Serializuje zapis `config.json` (wspólny plik tymczasowy): ostatni zapis niesie najnowszy stan.
+    pub config_save: Mutex<()>,
     /// Dziennik diagnostyczny w pamięci. Nigdy nie trafiają tu hasła ani klucze.
     pub diag: Mutex<VecDeque<String>>,
     pub pending_link: Mutex<Option<String>>,
@@ -58,6 +60,7 @@ impl AppState {
             path,
             data_dir,
             config: Mutex::new(config),
+            config_save: Mutex::new(()),
             diag: Mutex::new(VecDeque::new()),
             pending_link: Mutex::new(None),
             inner: tokio::sync::Mutex::new(None),
@@ -90,6 +93,7 @@ impl AppState {
     }
 
     pub fn save_config(&self) {
+        let _serial = self.config_save.lock().expect("config_save");
         let cfg = self.config.lock().expect("config").clone();
         if let Err(e) = cfg.save(&self.data_dir.join("config.json")) {
             self.log(format!("nie udało się zapisać konfiguracji: {e}"));

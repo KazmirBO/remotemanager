@@ -168,7 +168,10 @@ export async function connectSsh(
   const data = (bytes: Uint8Array) => onData(bytes, acker.receive(bytes.length));
   channel.onmessage = (msg) => {
     if (msg instanceof ArrayBuffer) data(new Uint8Array(msg));
-    else if (ArrayBuffer.isView(msg)) data(new Uint8Array((msg as ArrayBufferView).buffer));
+    else if (ArrayBuffer.isView(msg)) {
+      const v = msg as ArrayBufferView;
+      data(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+    }
     else if (Array.isArray(msg)) data(Uint8Array.from(msg as number[]));
     else {
       stop();
@@ -226,10 +229,14 @@ export async function connectRdp(
   channel.onmessage = (msg) => {
     if (msg instanceof ArrayBuffer) {
       const v = new DataView(msg);
-      onImage(v.getUint16(0, true), v.getUint16(2, true), v.getUint16(4, true), v.getUint16(6, true),
-        new Uint8ClampedArray(msg, 8));
+      // Bajty liczymy przed rysowaniem: wyjątek w `onImage` nie może pominąć potwierdzenia.
       unacked += msg.byteLength;
-      ack();
+      try {
+        onImage(v.getUint16(0, true), v.getUint16(2, true), v.getUint16(4, true), v.getUint16(6, true),
+          new Uint8ClampedArray(msg, 8));
+      } finally {
+        ack();
+      }
     } else {
       onControl(msg as RdpControl);
     }

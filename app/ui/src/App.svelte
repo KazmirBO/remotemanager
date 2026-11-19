@@ -22,6 +22,7 @@
   import Unlock from './lib/Unlock.svelte';
   import { allowedWithModal, binding, matchAppAction, tabNumber } from './lib/shortcuts';
   import { api } from './lib/api';
+  import { plural } from './lib/tree';
   import { applyTheme, closeTab, host as hostById, init, lockVault, modalOpen, notify, onLocked, openHost, reconnect, refreshSync, ui } from './lib/store.svelte';
 
   type Dialog =
@@ -262,7 +263,7 @@
         {/if}
       </div>
       <div class="status mono muted">
-        <span>{ui.doc?.hosts.length ?? 0} hostów</span>
+        <span>{ui.doc?.hosts.length ?? 0} {plural(ui.doc?.hosts.length ?? 0, 'host', 'hosty', 'hostów')}</span>
         <span>Otwartych sesji: {ui.tabs.length}</span>
         <button class="bell" aria-label="Powiadomienia ({ui.history.length})" title="Powiadomienia" onclick={() => (dialog = { kind: 'notices' })}>
           <Icon name="bell" size={14} />
@@ -306,8 +307,9 @@
     </Modal>
   {/if}
   {#if trustQueue.length}
-    {#key trustQueue[0].id}
-      <TrustDialog request={trustQueue[0]} ondone={() => trustQueue.shift()} />
+    {@const first = trustQueue[0]}
+    {#key first.id}
+      <TrustDialog request={first} ondone={() => (trustQueue = trustQueue.filter((r) => r.id !== first.id))} />
     {/key}
   {/if}
 {/if}

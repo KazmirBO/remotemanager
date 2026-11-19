@@ -36,7 +36,7 @@
     <h1>{creating ? 'Pierwsze uruchomienie' : 'Odblokuj hasłem głównym'}</h1>
     <p class="muted">
       {creating
-        ? 'Hosty i hasła będą zapisane w pliku zaszyfrowanym hasłem głównym. Nie da się go odzyskać bez tego hasła.'
+        ? 'Hosty, hasła i klucze będą zapisane w pliku zaszyfrowanym hasłem głównym. Nie da się go odzyskać bez tego hasła.'
         : 'Plik z hostami jest zaszyfrowany.'}
     </p>
     <div class="field">

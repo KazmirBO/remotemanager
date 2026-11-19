@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTree, descendantIds, inherited, inheritsPassword, inheritsSshKey, matches, EDGE_SCROLL_MAX, edgeScrollSpeed } from './tree';
+import { buildTree, descendantIds, inherited, inheritsPassword, inheritsSshKey, matches, plural, EDGE_SCROLL_MAX, edgeScrollSpeed } from './tree';
 import { emptyFields, type FolderView, type HostView } from './api';
 
 const folder = (id: string, name: string, parent: string | null, patch: Partial<ReturnType<typeof emptyFields>> = {}): FolderView => ({
@@ -111,5 +111,12 @@ describe('edgeScrollSpeed', () => {
   it('w niskiej liście każda połowa przewija w swoją stronę', () => {
     expect(edgeScrollSpeed(110, 100, 140)).toBeLessThan(0);
     expect(edgeScrollSpeed(130, 100, 140)).toBeGreaterThan(0);
+  });
+});
+
+describe('plural', () => {
+  it('odmienia po liczbie', () => {
+    const f = (n: number) => plural(n, 'host', 'hosty', 'hostów');
+    expect([1, 2, 4, 5, 12, 14, 22, 25, 0].map(f)).toEqual(['host', 'hosty', 'hosty', 'hostów', 'hostów', 'hostów', 'hosty', 'hostów', 'hostów']);
   });
 });

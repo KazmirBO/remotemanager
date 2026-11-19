@@ -116,9 +116,25 @@ impl std::fmt::Debug for StoredKey {
 macro_rules! fields {
     ($($name:ident : $ty:ty),* $(,)?) => {
         /// Nadpisywalne ustawienia. `None` = dziedzicz.
-        #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+        #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
         pub struct Fields {
             $(#[serde(default, skip_serializing_if = "Option::is_none")] pub $name: Option<$ty>,)*
+        }
+
+        /// Ręczny `Debug`: pole `password` jest maskowane, żeby `{:?}` na dokumencie, hoście czy
+        /// katalogu (które biorą `Debug` stąd) nie ujawniło hasła.
+        impl std::fmt::Debug for Fields {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let mut d = f.debug_struct("Fields");
+                $(
+                    if stringify!($name) == "password" {
+                        d.field(stringify!($name), &self.$name.as_ref().map(|_| "***"));
+                    } else {
+                        d.field(stringify!($name), &self.$name);
+                    }
+                )*
+                d.finish()
+            }
         }
 
         /// Pola ze znanym źródłem wartości, do oznaczania dziedziczenia w interfejsie.
@@ -831,6 +847,22 @@ mod tests {
         let dbg = format!("{fields:?}");
         assert!(!dbg.contains("sekret-"), "{dbg}");
         assert!(dbg.contains("SHA256:odcisk1"), "{dbg}");
+    }
+
+    #[test]
+    fn fields_debug_hides_password() {
+        let fields = Fields {
+            password: Some("TAJNE-HASLO".into()),
+            username: Some("jan".into()),
+            ..Fields::default()
+        };
+        let dbg = format!("{fields:?}");
+        assert!(!dbg.contains("TAJNE-HASLO"), "{dbg}");
+        assert!(dbg.contains("***") && dbg.contains("jan"), "{dbg}");
+        let mut t = Tree::default();
+        t.add_host("h", "h", Protocol::Ssh, None).unwrap();
+        t.hosts[0].fields = fields;
+        assert!(!format!("{t:?}").contains("TAJNE-HASLO"));
     }
 
     #[test]

@@ -31,7 +31,25 @@ struct TrustRequest {
     previous: Option<String>,
 }
 
-async fn ask_ssh_trust(app: AppHandle, info: HostKeyInfo) -> bool {
+/// Pytanie o klucz hosta z połączenia, które zaczęło się przed przeładowaniem interfejsu, nie
+/// może trafić do nowego interfejsu (nie ma tam karty tej sesji): sprawdzamy licznik przeładowań
+/// przed pytaniem i co 200 ms w jego trakcie.
+async fn ask_ssh_trust(app: AppHandle, info: HostKeyInfo, reloads: u64) -> bool {
+    let state = app.state::<AppState>();
+    if state.reloads.load(Ordering::SeqCst) != reloads {
+        return false;
+    }
+    let reloaded = {
+        let app = app.clone();
+        async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                if app.state::<AppState>().reloads.load(Ordering::SeqCst) != reloads {
+                    return;
+                }
+            }
+        }
+    };
     ask_trust(
         app,
         Protocol::Ssh,
@@ -39,7 +57,7 @@ async fn ask_ssh_trust(app: AppHandle, info: HostKeyInfo) -> bool {
         info.port,
         info.algorithm,
         info.fingerprint,
-        std::future::pending(),
+        reloaded,
     )
     .await
 }
@@ -76,6 +94,12 @@ pub async fn ask_trust(
     let id = Uuid::new_v4();
     let (tx, rx) = tokio::sync::oneshot::channel();
     state.trust.lock().expect("trust").insert(id, tx);
+    // Blokada pliku mogła przejść między sprawdzeniem a wstawieniem pytania do mapy (`cancel_trust`
+    // jej wtedy nie widział): bez ponownej kontroli pytanie trafiłoby do zablokowanego interfejsu.
+    if state.inner.lock().await.is_none() {
+        state.trust.lock().expect("trust").remove(&id);
+        return false;
+    }
     let req = TrustRequest {
         id,
         protocol,
@@ -298,7 +322,7 @@ fn build_hop(
                 format!("NEEDS_KEY_PASSPHRASE:Nieprawidłowe hasło klucza {p}. Spróbuj ponownie.")
             }
             (ssh::KeyError::NeedsPassphrase | ssh::KeyError::WrongPassphrase, false) => format!(
-                "Klucz {p} bastionu {name} jest zaszyfrowany. Zaimportuj go do pliku hostów albo użyj agenta SSH."
+                "Klucz {p} bastionu {name} jest zaszyfrowany. Zaimportuj go do pliku z hostami albo użyj agenta SSH."
             ),
             (ssh::KeyError::Invalid(d), _) => {
                 format!("Plik {p} nie zawiera obsługiwanego klucza prywatnego: {d}")
@@ -389,7 +413,9 @@ pub async fn connect_ssh(
     .await
     .map_err(|e| e.to_string())?
     .inspect_err(|e| {
-        if let Some(reason) = e.strip_prefix("NEEDS_KEY_PASSPHRASE:") {
+        if !e.starts_with("NEEDS_KEY_PASSPHRASE:") {
+            state.log(format!("SSH: {host_name}: {e}"));
+        } else if let Some(reason) = e.strip_prefix("NEEDS_KEY_PASSPHRASE:") {
             let path = target_key_path.as_deref().unwrap_or("");
             if reason.starts_with("Nieprawidłowe") {
                 state.log(format!(
@@ -414,7 +440,7 @@ pub async fn connect_ssh(
     let app2 = app.clone();
     let verifier: HostKeyVerifier = Arc::new(move |info| {
         let app = app2.clone();
-        Box::pin(ask_ssh_trust(app, info))
+        Box::pin(ask_ssh_trust(app, info, reloads))
     });
 
     let session = match ssh::Session::connect(&hops, verifier).await {
@@ -443,16 +469,23 @@ pub async fn connect_ssh(
             });
         }
     };
-    let (shell, mut rx) = session
-        .open_shell(cols, rows)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (shell, mut rx) = match session.open_shell(cols, rows).await {
+        Ok(v) => v,
+        Err(e) => {
+            state.log(format!("SSH: {host_name}: {e}"));
+            session.disconnect().await;
+            return Err(e.to_string());
+        }
+    };
     state.log(format!("SSH: połączono z {host_name}"));
     for (i, used) in session.auth_used().iter().enumerate() {
         let hop = hop_addrs.get(i).map(String::as_str).unwrap_or("?");
         let how = match used {
             AuthUsed::StoredKey(k) => {
-                format!("kluczem z pliku hostów ({} {})", k.algorithm, k.fingerprint)
+                format!(
+                    "kluczem z pliku z hostami ({} {})",
+                    k.algorithm, k.fingerprint
+                )
             }
             AuthUsed::KeyFile { path, info } => format!(
                 "kluczem z pliku {path} ({} {})",
@@ -464,7 +497,7 @@ pub async fn connect_ssh(
             AuthUsed::Password if asked_password && i + 1 == hop_addrs.len() => {
                 "hasłem podanym przy łączeniu".to_string()
             }
-            AuthUsed::Password => "hasłem zapisanym w pliku hostów".to_string(),
+            AuthUsed::Password => "hasłem zapisanym w pliku z hostami".to_string(),
         };
         state.log(format!("SSH: {host_name}: {hop}: uwierzytelniono {how}"));
     }

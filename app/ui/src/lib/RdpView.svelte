@@ -313,7 +313,7 @@
         // RDP z NLA wymaga hasła: bez zapisanego pytamy na tę sesję.
         const reason = needsPassword(e);
         if (reason === null || password !== null) throw e;
-        const pw = await requestPassword(hostById(hostId)?.name ?? 'host', reason, tabId);
+        const pw = await requestPassword(`hosta ${hostById(hostId)?.name ?? ''}`.trim(), reason, tabId);
         if (pw === null || disposed) throw 'Anulowano łączenie.';
         return attempt(pw);
       });

@@ -50,7 +50,7 @@
   }
 </script>
 
-<Modal title={folder ? 'Właściwości katalogu' : 'Nowy katalog'} {onclose} width={540}>
+<Modal title={folder ? 'Edycja katalogu' : 'Nowy katalog'} {onclose} width={540}>
   <form id="folder-form" onsubmit={save}>
     <div class="field">
       <label for="k-name">Nazwa</label>

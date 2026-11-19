@@ -2,7 +2,7 @@
   import { api, type SyncStatus } from './api';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
-  import { lockedBySync, notify, refreshSync, ui } from './store.svelte';
+  import { onLocked, notify, refreshSync, ui } from './store.svelte';
 
   let { onclose }: { onclose: () => void } = $props();
   // svelte-ignore state_referenced_locally
@@ -12,7 +12,7 @@
 
   const texts: Record<SyncStatus, string> = {
     aktualny: 'Plik jest aktualny.',
-    brak_pliku: 'W folderze nie ma jeszcze pliku. Pierwsza synchronizacja wyśle lokalny.',
+    brak_pliku: 'W folderze nie ma jeszcze pliku. Pierwsza synchronizacja wyśle lokalny plik.',
     lokalne_zmiany: 'Lokalny plik ma zmiany do wysłania.',
     zdalne_zmiany: 'W folderze jest nowsza wersja pliku. Pobranie zablokuje plik, odblokujesz go hasłem głównym.',
     konflikt: 'Plik zmieniono po obu stronach. Wybierz, którą wersję zachować. Druga zostanie zapisana jako kopia konfliktu.',
@@ -38,7 +38,7 @@
       if (r.locked) {
         notify('Pobrano zdalną wersję. Odblokuj plik hasłem głównym.');
         onclose();
-        lockedBySync();
+        onLocked();
       } else {
         notify('Synchronizacja zakończona.');
       }

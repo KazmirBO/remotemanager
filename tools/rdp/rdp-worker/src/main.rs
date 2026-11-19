@@ -302,12 +302,12 @@ fn run(params: ConnectParams, rx: &Receiver<ToWorker>) -> anyhow::Result<String>
         // Odpowiedzi WebAuthn gotowe po czasie: użytkownik odpowiedział w oknie systemu.
         while let Ok(reply) = webauthn_rx.try_recv() {
             match webauthn::encode_reply(reply) {
-                Ok(messages) => {
-                    let frame = stage.encode_dvc_messages(messages)?;
-                    framed
+                Ok(messages) => match stage.encode_dvc_messages(messages) {
+                    Ok(frame) => framed
                         .write_all(&frame)
-                        .context("wysyłka odpowiedzi WebAuthn")?;
-                }
+                        .context("wysyłka odpowiedzi WebAuthn")?,
+                    Err(e) => log(format!("WebAuthn: nie udało się zakodować odpowiedzi: {e}")),
+                },
                 Err(e) => log(format!("WebAuthn: nie udało się zakodować odpowiedzi: {e}")),
             }
         }

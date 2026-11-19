@@ -134,7 +134,7 @@
       placeholder="/home/ja/.ssh/id_ed25519 albo ~/.ssh/id_ed25519" />
     {#if !fields.ssh_key_path && hint('ssh_key_path')}<span class="hint"><Icon name="route" size={12} /> {hint('ssh_key_path')}</span>{/if}
     <span class="hint">Plik jest czytany przy łączeniu. Zaszyfrowany klucz wymaga hasła przy każdym połączeniu (na bastionie nie działa: zaimportuj go albo użyj agenta).</span>
-    <span class="hint">Kolejność logowania: klucz z pliku hostów, plik klucza, agent SSH, zapisane hasło.</span>
+    <span class="hint">Kolejność logowania: klucz z pliku z hostami, plik klucza, agent SSH, zapisane hasło.</span>
   </div>
 {/if}
 

@@ -106,19 +106,20 @@ export function host(id: Id): HostView | undefined {
 }
 
 export function openHost(h: HostView) {
-  const same = ui.tabs.filter((t) => t.hostId === h.id).length;
+  const titles = new Set(ui.tabs.filter((t) => t.hostId === h.id).map((t) => t.title));
+  let title = h.name;
+  for (let n = 2; titles.has(title); n++) title = `${h.name} (${n})`;
   const id = crypto.randomUUID();
-  ui.tabs.push({ id, hostId: h.id, protocol: h.protocol, title: same ? `${h.name} (${same + 1})` : h.name, generation: 0 });
+  ui.tabs.push({ id, hostId: h.id, protocol: h.protocol, title, generation: 0 });
   ui.activeTab = id;
 }
 
-function closeTabNow(id: string) {
+export function closeTab(id: string) {
   const i = ui.tabs.findIndex((t) => t.id === id);
   if (i < 0) return;
   ui.tabs.splice(i, 1);
   if (ui.activeTab === id) ui.activeTab = ui.tabs[Math.min(i, ui.tabs.length - 1)]?.id ?? null;
 }
-export const closeTab = closeTabNow;
 
 export function reconnect(id: string) {
   const t = ui.tabs.find((x) => x.id === id);
@@ -182,5 +183,3 @@ export async function refreshSync() {
   }
 }
 
-/** Po pobraniu zdalnej wersji plik jest zablokowany: zamykamy karty i wracamy do odblokowania. */
-export const lockedBySync = onLocked;

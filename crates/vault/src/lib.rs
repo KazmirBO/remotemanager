@@ -43,6 +43,8 @@ pub enum Error {
     Decrypt,
     #[error("nieprawidłowe parametry KDF")]
     BadKdfParams,
+    #[error("błąd szyfrowania")]
+    Encrypt,
     #[error("błąd serializacji: {0}")]
     Serde(#[from] serde_json::Error),
     #[error("błąd losowania: {0}")]
@@ -80,7 +82,7 @@ impl KdfParams {
 pub enum Verified {
     /// Ten sam klucz, plik uwierzytelniony.
     SameKey,
-    /// Inna sól albo parametry KDF: nie da się sprawdzić bez hasła.
+    /// Inna sól (zmiana hasła głównego gdzie indziej): nie da się sprawdzić bez hasła.
     OtherKey,
 }
 
@@ -121,20 +123,72 @@ fn encode_header(kdf: KdfParams, salt: &[u8; SALT_LEN], nonce: &[u8; NONCE_LEN])
     h
 }
 
-fn tmp_path(path: &Path) -> PathBuf {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    PathBuf::from(tmp)
+/// Licznik bajtów udający `Write`: pozwala poznać długość serializacji przed właściwym zapisem.
+struct Counter(usize);
+
+impl Write for Counter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
-/// Pierwsza połowa zapisu atomowego: plik tymczasowy w tym samym katalogu i `fsync`.
-/// Zwraca ścieżkę pliku tymczasowego, który potem trafia na miejsce docelowe przez `rename`.
+/// Unikalna nazwa pliku tymczasowego obok `path`: `.<nazwa>.<losowe>.tmp`.
+fn tmp_path(path: &Path) -> PathBuf {
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    let rnd = random::<8>().unwrap_or([0; 8]);
+    let hex: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
+    name.push(format!(".{}-{hex}.tmp", std::process::id()));
+    path.with_file_name(name)
+}
+
+/// Pierwsza połowa zapisu atomowego: plik tymczasowy o unikalnej nazwie w tym samym katalogu
+/// (`create_new`, więc bez podążania za dowiązaniem i bez dzielenia pliku z innym procesem;
+/// na Unix tryb 0600) i `fsync`. Zwraca ścieżkę pliku tymczasowego, który potem trafia na miejsce
+/// docelowe przez `rename`. Przy błędzie plik tymczasowy jest usuwany.
 fn write_tmp(path: &Path, data: &[u8]) -> io::Result<PathBuf> {
-    let tmp = tmp_path(path);
-    let mut f = fs::File::create(&tmp)?;
-    f.write_all(data)?;
-    f.sync_all()?;
-    Ok(tmp)
+    let mut last = None;
+    for _ in 0..8 {
+        let tmp = tmp_path(path);
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        match opts.open(&tmp) {
+            Ok(mut f) => {
+                let res = f.write_all(data).and_then(|()| f.sync_all());
+                drop(f);
+                return match res {
+                    Ok(()) => Ok(tmp),
+                    Err(e) => {
+                        let _ = fs::remove_file(&tmp);
+                        Err(e)
+                    }
+                };
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => last = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| io::Error::other("nie udało się utworzyć pliku tymczasowego")))
+}
+
+/// Utrwala wpis katalogu po `rename` (Unix; błąd ignorowany, to tylko dodatkowa trwałość).
+fn sync_dir(path: &Path) {
+    #[cfg(unix)]
+    {
+        let dir = match path.parent() {
+            Some(d) if !d.as_os_str().is_empty() => d,
+            _ => Path::new("."),
+        };
+        let _ = fs::File::open(dir).and_then(|d| d.sync_all());
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 fn backup_path(path: &Path, n: usize) -> PathBuf {
@@ -198,18 +252,18 @@ impl Vault {
     }
 
     /// Sprawdza inny plik kluczem z pamięci, bez pytania o hasło. Gdy sól i parametry KDF w jego
-    /// nagłówku są takie same jak w tym sejfie, uwierzytelnia całość (nagłówek jako AAD) i zwraca
-    /// `SameKey` albo błąd; inna sól lub inne parametry (zmiana hasła głównego gdzie indziej)
-    /// dają `OtherKey` bez błędu, bo nie ma czym sprawdzić. Odszyfrowana treść jest zerowana
-    /// i nie opuszcza funkcji.
+    /// nagłówku jest taka sama jak w tym sejfie, uwierzytelnia całość (nagłówek z parametrami KDF
+    /// jest AAD, więc inne parametry przy tej samej soli to uszkodzenie) i zwraca `SameKey` albo
+    /// błąd; inna sól (zmiana hasła głównego gdzie indziej) daje `OtherKey` bez błędu, bo nie ma
+    /// czym sprawdzić. Odszyfrowana treść jest zerowana i nie opuszcza funkcji.
     pub fn verify_file(&self, path: &Path) -> Result<Verified> {
         let data = fs::read(path)?;
-        let (kdf, salt, nonce) = parse_header(&data)?;
-        if kdf != self.kdf || salt != self.salt {
+        let (_, salt, nonce) = parse_header(&data)?;
+        if salt != self.salt {
             return Ok(Verified::OtherKey);
         }
-        let cipher = XChaCha20Poly1305::new_from_slice(self.key.as_ref())
-            .map_err(|_| Error::BadKdfParams)?;
+        let cipher =
+            XChaCha20Poly1305::new_from_slice(self.key.as_ref()).map_err(|_| Error::Decrypt)?;
         let _plain = Zeroizing::new(
             cipher
                 .decrypt(
@@ -260,10 +314,15 @@ impl Vault {
         doc: &T,
         rotate: bool,
     ) -> Result<()> {
-        let plain = Zeroizing::new(serde_json::to_vec(doc)?);
+        // Bufor jawnego JSON-a o z góry znanej pojemności: `to_vec` rosłoby przez realokacje,
+        // a porzucone porcje z hasłami nie byłyby zerowane.
+        let mut counter = Counter(0);
+        serde_json::to_writer(&mut counter, doc)?;
+        let mut plain = Zeroizing::new(Vec::with_capacity(counter.0));
+        serde_json::to_writer(&mut *plain, doc)?;
         let nonce = random::<NONCE_LEN>()?;
         let header = encode_header(self.kdf, salt, &nonce);
-        let cipher = XChaCha20Poly1305::new_from_slice(key).map_err(|_| Error::BadKdfParams)?;
+        let cipher = XChaCha20Poly1305::new_from_slice(key).map_err(|_| Error::Encrypt)?;
         let ct = cipher
             .encrypt(
                 &XNonce::from(nonce),
@@ -272,14 +331,21 @@ impl Vault {
                     aad: &header,
                 },
             )
-            .map_err(|_| Error::Decrypt)?;
+            .map_err(|_| Error::Encrypt)?;
         let mut out = header;
         out.extend_from_slice(&ct);
         let tmp = write_tmp(&self.path, &out)?;
-        if rotate && self.backups > 0 && self.path.exists() {
-            self.rotate_backups()?;
+        let committed = (|| -> io::Result<()> {
+            if rotate && self.backups > 0 && self.path.exists() {
+                self.rotate_backups()?;
+            }
+            fs::rename(&tmp, &self.path)
+        })();
+        if let Err(e) = committed {
+            let _ = fs::remove_file(&tmp);
+            return Err(e.into());
         }
-        fs::rename(&tmp, &self.path)?;
+        sync_dir(&self.path);
         Ok(())
     }
 
@@ -300,7 +366,7 @@ impl Vault {
 }
 
 /// Sprawdza bez hasła, że plik ma strukturę pliku MRMV w obsługiwanej wersji: magic, wersję,
-/// kompletny nagłówek z parametrami KDF w dozwolonych granicach i szyfrogram co najmniej
+/// kompletny nagłówek z parametrami KDF w dozwolonych granicach (górnych i dolnych) i szyfrogram co najmniej
 /// długości znacznika uwierzytelnienia. Nie sprawdza, czy hasło pasuje.
 pub fn validate_file(path: &Path) -> Result<()> {
     let data = fs::read(path)?;
@@ -329,13 +395,16 @@ fn parse_header(data: &[u8]) -> Result<(KdfParams, [u8; SALT_LEN], [u8; NONCE_LE
     if kdf.m_cost > MAX_M_COST || kdf.t_cost > MAX_T_COST || kdf.p_cost > MAX_P_COST {
         return Err(Error::BadKdfParams);
     }
+    // Dolne granice (t_cost = 0, p_cost = 0, za mała pamięć) odrzuca dopiero Argon2: sprawdzamy je
+    // tu, żeby plik, którego nie da się otworzyć, nie przeszedł kontroli przed pobraniem.
+    Params::new(kdf.m_cost, kdf.t_cost, kdf.p_cost, Some(32)).map_err(|_| Error::BadKdfParams)?;
     let salt = data[17..17 + SALT_LEN].try_into().expect("sól");
     let nonce = data[17 + SALT_LEN..HEADER_LEN].try_into().expect("nonce");
     Ok((kdf, salt, nonce))
 }
 
 fn decrypt<T: DeserializeOwned>(key: &[u8; 32], data: &[u8], nonce: &[u8; NONCE_LEN]) -> Result<T> {
-    let cipher = XChaCha20Poly1305::new_from_slice(key).map_err(|_| Error::BadKdfParams)?;
+    let cipher = XChaCha20Poly1305::new_from_slice(key).map_err(|_| Error::Decrypt)?;
     let plain = Zeroizing::new(
         cipher
             .decrypt(
@@ -379,11 +448,69 @@ mod tests {
         }
     }
 
-    fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("mrm-vault-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
-        d.join("hosts.mrm")
+    /// Ścieżka pliku w osobnym katalogu tymczasowym, który znika razem z wartością.
+    struct Tmp {
+        dir: PathBuf,
+        file: PathBuf,
+    }
+
+    impl std::ops::Deref for Tmp {
+        type Target = PathBuf;
+        fn deref(&self) -> &PathBuf {
+            &self.file
+        }
+    }
+
+    impl AsRef<Path> for Tmp {
+        fn as_ref(&self) -> &Path {
+            &self.file
+        }
+    }
+
+    impl From<&Tmp> for PathBuf {
+        fn from(t: &Tmp) -> PathBuf {
+            t.file.clone()
+        }
+    }
+
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn tmp(name: &str) -> Tmp {
+        let dir = std::env::temp_dir().join(format!("mrm-vault-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        Tmp {
+            file: dir.join("hosts.mrm"),
+            dir,
+        }
+    }
+
+    /// Chwilowo zabiera katalog pliku, więc zapis kończy się błędem przed `rename` i przed rotacją.
+    fn block_dir(p: &Tmp) -> PathBuf {
+        let moved = p.dir.with_extension("zabrany");
+        fs::rename(&p.dir, &moved).unwrap();
+        moved
+    }
+
+    fn unblock_dir(p: &Tmp, moved: PathBuf) {
+        fs::rename(moved, &p.dir).unwrap();
+    }
+
+    fn leftovers(p: &Tmp) -> usize {
+        fs::read_dir(&p.dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+            .count()
     }
 
     #[test]
@@ -424,7 +551,6 @@ mod tests {
         assert!(matches!(Vault::open::<Doc>(&p, "x"), Err(Error::BadMagic)));
         fs::write(&p, b"MRMV\x01abc").unwrap();
         assert!(matches!(Vault::open::<Doc>(&p, "x"), Err(Error::Truncated)));
-        Vault::create(tmp("v2"), "x", KdfParams::FAST_FOR_TESTS, &doc(0)).unwrap();
         let q = tmp("v2b");
         Vault::create(&q, "x", KdfParams::FAST_FOR_TESTS, &doc(0)).unwrap();
         let mut d = fs::read(&q).unwrap();
@@ -465,20 +591,13 @@ mod tests {
         assert_eq!(Vault::open::<Doc>(&p, "nowe").unwrap().1, doc(2));
     }
 
-    /// Katalog w miejscu pliku tymczasowego sprawia, że zapis kończy się błędem przed `rename`.
-    fn block_tmp(p: &Path) -> PathBuf {
-        let t = tmp_path(p);
-        fs::create_dir_all(&t).unwrap();
-        t
-    }
-
     #[test]
     fn failed_password_change_keeps_old_password() {
         let p = tmp("chpw-fail");
         let mut v = Vault::create(&p, "stare", KdfParams::FAST_FOR_TESTS, &doc(1)).unwrap();
-        let blocker = block_tmp(&p);
+        let blocker = block_dir(&p);
         assert!(v.change_password("nowe", &doc(1)).is_err());
-        fs::remove_dir(&blocker).unwrap();
+        unblock_dir(&p, blocker);
         // Kolejny zwykły zapis nadal używa starego hasła.
         v.save(&doc(2)).unwrap();
         assert_eq!(Vault::open::<Doc>(&p, "stare").unwrap().1, doc(2));
@@ -491,11 +610,11 @@ mod tests {
         let mut v = Vault::create(&p, "x", KdfParams::FAST_FOR_TESTS, &doc(0)).unwrap();
         v.set_backup_count(3);
         v.save(&doc(1)).unwrap();
-        let blocker = block_tmp(&p);
+        let blocker = block_dir(&p);
         for _ in 0..3 {
             assert!(v.save(&doc(9)).is_err());
         }
-        fs::remove_dir(&blocker).unwrap();
+        unblock_dir(&p, blocker);
         assert!(
             !backup_file(&p, 2).exists(),
             "nieudane zapisy nie rotują kopii"
@@ -565,6 +684,67 @@ mod tests {
             Vault::open::<Doc>(&p, "x"),
             Err(Error::BadKdfParams)
         ));
+    }
+
+    #[test]
+    fn invalid_kdf_params_are_rejected_before_download() {
+        let p = tmp("kdf-low");
+        let v = Vault::create(&p, "x", KdfParams::FAST_FOR_TESTS, &doc(0)).unwrap();
+        let orig = fs::read(&p).unwrap();
+        // t_cost = 0, p_cost = 0 i m_cost < 8 * p_cost.
+        for (range, val) in [(9..13, 0u32), (13..17, 0), (5..9, 7)] {
+            let mut bad = orig.clone();
+            bad[range].copy_from_slice(&val.to_le_bytes());
+            fs::write(&p, &bad).unwrap();
+            assert!(matches!(validate_file(&p), Err(Error::BadKdfParams)));
+            assert!(matches!(v.verify_file(&p), Err(Error::BadKdfParams)));
+        }
+    }
+
+    #[test]
+    fn verify_file_same_salt_other_kdf_is_corruption() {
+        let p = tmp("verify-kdf");
+        let v = Vault::create(&p, "x", KdfParams::FAST_FOR_TESTS, &doc(2)).unwrap();
+        let mut data = fs::read(&p).unwrap();
+        data[5..9].copy_from_slice(&16u32.to_le_bytes());
+        fs::write(&p, &data).unwrap();
+        validate_file(&p).unwrap();
+        assert!(matches!(v.verify_file(&p), Err(Error::Decrypt)));
+    }
+
+    #[test]
+    fn write_does_not_follow_symlinks_and_leaves_no_temp_files() {
+        let p = tmp("tmp-names");
+        let v = Vault::create(&p, "x", KdfParams::FAST_FOR_TESTS, &doc(1)).unwrap();
+        #[cfg(unix)]
+        {
+            // Dawna stała nazwa pliku tymczasowego nie może przekierować zapisu.
+            let victim = p.dir.join("ofiara.txt");
+            fs::write(&victim, b"nietkniete").unwrap();
+            std::os::unix::fs::symlink(&victim, p.dir.join("hosts.mrm.tmp")).unwrap();
+            v.save(&doc(2)).unwrap();
+            assert_eq!(fs::read(&victim).unwrap(), b"nietkniete");
+            assert_eq!(Vault::open::<Doc>(&p, "x").unwrap().1, doc(2));
+            fs::remove_file(p.dir.join("hosts.mrm.tmp")).unwrap();
+        }
+        assert_eq!(leftovers(&p), 0);
+        let blocker = block_dir(&p);
+        assert!(v.save(&doc(3)).is_err());
+        unblock_dir(&p, blocker);
+        assert_eq!(leftovers(&p), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_and_backups_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let p = tmp("mode");
+        let v = Vault::create(&p, "x", KdfParams::FAST_FOR_TESTS, &doc(0)).unwrap();
+        v.save(&doc(1)).unwrap();
+        for f in [p.to_path_buf(), backup_file(&p, 1)] {
+            let mode = fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{}", f.display());
+        }
     }
 
     #[test]

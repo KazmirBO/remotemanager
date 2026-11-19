@@ -7,6 +7,10 @@ Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `
 Zmiany na gałęzi roboczej, które wejdą do następnego wydania.
 
 - SSH: logowanie kluczem prywatnym. Klucz można wkleić albo wczytać z pliku do pliku hostów (wtedy jest odszyfrowywany przy imporcie, więc hasło klucza podajesz raz i nie jest zapisywane) albo wskazać ścieżką do pliku czytanego przy łączeniu (zaszyfrowany klucz wymaga wtedy hasła przy każdym połączeniu). Obie możliwości dziedziczą się z katalogu na host; obsługiwane formaty to OpenSSH, PKCS#8, PEM i PuTTY .ppk, limit 64 KiB. Kolejność prób: klucz z pliku hostów, plik klucza, agent SSH, zapisane hasło, na końcu pytanie o hasło; liczba prób na przystanek jest ograniczona do 5.
+- Budowa ze źródeł na Windows nie wymaga już asemblera NASM (`.cargo/config.toml`).
+- Zależności zaktualizowane do najnowszych zgodnych wersji.
+- Konserwacja: plik z hostami, jego kopie i plik w folderze synchronizacji są zapisywane przez plik tymczasowy o unikalnej nazwie i z uprawnieniami tylko dla właściciela (Unix: 0600); wcześniej stała nazwa pliku tymczasowego pozwalała dowiązaniu w folderze synchronizacji przekierować zapis. Zdalny plik z niepoprawnymi parametrami KDF nie jest już pobierany.
+- Konserwacja: linki `ssh://` i `rdp://` odrzucają znaki formatujące Unicode i zakodowane znaki struktury adresu; pytanie o klucz hosta nie przechodzi do interfejsu po jego przeładowaniu ani po zablokowaniu pliku; zamknięcie sesji RDP nie zawiesza się na procesie, który przestał czytać; drobne poprawki tekstów interfejsu.
 
 ## 0.1.5 - 2026-11-17
 

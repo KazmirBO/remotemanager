@@ -8,6 +8,7 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
@@ -118,17 +119,63 @@ fn conflict_copy(path: &Path) -> PathBuf {
         .expect("nieskończony iterator")
 }
 
-/// Kopiuje `from` do `to` atomowo (plik tymczasowy obok celu, `fsync`, `rename`).
+/// Unikalna nazwa pliku tymczasowego obok `to`: `.<nazwa>.<pid>-<nanosekundy>-<licznik>.tmp`.
+fn tmp_path(to: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut name = std::ffi::OsString::from(".");
+    name.push(to.file_name().unwrap_or_default());
+    name.push(format!(
+        ".{}-{nanos}-{}.tmp",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    to.with_file_name(name)
+}
+
+/// Kopiuje `from` do `to` atomowo: plik tymczasowy o unikalnej nazwie obok celu (`create_new`, więc
+/// bez podążania za dowiązaniem i bez dzielenia pliku z drugą maszyną na dysku sieciowym; na Unix
+/// tryb 0600), `fsync`, `rename` i `fsync` katalogu. Przy błędzie plik tymczasowy jest usuwany.
 fn copy_atomic(from: &Path, to: &Path) -> Result<()> {
     let data = fs::read(from)?;
-    let mut tmp = to.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    let mut f = fs::File::create(&tmp)?;
-    f.write_all(&data)?;
-    f.sync_all()?;
-    drop(f);
-    fs::rename(&tmp, to)?;
+    let mut tmp = tmp_path(to);
+    let mut tries = 0;
+    let mut f = loop {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        match opts.open(&tmp) {
+            Ok(f) => break f,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && tries < 8 => {
+                tries += 1;
+                tmp = tmp_path(to);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
+    let done = f
+        .write_all(&data)
+        .and_then(|()| f.sync_all())
+        .and_then(|()| {
+            drop(f);
+            fs::rename(&tmp, to)
+        });
+    if let Err(e) = done {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    #[cfg(unix)]
+    {
+        let dir = match to.parent() {
+            Some(d) if !d.as_os_str().is_empty() => d,
+            _ => Path::new("."),
+        };
+        let _ = fs::File::open(dir).and_then(|d| d.sync_all());
+    }
     Ok(())
 }
 
@@ -371,6 +418,56 @@ mod tests {
             status(&d.local, &d.root.join("nie-ma"), None),
             Err(Error::NoFolder(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn push_does_not_follow_symlink_and_keeps_file_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = Dirs::new("symlink");
+        let victim = d.root.join("ofiara.txt");
+        fs::write(&victim, b"nietkniete").unwrap();
+        // Dawna stała nazwa pliku tymczasowego nie może przekierować zapisu.
+        std::os::unix::fs::symlink(&victim, d.folder.join("hosts.mrm.tmp")).unwrap();
+        fs::write(&d.local, b"v1").unwrap();
+        push(&d.local, &d.folder, None).unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"nietkniete");
+        assert_eq!(fs::read(d.remote()).unwrap(), b"v1");
+        assert!(!fs::symlink_metadata(d.remote()).unwrap().is_symlink());
+        let mode = fs::metadata(d.remote()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // Poza dowiązaniem nie zostają pliki tymczasowe.
+        let tmps = fs::read_dir(&d.folder)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+            .count();
+        assert_eq!(tmps, 1);
+    }
+
+    #[test]
+    fn failed_copy_leaves_no_temp_file() {
+        let d = Dirs::new("tmpclean");
+        fs::write(&d.local, b"v1").unwrap();
+        // Cel będący katalogiem: plik tymczasowy powstaje, a `rename` się nie udaje.
+        fs::create_dir_all(d.remote()).unwrap();
+        assert!(copy_atomic(&d.local, &d.remote()).is_err());
+        let tmps = fs::read_dir(&d.folder)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+            .count();
+        assert_eq!(tmps, 0);
     }
 
     #[test]
