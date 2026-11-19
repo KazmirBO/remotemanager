@@ -4,7 +4,7 @@
   import { FitAddon } from '@xterm/addon-fit';
   import { WebglAddon } from '@xterm/addon-webgl';
   import { api, connectSsh, sshWrite, type Id } from './api';
-  import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsPassword, reconnect, requestPassword, ui } from './store.svelte';
+  import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsKeyPassphrase, needsPassword, reconnect, requestPassword, ui } from './store.svelte';
   import { matchAction, matchAppAction } from './shortcuts';
   import { inherited } from './tree';
   import { terminalTheme } from './terminalThemes';
@@ -91,12 +91,13 @@
     const observer = new ResizeObserver(() => refit());
     observer.observe(el);
 
-    const attempt = (password: string | null): Promise<string> =>
+    const attempt = (password: string | null, keyPassphrase: string | null): Promise<string> =>
       connectSsh(
         hostId,
         term!.cols,
         term!.rows,
         password,
+        keyPassphrase,
         // Wywołanie zwrotne potwierdza backendowi przetworzone bajty (kontrola przepływu).
         (bytes, done) => term?.write(bytes, done),
         (c) => {
@@ -106,15 +107,22 @@
           message = c.t === 'exit' ? `Sesja zakończona (kod wyjścia ${c.code}).` : 'Połączenie zostało zamknięte.';
         },
       ).catch(async (e) => {
+        // Zaszyfrowany klucz ze ścieżki: pytamy o jego hasło (przy złym haśle backend pyta znowu).
+        const keyReason = needsKeyPassphrase(e);
+        if (keyReason !== null) {
+          const kp = await requestPassword(`klucza SSH (${h?.name ?? 'host'})`, keyReason, tabId);
+          if (kp === null || disposed) throw 'Anulowano łączenie.';
+          return attempt(password, kp);
+        }
         // Brak agenta albo kluczy: pytamy o hasło tylko na tę sesję i próbujemy jeszcze raz.
         const reason = needsPassword(e);
         if (reason === null || password !== null) throw e;
         const pw = await requestPassword(h?.name ?? 'host', reason, tabId);
         if (pw === null || disposed) throw 'Anulowano łączenie.';
-        return attempt(pw);
+        return attempt(pw, keyPassphrase);
       });
 
-    attempt(null)
+    attempt(null, null)
       .then((id) => {
         if (disposed) {
           void api.sshClose(id);

@@ -1,8 +1,8 @@
-use model::{Document, Id, Settings};
+use model::{Document, Id, Protocol, Settings, StoredKey};
 use tauri::State;
 use vault::{KdfParams, Vault};
 
-use crate::dto::{DocView, FolderInput, FolderView, HostInput, HostView};
+use crate::dto::{DocView, FieldsIo, FolderInput, FolderView, HostInput, HostView};
 use crate::state::{AppState, Unlocked};
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -197,12 +197,42 @@ pub async fn get_doc(state: State<'_, AppState>) -> Result<DocView, String> {
     state.read(|d| Ok(view(d))).await
 }
 
+/// Importuje klucz z wejścia poza blokadą dokumentu (KDF klucza bywa wolny).
+async fn prepare_input<T: Send + 'static>(
+    mut input: T,
+    fields: fn(&mut T) -> &mut FieldsIo,
+) -> Result<(T, Option<StoredKey>), String> {
+    let (input, imported) = tokio::task::spawn_blocking(move || {
+        let r = fields(&mut input).prepare();
+        (input, r)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok((input, imported?))
+}
+
+/// Do dziennika trafiają tylko algorytm i odcisk, nigdy tekst klucza.
+fn import_summary(key: Option<&StoredKey>) -> Option<(String, String)> {
+    key.map(|k| (k.algorithm.clone(), k.fingerprint.clone()))
+}
+
+fn log_import(state: &AppState, key: Option<(String, String)>, what: &str, name: &str) {
+    if let Some((algorithm, fingerprint)) = key {
+        state.log(format!(
+            "Zaimportowano klucz SSH ({algorithm} {fingerprint}) dla {what} „{name}”"
+        ));
+    }
+}
+
 #[tauri::command]
 pub async fn save_folder(state: State<'_, AppState>, input: FolderInput) -> Result<Id, String> {
     if input.name.trim().is_empty() {
         return Err("Nazwa katalogu nie może być pusta.".into());
     }
-    state
+    let (input, imported) = prepare_input(input, |i| &mut i.fields).await?;
+    let name = input.name.trim().to_owned();
+    let logged = import_summary(imported.as_ref());
+    let id = state
         .mutate(|doc| {
             let before = doc.tree.clone();
             let id = match input.id {
@@ -229,11 +259,13 @@ pub async fn save_folder(state: State<'_, AppState>, input: FolderInput) -> Resu
                 .find(|f| f.id == id)
                 .expect("istnieje");
             f.name = input.name.trim().to_owned();
-            f.fields = input.fields.apply(&f.fields);
+            f.fields = input.fields.apply(&f.fields, imported);
             check_jumps(&before, &doc.tree)?;
             Ok(id)
         })
-        .await
+        .await?;
+    log_import(&state, logged, "katalogu", &name);
+    Ok(id)
 }
 
 #[tauri::command]
@@ -241,7 +273,17 @@ pub async fn save_host(state: State<'_, AppState>, input: HostInput) -> Result<I
     if input.name.trim().is_empty() || input.address.trim().is_empty() {
         return Err("Nazwa i adres hosta są wymagane.".into());
     }
-    state
+    // Formularz RDP nie pokazuje sekcji klucza, więc wklejony wcześniej tekst (przed zmianą
+    // protokołu) nie może trafić do pliku jako ukryty sekret.
+    let mut input = input;
+    if input.protocol == Protocol::Rdp {
+        input.fields.ssh_key = None;
+        input.fields.ssh_key_passphrase = None;
+    }
+    let (input, imported) = prepare_input(input, |i| &mut i.fields).await?;
+    let name = input.name.trim().to_owned();
+    let logged = import_summary(imported.as_ref());
+    let id = state
         .mutate(|doc| {
             let before = doc.tree.clone();
             let id = match input.id {
@@ -270,14 +312,16 @@ pub async fn save_host(state: State<'_, AppState>, input: HostInput) -> Result<I
             h.address = input.address.trim().to_owned();
             h.protocol = input.protocol;
             h.notes = input.notes;
-            h.fields = input.fields.apply(&h.fields);
+            h.fields = input.fields.apply(&h.fields, imported);
             // Bastion nie może prowadzić do cyklu ani zepsuć łańcuchów innych hostów (np. zmiana
             // protokołu bastionu na RDP).
             doc.tree.jump_chain(id).map_err(err)?;
             check_jumps(&before, &doc.tree)?;
             Ok(id)
         })
-        .await
+        .await?;
+    log_import(&state, logged, "hosta", &name);
+    Ok(id)
 }
 
 #[tauri::command]

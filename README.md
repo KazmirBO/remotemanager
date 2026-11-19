@@ -14,7 +14,7 @@ Sprawdzone w działaniu: sesje SSH (także przez bastion), sesje RDP z NLA, zmia
 
 - **Drzewo hostów** z katalogami, ulubionymi, wyszukiwaniem i przeciąganiem. Port, użytkownik, domena, hasło, bastion i schemat terminala dziedziczą się z katalogu, a host może każde pole nadpisać.
 - **Zaszyfrowany plik hostów**: Argon2id i XChaCha20-Poly1305, zapis atomowy, pięć rotowanych kopii zapasowych z przywracaniem. Hasła nie trafiają do warstwy interfejsu.
-- **SSH**: terminal w karcie z rendererem WebGL, uwierzytelnianie agentem SSH albo hasłem, bastiony (odpowiednik ProxyJump, także łańcuchy), zapamiętywanie kluczy hostów z ostrzeżeniem o zmianie, opcjonalny dziennik sesji.
+- **SSH**: terminal w karcie z rendererem WebGL, uwierzytelnianie kluczem prywatnym (zapisanym w pliku hostów albo wskazanym ścieżką, także zaszyfrowanym), agentem SSH albo hasłem, bastiony (odpowiednik ProxyJump, także łańcuchy), zapamiętywanie kluczy hostów z ostrzeżeniem o zmianie, opcjonalny dziennik sesji.
 - **RDP**: pulpit w karcie z uwierzytelnianiem NLA (CredSSP), rozdzielczość podążająca za rozmiarem okna, pełny ekran, Ctrl+Alt+Del, lokalny kursor, profil łącza (szybkie albo wolne, także dla katalogu i hosta), przechwytywanie klawiszy z ustawieniem i przyciskiem (także klawiszy systemowych, np. Win i Alt+Tab), schowek w obie strony (tekst, HTML, obrazy, pliki i katalogi), zapamiętywanie certyfikatów. Na Windows także przekierowanie kluczy bezpieczeństwa FIDO2/WebAuthn (np. YubiKey) do zdalnego pulpitu, włączane dla hosta albo katalogu; niesprawdzone z prawdziwym kluczem. Tak samo włącza się przekierowanie czytników kart inteligentnych (PIV, klucz sprzętowy z interfejsem kart), też niesprawdzone z prawdziwym czytnikiem.
 - **Szybkie łączenie** (domyślnie Ctrl+Shift+K) i linki `ssh://` oraz `rdp://`. Link nigdy nie łączy sam: otwiera zapisany host z pytaniem albo formularz nowego.
 - **Synchronizacja** zaszyfrowanego pliku przez wskazany folder (np. Syncthing, Nextcloud, dysk sieciowy) z wykrywaniem konfliktów.
@@ -55,7 +55,7 @@ Pakiet instalacyjny (deb) z procesem RDP w środku buduje `scripts/build-release
 
 - Plik hostów `hosts.mrm` leży w katalogu danych aplikacji, na Linuksie w `~/.local/share/dev.multiremotemanager.client/`. Do prób bez dotykania własnych danych: `env XDG_DATA_HOME=/tmp/proba ./target/debug/multiremotemanager`.
 - Przy pierwszym uruchomieniu ustawiasz hasło główne (co najmniej 8 znaków). Nie da się go odzyskać: bez niego pliku nie można odszyfrować.
-- Kluczy prywatnych SSH program nie przechowuje, korzysta z agenta.
+- Klucz prywatny SSH możesz zapisać w pliku hostów (jest odszyfrowywany przy imporcie i chroniony hasłem głównym) albo wskazać ścieżką do pliku; program korzysta też z agenta SSH.
 - Dziennik sesji, jeśli go włączysz, zapisuje wyjście terminala jawnym tekstem w katalogu `logs` (na Linuksie z dostępem tylko dla właściciela).
 - Schowek RDP działa tylko wtedy, gdy widok sesji ma fokus, i da się go wyłączyć w Ustawieniach.
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTree, descendantIds, inherited, inheritsPassword, matches, EDGE_SCROLL_MAX, edgeScrollSpeed } from './tree';
+import { buildTree, descendantIds, inherited, inheritsPassword, inheritsSshKey, matches, EDGE_SCROLL_MAX, edgeScrollSpeed } from './tree';
 import { emptyFields, type FolderView, type HostView } from './api';
 
 const folder = (id: string, name: string, parent: string | null, patch: Partial<ReturnType<typeof emptyFields>> = {}): FolderView => ({
@@ -56,6 +56,22 @@ describe('inherited', () => {
   it('nie zapętla się przy cyklu', () => {
     const cyc = [folder('a', 'A', 'b'), folder('b', 'B', 'a')];
     expect(inherited(cyc, 'a', 'port')).toBeNull();
+  });
+  it('wykrywa odziedziczony klucz SSH w pliku hostów', () => {
+    const k = { has_ssh_key: true, ssh_key_algorithm: 'ssh-ed25519', ssh_key_fingerprint: 'SHA256:abc' };
+    const p = [folder('a', 'A', null, k), folder('b', 'B', 'a'), folder('c', 'C', 'b', { has_ssh_key: true, ssh_key_algorithm: 'ssh-rsa', ssh_key_fingerprint: 'SHA256:xyz' })];
+    expect(inheritsSshKey(p, 'b')).toEqual({ from: 'A', algorithm: 'ssh-ed25519', fingerprint: 'SHA256:abc' });
+    expect(inheritsSshKey(p, 'c')?.from).toBe('C');
+    expect(inheritsSshKey(p, 'a')?.from).toBe('A');
+    expect(inheritsSshKey([folder('x', 'X', null)], 'x')).toBeNull();
+    expect(inheritsSshKey(p, null)).toBeNull();
+    const cyc = [folder('a', 'A', 'b'), folder('b', 'B', 'a')];
+    expect(inheritsSshKey(cyc, 'a')).toBeNull();
+  });
+  it('dziedziczy ścieżkę klucza SSH', () => {
+    const p = [folder('a', 'Firma', null, { ssh_key_path: '~/.ssh/id' }), folder('b', 'Sub', 'a')];
+    expect(inherited(p, 'b', 'ssh_key_path')).toEqual({ value: '~/.ssh/id', from: 'Firma' });
+    expect(inherited([folder('x', 'X', null)], 'x', 'ssh_key_path')).toBeNull();
   });
   it('wykrywa odziedziczone hasło', () => {
     const p = [folder('a', 'A', null, { has_password: true }), folder('b', 'B', 'a')];

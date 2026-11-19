@@ -29,6 +29,17 @@ export interface FieldsIo {
   /** Tylko wejście. */
   password?: string | null;
   clear_password?: boolean;
+  /** Ścieżka do pliku klucza prywatnego; `null` dziedziczy z katalogu. */
+  ssh_key_path: string | null;
+  /** Tylko wyjście: klucz zapisany w pliku hostów na tym poziomie. */
+  has_ssh_key: boolean;
+  ssh_key_algorithm: string | null;
+  ssh_key_fingerprint: string | null;
+  /** Tylko wejście: tekst klucza do importu. */
+  ssh_key?: string | null;
+  /** Tylko wejście: hasło importowanego klucza. */
+  ssh_key_passphrase?: string | null;
+  clear_ssh_key?: boolean;
 }
 
 export interface FolderView { id: Id; name: string; parent: Id | null; fields: FieldsIo }
@@ -59,6 +70,7 @@ export type ShellControl = { t: 'exit'; code: number } | { t: 'closed' };
 export const emptyFields = (): FieldsIo => ({
   port: null, username: null, domain: null, jump_host: null,
   terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, rdp_profile: null, rdp_webauthn: null, rdp_smartcard: null, has_password: false,
+  ssh_key_path: null, has_ssh_key: false, ssh_key_algorithm: null, ssh_key_fingerprint: null,
 });
 
 /** Backend zwraca błędy jako tekst; sprowadzamy wszystko do `string`. */
@@ -134,7 +146,7 @@ export function sshWrite(id: string, data: Uint8Array): Promise<void> {
 }
 
 export async function connectSsh(
-  hostId: Id, cols: number, rows: number, password: string | null,
+  hostId: Id, cols: number, rows: number, password: string | null, keyPassphrase: string | null,
   onData: (bytes: Uint8Array, done: () => void) => void, onControl: (c: ShellControl) => void,
 ): Promise<string> {
   const channel = new Channel<ArrayBuffer | ShellControl>();
@@ -164,7 +176,7 @@ export async function connectSsh(
     }
   };
   try {
-    id = await call<string>('connect_ssh', { hostId, cols, rows, password, onEvent: channel });
+    id = await call<string>('connect_ssh', { hostId, cols, rows, password, keyPassphrase, onEvent: channel });
   } catch (e) {
     stop();
     throw e;

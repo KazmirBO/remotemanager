@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./api', () => ({ api: { lock: vi.fn(async () => {}) } }));
 
-const { cancelPasswordPrompts, lockVault, openHost, requestPassword, ui } = await import('./store.svelte');
+const { cancelPasswordPrompts, keyImportError, lockVault, needsKeyPassphrase, openHost, requestPassword, ui } = await import('./store.svelte');
 
 function host(id: string) {
   return { id, name: id, address: id, protocol: 'ssh' as const, folder: null, favorite: false, notes: '', fields: {} as never };
@@ -53,5 +53,19 @@ describe('monity o hasło', () => {
     expect(ui.passwordQueue.map((p) => p.title)).toEqual(['B']);
     ui.passwordQueue[0].resolve(null);
     await expect(b).resolves.toBeNull();
+  });
+});
+
+describe('błędy kluczy SSH', () => {
+  it('needsKeyPassphrase wycina powód', () => {
+    expect(needsKeyPassphrase('NEEDS_KEY_PASSPHRASE:Podaj hasło')).toBe('Podaj hasło');
+    expect(needsKeyPassphrase('NEEDS_PASSWORD:x')).toBeNull();
+    expect(needsKeyPassphrase('coś innego')).toBeNull();
+  });
+  it('keyImportError rozróżnia trzy prefiksy i ignoruje obce błędy', () => {
+    expect(keyImportError('KEY_NEEDS_PASSPHRASE:Klucz jest zaszyfrowany.')).toEqual({ message: 'Klucz jest zaszyfrowany.', needsPassphrase: true });
+    expect(keyImportError('KEY_BAD_PASSPHRASE:Zle.')).toEqual({ message: 'Zle.', needsPassphrase: true });
+    expect(keyImportError('KEY_INVALID:Śmieci')).toEqual({ message: 'Śmieci', needsPassphrase: false });
+    expect(keyImportError('Nazwa jest wymagana.')).toBeNull();
   });
 });

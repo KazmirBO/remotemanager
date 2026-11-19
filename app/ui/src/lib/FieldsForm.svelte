@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { FieldsIo, FolderView, HostView, Id, Protocol } from './api';
   import { ui } from './store.svelte';
-  import { inherited, inheritsPassword, type InheritableKey } from './tree';
+  import { inherited, inheritsPassword, inheritsSshKey, type InheritableKey } from './tree';
   import Icon from './Icon.svelte';
   import { SCHEMES } from './terminalThemes';
 
@@ -12,6 +12,7 @@
     startFolder,
     protocol,
     selfId = null,
+    keyPassphraseNeeded = $bindable(false),
   }: {
     fields: FieldsIo;
     folders: FolderView[];
@@ -21,6 +22,8 @@
     /** `null` dla katalogu (pokazuje wszystkie pola). */
     protocol: Protocol | null;
     selfId?: Id | null;
+    /** Ustawia dialog, gdy import klucza wymaga hasła klucza. */
+    keyPassphraseNeeded?: boolean;
   } = $props();
 
   const hint = (key: InheritableKey) => {
@@ -29,6 +32,25 @@
   };
   const jumpCandidates = $derived(hosts.filter((h) => h.protocol === 'ssh' && h.id !== selfId));
   const inheritedPw = $derived(inheritsPassword(folders, startFolder));
+  const inheritedKey = $derived(inheritsSshKey(folders, startFolder));
+  let keyError = $state('');
+  let keyFile = $state<HTMLInputElement>();
+  async function loadKeyFile(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    keyError = '';
+    if (!file) return;
+    if (file.size > 65536) {
+      keyError = 'Plik klucza jest za duży (limit 64 KiB).';
+      return;
+    }
+    try {
+      fields.ssh_key = await file.text();
+    } catch {
+      keyError = 'Nie można odczytać pliku klucza.';
+    }
+  }
   const profileName = (v: unknown) => (v === 'slow' ? 'wolne' : 'szybkie');
   const profileHint = $derived(inherited(folders, startFolder, 'rdp_profile'));
   const kerberosHint = $derived(inherited(folders, startFolder, 'rdp_kerberos'));
@@ -61,7 +83,7 @@
 <div class="field">
   <label for="f-pw">Hasło</label>
   <input id="f-pw" type="password" bind:value={fields.password} autocomplete="new-password"
-    placeholder={fields.has_password ? 'Zapisane. Wpisz, aby zmienić.' : 'Puste: agent SSH albo dziedziczenie'} disabled={fields.clear_password} />
+    placeholder={fields.has_password ? 'Zapisane. Wpisz, aby zmienić.' : 'Puste: klucz, agent SSH albo dziedziczenie'} disabled={fields.clear_password} />
   {#if fields.has_password}
     <span class="hint">
       <Icon name="key" size={12} />
@@ -74,6 +96,47 @@
     <span class="hint"><Icon name="route" size={12} /> Hasło dziedziczone z „{inheritedPw}”.</span>
   {/if}
 </div>
+
+{#if protocol !== 'rdp'}
+  <div class="field">
+    <label for="f-key">Klucz SSH</label>
+    {#if fields.has_ssh_key}
+      <span class="hint mono">
+        <Icon name="key" size={12} /> {fields.ssh_key_algorithm} {fields.ssh_key_fingerprint}
+      </span>
+      <span class="hint">
+        {fields.clear_ssh_key ? 'Zapisany klucz zostanie usunięty.' : 'Klucz jest zapisany w zaszyfrowanym pliku bez hasła.'}
+        <button type="button" class="link" onclick={() => (fields.clear_ssh_key = !fields.clear_ssh_key)}>
+          {fields.clear_ssh_key ? 'Cofnij' : 'Usuń'}
+        </button>
+      </span>
+    {/if}
+    <textarea id="f-key" class="mono" rows="4" bind:value={fields.ssh_key} autocomplete="off" spellcheck="false"
+      disabled={fields.clear_ssh_key}
+      placeholder={fields.has_ssh_key ? 'Wklej nowy klucz, aby zastąpić zapisany.' : 'Wklej klucz prywatny (OpenSSH, PEM, PKCS#8, PuTTY .ppk)'}></textarea>
+    <div>
+      <button type="button" class="btn" disabled={fields.clear_ssh_key} onclick={() => keyFile?.click()}>Wczytaj z pliku...</button>
+      <input bind:this={keyFile} type="file" hidden onchange={loadKeyFile} />
+    </div>
+    {#if keyError}<span class="error"><Icon name="alert" size={12} /> {keyError}</span>{/if}
+    {#if keyPassphraseNeeded}
+      <label for="f-key-pass">Hasło klucza (tylko do importu, nie jest zapisywane)</label>
+      <input id="f-key-pass" type="password" bind:value={fields.ssh_key_passphrase} autocomplete="off" />
+    {/if}
+    <span class="hint">Klucz jest odszyfrowywany przy zapisie i chroniony hasłem głównym pliku.</span>
+    {#if !fields.has_ssh_key && !fields.ssh_key?.trim() && inheritedKey}
+      <span class="hint"><Icon name="route" size={12} /> Klucz dziedziczony z „{inheritedKey.from}”: <span class="mono">{inheritedKey.algorithm} {inheritedKey.fingerprint}</span></span>
+    {/if}
+  </div>
+  <div class="field">
+    <label for="f-key-path">Plik klucza SSH</label>
+    <input id="f-key-path" type="text" class="mono" bind:value={fields.ssh_key_path} autocomplete="off"
+      placeholder="/home/ja/.ssh/id_ed25519 albo ~/.ssh/id_ed25519" />
+    {#if !fields.ssh_key_path && hint('ssh_key_path')}<span class="hint"><Icon name="route" size={12} /> {hint('ssh_key_path')}</span>{/if}
+    <span class="hint">Plik jest czytany przy łączeniu. Zaszyfrowany klucz wymaga hasła przy każdym połączeniu (na bastionie nie działa: zaimportuj go albo użyj agenta).</span>
+    <span class="hint">Kolejność logowania: klucz z pliku hostów, plik klucza, agent SSH, zapisane hasło.</span>
+  </div>
+{/if}
 
 {#if protocol !== 'ssh'}
   <div class="field">

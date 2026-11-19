@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use model::{Id, Protocol, TrustedKey};
 use serde::Serialize;
-use ssh::{Auth, Hop, HostKeyInfo, HostKeyVerifier, ShellEvent};
+use ssh::{Auth, AuthUsed, Hop, HostKeyInfo, HostKeyVerifier, KeyOrigin, ShellEvent};
 use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
@@ -173,24 +173,151 @@ pub async fn answer_trust(
     Ok(())
 }
 
-fn hop_for(doc: &model::Document, id: Id) -> Result<Hop, String> {
+/// Dane przystanku zebrane pod blokadą dokumentu; plik klucza i jego odszyfrowanie dzieją się
+/// dopiero w `build_hop`, poza blokadą.
+struct HopPlan {
+    name: String,
+    host: String,
+    port: u16,
+    username: String,
+    stored_key: Option<Zeroizing<String>>,
+    key_path: Option<String>,
+    password: Option<Zeroizing<String>>,
+}
+
+fn plan_for(doc: &model::Document, id: Id) -> Result<HopPlan, String> {
     let host = doc.tree.host(id).ok_or("Nie ma takiego hosta")?;
     let r = doc.tree.resolve(id).map_err(|e| e.to_string())?;
-    let username = r
-        .fields
-        .username
-        .clone()
-        .ok_or_else(|| format!("Host {} nie ma ustawionego użytkownika.", host.name))?;
-    let auth = match r.fields.password {
-        Some(p) => Auth::Password(Arc::new(Zeroizing::new(p))),
-        None => Auth::Agent,
-    };
-    Ok(Hop {
+    // Sekrety przenosimy z rozwiązanych pól zamiast klonować, żeby nie zostawiać kopii bez zerowania.
+    let model::Fields {
+        username,
+        ssh_key,
+        ssh_key_path,
+        password,
+        ..
+    } = r.fields;
+    let username =
+        username.ok_or_else(|| format!("Host {} nie ma ustawionego użytkownika.", host.name))?;
+    Ok(HopPlan {
+        name: host.name.clone(),
         host: host.address.clone(),
         port: r.port,
         username,
-        auth,
+        stored_key: ssh_key.map(|k| Zeroizing::new(k.openssh)),
+        key_path: ssh_key_path,
+        password: password.map(Zeroizing::new),
     })
+}
+
+/// "~/" i "~\\" (Windows) rozwija przez HOME albo USERPROFILE.
+fn expand_key_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
+    match rest {
+        Some(rest) => {
+            let home = std::env::var_os("HOME")
+                .filter(|h| !h.is_empty())
+                .or_else(|| std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()))
+                .ok_or("Nie można ustalić katalogu domowego dla ścieżki klucza.")?;
+            Ok(std::path::PathBuf::from(home).join(rest))
+        }
+        None => Ok(std::path::PathBuf::from(path)),
+    }
+}
+
+/// Buduje listę metod w kolejności: klucz z pliku hostów, plik klucza, agent, zapisane hasło.
+/// `one_time_password` dotyczy tylko celu i zastępuje wszystkie jego metody.
+fn build_hop(
+    plan: HopPlan,
+    target: bool,
+    one_time_password: Option<&str>,
+    key_passphrase: Option<&str>,
+) -> Result<(Hop, Option<String>), String> {
+    let HopPlan {
+        name,
+        host,
+        port,
+        username,
+        stored_key,
+        key_path,
+        password,
+    } = plan;
+    let hop = |methods| Hop {
+        host: host.clone(),
+        port,
+        username: username.clone(),
+        methods,
+    };
+    if let (true, Some(pw)) = (target, one_time_password) {
+        return Ok((
+            hop(vec![Auth::Password(Arc::new(Zeroizing::new(
+                pw.to_owned(),
+            )))]),
+            None,
+        ));
+    }
+    let mut methods = Vec::new();
+    let mut skipped = None;
+    if let Some(k) = stored_key {
+        let key = ssh::parse_key(&k, None).map_err(|e| {
+            format!("Klucz SSH zapisany dla {name} jest uszkodzony: {e}. Zaimportuj go ponownie.")
+        })?;
+        methods.push(Auth::Key {
+            key,
+            origin: KeyOrigin::Stored,
+        });
+    }
+    // Ścieżka klucza jest zapisana w pliku hostów, a ten bywa zsynchronizowany między maszynami,
+    // z których tylko część ma dany plik. Pliku, którego nie ma albo nie da się otworzyć, nie
+    // traktujemy więc jak błędu: metoda jest pomijana, a notatka trafia do dziennika i do
+    // komunikatu, gdy nie zadziała także żadna inna metoda.
+    let key_text = match key_path {
+        None => None,
+        Some(p) => match ssh::read_key_file(&expand_key_path(&p)?) {
+            Ok(text) => Some((p, text)),
+            Err(ssh::KeyError::Unreadable(d)) => {
+                skipped = Some(format!("pominięto plik klucza {p}: {d}"));
+                None
+            }
+            Err(ssh::KeyError::TooLarge) => {
+                return Err(format!("Plik klucza {p} jest za duży (limit 64 KiB)."));
+            }
+            Err(other) => return Err(format!("Plik klucza {p}: {other}")),
+        },
+    };
+    if let Some((p, text)) = key_text {
+        let pass = if target {
+            key_passphrase.filter(|s| !s.is_empty())
+        } else {
+            None
+        };
+        let key = ssh::parse_key(&text, pass).map_err(|e| match (e, target) {
+            (ssh::KeyError::NeedsPassphrase, true) => {
+                format!("NEEDS_KEY_PASSPHRASE:Klucz {p} jest zaszyfrowany. Podaj jego hasło.")
+            }
+            (ssh::KeyError::WrongPassphrase, true) => {
+                format!("NEEDS_KEY_PASSPHRASE:Nieprawidłowe hasło klucza {p}. Spróbuj ponownie.")
+            }
+            (ssh::KeyError::NeedsPassphrase | ssh::KeyError::WrongPassphrase, false) => format!(
+                "Klucz {p} bastionu {name} jest zaszyfrowany. Zaimportuj go do pliku hostów albo użyj agenta SSH."
+            ),
+            (ssh::KeyError::Invalid(d), _) => {
+                format!("Plik {p} nie zawiera obsługiwanego klucza prywatnego: {d}")
+            }
+            (ssh::KeyError::TooLarge, _) => format!("Plik klucza {p} jest za duży (limit 64 KiB)."),
+            (ssh::KeyError::Unreadable(d), _) => {
+                format!("Nie można odczytać pliku klucza {p}: {d}")
+            }
+        })?;
+        methods.push(Auth::Key {
+            key,
+            origin: KeyOrigin::File(p),
+        });
+    }
+    methods.push(Auth::Agent);
+    if let Some(pw) = password {
+        methods.push(Auth::Password(Arc::new(pw)));
+    }
+    Ok((hop(methods), skipped))
 }
 
 /// Komunikat dla połączenia przerwanego blokadą pliku albo przeładowaniem interfejsu.
@@ -206,6 +333,7 @@ fn control(json: &str) -> InvokeResponseBody {
     InvokeResponseBody::Json(json.to_owned())
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn connect_ssh(
     app: AppHandle,
@@ -214,12 +342,13 @@ pub async fn connect_ssh(
     cols: u32,
     rows: u32,
     password: Option<String>,
+    key_passphrase: Option<String>,
     on_event: Channel<InvokeResponseBody>,
 ) -> Result<Uuid, String> {
     // Licznik przeładowań musi być odczytany przed pierwszym `await`, inaczej przeładowanie
     // w czasie czekania na blokadę dokumentu uszłoby uwadze kontroli po wstawieniu sesji.
     let reloads = state.reloads.load(Ordering::SeqCst);
-    let (hops, host_name) = state
+    let (plans, host_name) = state
         .read(|doc| {
             let host = doc.tree.host(host_id).ok_or("Nie ma takiego hosta")?;
             if host.protocol != Protocol::Ssh {
@@ -228,20 +357,58 @@ pub async fn connect_ssh(
             let name = host.name.clone();
             let mut ids = doc.tree.jump_chain(host_id).map_err(|e| e.to_string())?;
             ids.push(host_id);
-            let hops = ids
+            let plans = ids
                 .into_iter()
-                .map(|id| hop_for(doc, id))
+                .map(|id| plan_for(doc, id))
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok((hops, name))
+            Ok((plans, name))
         })
         .await?;
-    let mut hops = hops;
-    // Hasło podane przy łączeniu dotyczy tylko celu i nie jest nigdzie zapisywane.
+    // Hasło podane przy łączeniu i hasło klucza dotyczą tylko celu i nie są nigdzie zapisywane.
     let asked_password = password.is_some();
-    if let (Some(pw), Some(target)) = (password, hops.last_mut()) {
-        target.auth = Auth::Password(Arc::new(Zeroizing::new(pw)));
+    let target_has_saved_password = plans.last().is_some_and(|p| p.password.is_some());
+    let target_key_path = plans.last().and_then(|p| p.key_path.clone());
+    let last = plans.len().saturating_sub(1);
+    // Odczyt pliku klucza i jego odszyfrowanie (KDF) poza blokadą dokumentu.
+    let built = tokio::task::spawn_blocking(move || {
+        let key_passphrase = key_passphrase.map(Zeroizing::new);
+        let password = password.map(Zeroizing::new);
+        plans
+            .into_iter()
+            .enumerate()
+            .map(|(i, plan)| {
+                build_hop(
+                    plan,
+                    i == last,
+                    password.as_deref().map(String::as_str),
+                    key_passphrase.as_deref().map(String::as_str),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .inspect_err(|e| {
+        if let Some(reason) = e.strip_prefix("NEEDS_KEY_PASSPHRASE:") {
+            let path = target_key_path.as_deref().unwrap_or("");
+            if reason.starts_with("Nieprawidłowe") {
+                state.log(format!(
+                    "SSH: {host_name}: nieprawidłowe hasło klucza {path}"
+                ));
+            } else {
+                state.log(format!("SSH: {host_name}: klucz {path} wymaga hasła"));
+            }
+        }
+    })?;
+    let (hops, skipped): (Vec<Hop>, Vec<Option<String>>) = built.into_iter().unzip();
+    let skipped: Vec<String> = skipped.into_iter().flatten().collect();
+    for note in &skipped {
+        state.log(format!("SSH: {host_name}: {note}"));
     }
-    let target_uses_agent = matches!(hops.last().map(|h| &h.auth), Some(Auth::Agent));
+    let hop_addrs: Vec<String> = hops
+        .iter()
+        .map(|h| format!("{}:{}", h.host, h.port))
+        .collect();
     state.log(format!("SSH: łączenie z {host_name}"));
 
     let app2 = app.clone();
@@ -255,18 +422,24 @@ pub async fn connect_ssh(
         Err(e) => {
             state.log(format!("SSH: {host_name}: {e}"));
             // Brak agenta, kluczy albo odrzucenie kluczy: frontend zapyta o hasło i spróbuje ponownie.
-            let needs_password = target_uses_agent
-                && !asked_password
+            let needs_password = !asked_password
+                && !target_has_saved_password
                 && matches!(
                     e,
                     ssh::Error::AgentUnavailable(_)
                         | ssh::Error::NoIdentities
                         | ssh::Error::AuthFailed
                 );
-            return Err(if needs_password {
-                format!("NEEDS_PASSWORD:{e}")
-            } else {
+            // Pominięty plik klucza bywa właściwą przyczyną niepowodzenia, więc komunikat go wymienia.
+            let reason = if skipped.is_empty() {
                 e.to_string()
+            } else {
+                format!("{e} ({})", skipped.join("; "))
+            };
+            return Err(if needs_password {
+                format!("NEEDS_PASSWORD:{reason}")
+            } else {
+                reason
             });
         }
     };
@@ -275,6 +448,26 @@ pub async fn connect_ssh(
         .await
         .map_err(|e| e.to_string())?;
     state.log(format!("SSH: połączono z {host_name}"));
+    for (i, used) in session.auth_used().iter().enumerate() {
+        let hop = hop_addrs.get(i).map(String::as_str).unwrap_or("?");
+        let how = match used {
+            AuthUsed::StoredKey(k) => {
+                format!("kluczem z pliku hostów ({} {})", k.algorithm, k.fingerprint)
+            }
+            AuthUsed::KeyFile { path, info } => format!(
+                "kluczem z pliku {path} ({} {})",
+                info.algorithm, info.fingerprint
+            ),
+            AuthUsed::Agent(k) => {
+                format!("kluczem z agenta SSH ({} {})", k.algorithm, k.fingerprint)
+            }
+            AuthUsed::Password if asked_password && i + 1 == hop_addrs.len() => {
+                "hasłem podanym przy łączeniu".to_string()
+            }
+            AuthUsed::Password => "hasłem zapisanym w pliku hostów".to_string(),
+        };
+        state.log(format!("SSH: {host_name}: {hop}: uwierzytelniono {how}"));
+    }
     let id = Uuid::new_v4();
     state
         .sessions
@@ -477,5 +670,167 @@ mod tests {
             Some(Some("ssh-ed25519 AAA".into()))
         );
         assert_eq!(previous_key(&[], "ssh-ed25519", "AAA"), Some(None));
+    }
+
+    fn plan() -> HopPlan {
+        HopPlan {
+            name: "h".into(),
+            host: "h.example".into(),
+            port: 22,
+            username: "u".into(),
+            stored_key: None,
+            key_path: None,
+            password: None,
+        }
+    }
+
+    fn dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("mrm-sess-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Klucz ed25519 z `ssh-keygen`; `None`, gdy programu nie ma.
+    fn keygen(d: &std::path::Path, name: &str, pass: &str) -> Option<std::path::PathBuf> {
+        let path = d.join(name);
+        std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", pass, "-f"])
+            .arg(&path)
+            .status()
+            .ok()?
+            .success()
+            .then_some(path)
+    }
+
+    fn stored(text: &str) -> Zeroizing<String> {
+        let (t, _) = ssh::import_key(text, None).unwrap();
+        t
+    }
+
+    #[test]
+    fn build_hop_orders_methods() {
+        let d = dir("order");
+        let Some(k) = keygen(&d, "k", "") else { return };
+        let text = std::fs::read_to_string(&k).unwrap();
+        let hop = build_hop(
+            HopPlan {
+                stored_key: Some(stored(&text)),
+                key_path: Some(k.to_string_lossy().into_owned()),
+                password: Some(Zeroizing::new("p".into())),
+                ..plan()
+            },
+            true,
+            None,
+            None,
+        )
+        .unwrap()
+        .0;
+        assert!(matches!(
+            hop.methods.as_slice(),
+            [
+                Auth::Key {
+                    origin: KeyOrigin::Stored,
+                    ..
+                },
+                Auth::Key {
+                    origin: KeyOrigin::File(_),
+                    ..
+                },
+                Auth::Agent,
+                Auth::Password(_)
+            ]
+        ));
+        let (bare, _) = build_hop(plan(), true, None, None).unwrap();
+        assert!(matches!(bare.methods.as_slice(), [Auth::Agent]));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn one_time_password_replaces_target_methods() {
+        let p = HopPlan {
+            key_path: Some("/nie/ma/takiego/pliku".into()),
+            password: Some(Zeroizing::new("zapisane".into())),
+            ..plan()
+        };
+        // Plik klucza nie jest czytany, więc brak pliku nie przeszkadza.
+        let (hop, _) = build_hop(p, true, Some("jednorazowe"), None).unwrap();
+        assert!(matches!(hop.methods.as_slice(), [Auth::Password(_)]));
+        // Bastion nie dostaje hasła jednorazowego.
+        let (b, _) = build_hop(plan(), false, Some("x"), None).unwrap();
+        assert!(matches!(b.methods.as_slice(), [Auth::Agent]));
+    }
+
+    #[test]
+    fn encrypted_path_key_asks_on_target_only() {
+        let d = dir("enc");
+        let Some(k) = keygen(&d, "k", "haslo-klucza") else {
+            return;
+        };
+        let p = || HopPlan {
+            key_path: Some(k.to_string_lossy().into_owned()),
+            ..plan()
+        };
+        let e = build_hop(p(), true, None, None).unwrap_err();
+        assert!(e.starts_with("NEEDS_KEY_PASSPHRASE:"), "{e}");
+        let e = build_hop(p(), false, None, Some("haslo-klucza")).unwrap_err();
+        assert!(!e.starts_with("NEEDS_KEY_PASSPHRASE:"), "{e}");
+        assert!(e.contains("bastionu") && e.contains("agenta SSH"), "{e}");
+        let (ok, _) = build_hop(p(), true, None, Some("haslo-klucza")).unwrap();
+        assert_eq!(ok.methods.len(), 2);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn wrong_key_passphrase_asks_again() {
+        let d = dir("wrong");
+        let Some(k) = keygen(&d, "k", "haslo-klucza") else {
+            return;
+        };
+        let p = HopPlan {
+            key_path: Some(k.to_string_lossy().into_owned()),
+            ..plan()
+        };
+        let e = build_hop(p, true, None, Some("zle")).unwrap_err();
+        assert!(
+            e.starts_with("NEEDS_KEY_PASSPHRASE:Nieprawidłowe hasło"),
+            "{e}"
+        );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn key_file_over_limit_is_rejected() {
+        let d = dir("big");
+        let f = d.join("duzy");
+        std::fs::write(&f, vec![b'a'; ssh::MAX_KEY_TEXT + 1]).unwrap();
+        let p = HopPlan {
+            key_path: Some(f.to_string_lossy().into_owned()),
+            ..plan()
+        };
+        let e = build_hop(p, true, None, None).unwrap_err();
+        assert!(e.contains("za duży"), "{e}");
+        let p = HopPlan {
+            key_path: Some(d.join("brak").to_string_lossy().into_owned()),
+            ..plan()
+        };
+        // Pliku, którego nie ma, nie traktujemy jak błędu: metoda wypada, pozostałe zostają.
+        let (hop, skipped) = build_hop(p, true, None, None).unwrap();
+        assert!(matches!(hop.methods.as_slice(), [Auth::Agent]));
+        let note = skipped.expect("notatka o pominiętym pliku");
+        assert!(note.starts_with("pominięto plik klucza"), "{note}");
+        assert!(note.contains("brak"), "{note}");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn tilde_path_expands_with_home() {
+        let e = expand_key_path("/abs/k").unwrap();
+        assert_eq!(e, std::path::PathBuf::from("/abs/k"));
+        if let Some(h) = std::env::var_os("HOME") {
+            assert_eq!(
+                expand_key_path("~/.ssh/k").unwrap(),
+                std::path::PathBuf::from(h).join(".ssh/k")
+            );
+        }
     }
 }

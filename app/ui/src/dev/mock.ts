@@ -13,8 +13,33 @@ let unlocked = params.has('seed');
 
 const emptyFields = (): FieldsIo => ({
   port: null, username: null, domain: null, jump_host: null, terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, rdp_profile: null, rdp_webauthn: null, rdp_smartcard: null, has_password: false,
+  ssh_key_path: null, has_ssh_key: false, ssh_key_algorithm: null, ssh_key_fingerprint: null,
 });
 const secrets = new Map<string, string>();
+
+/** Jak backend: import klucza przy zapisie (hasło klucza w atrapie to `haslo-klucza`). */
+function importKey(input: any, existing: FieldsIo | undefined) {
+  const text: string = (input.ssh_key ?? '').trim();
+  let imported = false;
+  if (text) {
+    if (!text.includes('PRIVATE KEY')) throw 'KEY_INVALID:Nie można odczytać klucza: brak nagłówka';
+    if (text.includes('ENCRYPTED')) {
+      const pass = input.ssh_key_passphrase ?? '';
+      if (!pass) throw 'KEY_NEEDS_PASSPHRASE:Klucz jest zaszyfrowany. Podaj hasło klucza, aby go zaimportować.';
+      if (pass !== 'haslo-klucza') throw 'KEY_BAD_PASSPHRASE:Nieprawidłowe hasło klucza.';
+    }
+    imported = true;
+  }
+  const keep = !input.clear_ssh_key && (imported || !!existing?.has_ssh_key);
+  return {
+    has_ssh_key: keep,
+    ssh_key_algorithm: keep ? 'ssh-ed25519' : null,
+    ssh_key_fingerprint: keep ? 'SHA256:mockkey000000000000000000000000000000000000' : null,
+  };
+}
+const stripInputs = (f: any) => {
+  delete f.password; delete f.clear_password; delete f.ssh_key; delete f.ssh_key_passphrase; delete f.clear_ssh_key;
+};
 const doc: DocView = { folders: [], hosts: [], settings: { theme: 'dark', terminal_font_size: 13, terminal_scheme: 'domyslny', shortcuts: {}, rdp_profile: 'fast', rdp_keys: 'never' }, trusted_count: 0 };
 const trusted = new Set<string>();
 
@@ -71,9 +96,10 @@ const handlers: Record<string, Handler> = {
   get_doc: () => structuredClone({ ...doc, trusted_count: trusted.size }),
   save_folder: ({ input }) => {
     const id = input.id ?? `f${Date.now()}`;
-    const fields = { ...emptyFields(), ...input.fields, has_password: !!input.fields.password || (input.fields.has_password && !input.fields.clear_password) };
-    delete (fields as any).password; delete (fields as any).clear_password;
     const existing = doc.folders.find((x) => x.id === id);
+    const key = importKey(input.fields, existing?.fields);
+    const fields = { ...emptyFields(), ...input.fields, ...key, has_password: !!input.fields.password || (input.fields.has_password && !input.fields.clear_password) };
+    stripInputs(fields);
     if (existing) Object.assign(existing, { name: input.name, parent: input.parent, fields });
     else doc.folders.push({ id, name: input.name, parent: input.parent, fields });
     return id;
@@ -81,10 +107,11 @@ const handlers: Record<string, Handler> = {
   save_host: ({ input }) => {
     if (!input.name.trim() || !input.address.trim()) throw 'Nazwa i adres hosta są wymagane.';
     const id = input.id ?? `h${Date.now()}`;
-    const fields = { ...emptyFields(), ...input.fields, has_password: !!input.fields.password || (input.fields.has_password && !input.fields.clear_password) };
-    if (input.fields.password) secrets.set(id, input.fields.password);
-    delete (fields as any).password; delete (fields as any).clear_password;
     const existing = doc.hosts.find((x) => x.id === id);
+    const key = importKey(input.fields, existing?.fields);
+    const fields = { ...emptyFields(), ...input.fields, ...key, has_password: !!input.fields.password || (input.fields.has_password && !input.fields.clear_password) };
+    if (input.fields.password) secrets.set(id, input.fields.password);
+    stripInputs(fields);
     const body = { name: input.name, address: input.address, protocol: input.protocol, folder: input.folder, notes: input.notes, fields };
     if (existing) Object.assign(existing, body);
     else doc.hosts.push({ id, favorite: false, ...body });
@@ -116,10 +143,16 @@ const handlers: Record<string, Handler> = {
     const resolve = pendingTrust.get(id);
     if (resolve) { pendingTrust.delete(id); if (accept && remember) trusted.add('x'); resolve(accept); }
   },
-  connect_ssh: async ({ onEvent, hostId, password }) => {
+  connect_ssh: async ({ onEvent, hostId, password, keyPassphrase }) => {
     const host = doc.hosts.find((h) => h.id === hostId)!;
-    // Host bez zapisanego hasła i bez agenta: backend prosi o hasło na tę sesję.
-    if (host.id === 'h4' && !password) throw 'NEEDS_PASSWORD:Agent SSH jest niedostępny: brak gniazda agenta';
+    // Klucz ze ścieżki zakończonej na `_enc` jest zaszyfrowany (hasło: haslo-klucza).
+    const path = host.fields.ssh_key_path;
+    if (path?.endsWith('_enc')) {
+      if (!keyPassphrase) throw `NEEDS_KEY_PASSPHRASE:Klucz ${path} jest zaszyfrowany. Podaj jego hasło.`;
+      if (keyPassphrase !== 'haslo-klucza') throw `NEEDS_KEY_PASSPHRASE:Nieprawidłowe hasło klucza ${path}. Spróbuj ponownie.`;
+    }
+    // Host bez zapisanego hasła, klucza i agenta: backend prosi o hasło na tę sesję.
+    if (host.id === 'h4' && !password && !secrets.has(host.id) && !path && !host.fields.has_ssh_key) throw 'NEEDS_PASSWORD:Agent SSH jest niedostępny: brak gniazda agenta';
     const send = nextIndexSender(onEvent.id);
     if (!trusted.has(host.address)) {
       const ok = await askTrust({ protocol: 'ssh', host: host.address, port: 22, algorithm: 'ssh-ed25519', fingerprint: 'SHA256:mock0000000000000000000000000000000000000000' });

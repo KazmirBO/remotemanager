@@ -8,7 +8,13 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ssh::{Auth, Error, Hop, HostKeyInfo, HostKeyVerifier, Session, ShellEvent};
+use ssh::{
+    Auth, AuthUsed, Error, Hop, HostKeyInfo, HostKeyVerifier, KeyInfo, KeyOrigin, SecretKey,
+    Session, ShellEvent,
+};
+
+/// Hasło zaszyfrowanych kluczy testowych.
+const KEY_PASS: &str = "haslo-klucza";
 
 fn find(bin: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")?
@@ -38,6 +44,54 @@ struct Env {
     good_agent: PathBuf,
     /// Agent z kluczem, którego serwer nie zna.
     bad_agent: PathBuf,
+    /// Agent z sześcioma kluczami, których serwer nie zna (`bad1..bad6`).
+    many_bad_agent: PathBuf,
+}
+
+impl Env {
+    /// Ścieżka klucza wygenerowanego w `setup`.
+    fn key_path(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
+
+    /// Klucz z pliku, jak przy ścieżce podanej przez użytkownika.
+    fn file_key(&self, name: &str, pass: Option<&str>) -> Auth {
+        let path = self.key_path(name);
+        let text = ssh::read_key_file(&path).unwrap();
+        Auth::Key {
+            key: ssh::parse_key(&text, pass).unwrap_or_else(|e| panic!("{name}: {e}")),
+            origin: KeyOrigin::File(path.display().to_string()),
+        }
+    }
+
+    /// Klucz zaimportowany do pliku hostów (odszyfrowany tekst OpenSSH).
+    fn stored_key(&self, name: &str) -> (Auth, KeyInfo) {
+        let text = ssh::read_key_file(&self.key_path(name)).unwrap();
+        let (openssh, info) = ssh::import_key(&text, None).unwrap();
+        let key: SecretKey = ssh::parse_key(&openssh, None).unwrap();
+        (
+            Auth::Key {
+                key,
+                origin: KeyOrigin::Stored,
+            },
+            info,
+        )
+    }
+
+    /// Odcisk klucza według `ssh-keygen -lf`.
+    fn fingerprint(&self, name: &str) -> String {
+        let out = Command::new(find("ssh-keygen").unwrap())
+            .arg("-lf")
+            .arg(self.dir.join(format!("{name}.pub")))
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .to_owned()
+    }
 }
 
 fn run(cmd: &mut Command) {
@@ -52,13 +106,11 @@ fn run(cmd: &mut Command) {
 fn start_agent(
     dir: &Path,
     name: &str,
-    key: &Path,
+    keys: &[PathBuf],
     g: &mut Guard,
-    keygen: &Path,
     add: &Path,
     agent: &Path,
 ) -> PathBuf {
-    let _ = keygen;
     let sock = dir.join(format!("{name}.sock"));
     g.0.push(
         Command::new(agent)
@@ -79,7 +131,7 @@ fn start_agent(
     let mut added = false;
     for _ in 0..50 {
         let st = Command::new(add)
-            .arg(key)
+            .args(keys)
             .env("SSH_AUTH_SOCK", &sock)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -95,6 +147,11 @@ fn start_agent(
 }
 
 fn setup() -> Option<Env> {
+    setup_with(&[])
+}
+
+/// Jak `setup`, z dodatkowymi opcjami `-o` dla sshd (np. `MaxAuthTries=6`).
+fn setup_with(sshd_options: &[&str]) -> Option<Env> {
     let (sshd, keygen, agent, add) = (
         find("sshd")?,
         find("ssh-keygen")?,
@@ -107,16 +164,51 @@ fn setup() -> Option<Env> {
         rand_suffix()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let key = |n: &str| {
+    let key_with = |n: &str, args: &[&str]| {
         let p = dir.join(n);
-        run(Command::new(&keygen)
-            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
-            .arg(&p));
+        run(Command::new(&keygen).arg("-q").args(args).arg("-f").arg(&p));
         p
     };
+    let key = |n: &str| key_with(n, &["-t", "ed25519", "-N", ""]);
     let (host, good, bad) = (key("host"), key("good"), key("bad"));
+    key_with("rsa", &["-t", "rsa", "-b", "2048", "-N", ""]);
+    key_with(
+        "rsa_pem",
+        &["-t", "rsa", "-b", "2048", "-m", "PEM", "-N", ""],
+    );
+    key_with(
+        "rsa_pem_enc",
+        &["-t", "rsa", "-b", "2048", "-m", "PEM", "-N", KEY_PASS],
+    );
+    key_with(
+        "ecdsa_p8",
+        &["-t", "ecdsa", "-b", "256", "-m", "PKCS8", "-N", ""],
+    );
+    key_with(
+        "ecdsa_p8_enc",
+        &["-t", "ecdsa", "-b", "256", "-m", "PKCS8", "-N", KEY_PASS],
+    );
+    key_with("enc", &["-t", "ed25519", "-N", KEY_PASS]);
+    let bads: Vec<PathBuf> = (1..=6).map(|i| key(&format!("bad{i}"))).collect();
     let authorized = dir.join("authorized_keys");
-    std::fs::copy(dir.join("good.pub"), &authorized).unwrap();
+    let mut lines = String::new();
+    for n in [
+        "good",
+        "rsa",
+        "rsa_pem",
+        "rsa_pem_enc",
+        "ecdsa_p8",
+        "ecdsa_p8_enc",
+        "enc",
+    ] {
+        lines.push_str(
+            std::fs::read_to_string(dir.join(format!("{n}.pub")))
+                .ok()?
+                .trim(),
+        );
+        lines.push('\n');
+    }
+    std::fs::write(&authorized, lines).unwrap();
 
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -149,6 +241,7 @@ fn setup() -> Option<Env> {
             ])
             .arg("-o")
             .arg(format!("AuthorizedKeysFile={}", authorized.display()))
+            .args(sshd_options.iter().flat_map(|o| ["-o", o]))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -160,8 +253,9 @@ fn setup() -> Option<Env> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let good_agent = start_agent(&dir, "good", &good, &mut guard, &keygen, &add, &agent);
-    let bad_agent = start_agent(&dir, "bad", &bad, &mut guard, &keygen, &add, &agent);
+    let good_agent = start_agent(&dir, "good", &[good], &mut guard, &add, &agent);
+    let bad_agent = start_agent(&dir, "bad", &[bad], &mut guard, &add, &agent);
+    let many_bad_agent = start_agent(&dir, "many_bad", &bads, &mut guard, &add, &agent);
     let user = String::from_utf8(Command::new("id").arg("-un").output().ok()?.stdout)
         .ok()?
         .trim()
@@ -173,6 +267,7 @@ fn setup() -> Option<Env> {
         user,
         good_agent,
         bad_agent,
+        many_bad_agent,
     })
 }
 
@@ -192,12 +287,12 @@ fn accept_all() -> (HostKeyVerifier, Arc<Mutex<Vec<HostKeyInfo>>>) {
     (v, seen)
 }
 
-fn hop(env: &Env, auth: Auth) -> Hop {
+fn hop(env: &Env, methods: Vec<Auth>) -> Hop {
     Hop {
         host: "127.0.0.1".into(),
         port: env.port,
         username: env.user.clone(),
-        auth,
+        methods,
     }
 }
 
@@ -229,7 +324,7 @@ async fn agent_auth_shell_roundtrip_and_fingerprint() {
     };
     let (verifier, seen) = accept_all();
     let session = Session::connect(
-        &[hop(&env, Auth::AgentSocket(env.good_agent.clone()))],
+        &[hop(&env, vec![Auth::AgentSocket(env.good_agent.clone())])],
         verifier,
     )
     .await
@@ -270,7 +365,7 @@ async fn rejected_host_key_is_reported() {
     };
     let verifier: HostKeyVerifier = Arc::new(|_| Box::pin(async { false }));
     let err = Session::connect(
-        &[hop(&env, Auth::AgentSocket(env.good_agent.clone()))],
+        &[hop(&env, vec![Auth::AgentSocket(env.good_agent.clone())])],
         verifier,
     )
     .await
@@ -287,7 +382,7 @@ async fn unknown_key_fails_authentication() {
     };
     let (verifier, _) = accept_all();
     let err = Session::connect(
-        &[hop(&env, Auth::AgentSocket(env.bad_agent.clone()))],
+        &[hop(&env, vec![Auth::AgentSocket(env.bad_agent.clone())])],
         verifier,
     )
     .await
@@ -304,7 +399,10 @@ async fn missing_agent_is_reported() {
     };
     let (verifier, _) = accept_all();
     let err = Session::connect(
-        &[hop(&env, Auth::AgentSocket(env.dir.join("nie-ma.sock")))],
+        &[hop(
+            &env,
+            vec![Auth::AgentSocket(env.dir.join("nie-ma.sock"))],
+        )],
         verifier,
     )
     .await
@@ -322,7 +420,7 @@ async fn proxy_jump_through_bastion() {
     let (verifier, seen) = accept_all();
     let a = Auth::AgentSocket(env.good_agent.clone());
     // Bastion i cel to ten sam sshd: drugi przystanek idzie kanałem direct-tcpip przez pierwszy.
-    let session = Session::connect(&[hop(&env, a.clone()), hop(&env, a)], verifier)
+    let session = Session::connect(&[hop(&env, vec![a.clone()]), hop(&env, vec![a])], verifier)
         .await
         .unwrap();
     let (shell, mut rx) = session.open_shell(80, 24).await.unwrap();
@@ -353,7 +451,7 @@ async fn silent_server_times_out() {
         host: "127.0.0.1".into(),
         port,
         username: "ktos".into(),
-        auth: Auth::Agent,
+        methods: vec![Auth::Agent],
     };
     let started = std::time::Instant::now();
     let err = Session::connect_with_timeout(&[hop], verifier, Duration::from_secs(2))
@@ -378,7 +476,7 @@ async fn slow_trust_decision_does_not_time_out() {
         })
     });
     let session = Session::connect_with_timeout(
-        &[hop(&env, Auth::AgentSocket(env.good_agent.clone()))],
+        &[hop(&env, vec![Auth::AgentSocket(env.good_agent.clone())])],
         verifier,
         Duration::from_secs(2),
     )
@@ -447,7 +545,7 @@ async fn slow_agent_approval_does_not_time_out() {
     let sock = slow_agent(&env.good_agent, &env.dir, Duration::from_secs(3));
     let (verifier, _) = accept_all();
     let session = Session::connect_with_timeout(
-        &[hop(&env, Auth::AgentSocket(sock))],
+        &[hop(&env, vec![Auth::AgentSocket(sock)])],
         verifier,
         Duration::from_secs(2),
     )
@@ -469,7 +567,7 @@ async fn writes_keep_call_order_without_interleaving() {
     };
     let (verifier, _) = accept_all();
     let session = Session::connect(
-        &[hop(&env, Auth::AgentSocket(env.good_agent.clone()))],
+        &[hop(&env, vec![Auth::AgentSocket(env.good_agent.clone())])],
         verifier,
     )
     .await
@@ -534,7 +632,7 @@ async fn write_after_shell_closed_reports_error() {
     };
     let (verifier, _) = accept_all();
     let session = Session::connect(
-        &[hop(&env, Auth::AgentSocket(env.good_agent.clone()))],
+        &[hop(&env, vec![Auth::AgentSocket(env.good_agent.clone())])],
         verifier,
     )
     .await
@@ -557,6 +655,208 @@ async fn write_after_shell_closed_reports_error() {
     }
     assert!(failed, "zapis po zamknięciu powłoki powinien zwrócić błąd");
     assert!(shell.resize(80, 24).is_err());
+    session.disconnect().await;
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+/// Łączy się z jednym przystankiem i zwraca metodę, która zadziałała.
+async fn connect_one(env: &Env, methods: Vec<Auth>) -> Result<AuthUsed, Error> {
+    let (verifier, _) = accept_all();
+    let session = Session::connect(&[hop(env, methods)], verifier).await?;
+    let used = session.auth_used().to_vec();
+    session.disconnect().await;
+    assert_eq!(used.len(), 1);
+    Ok(used.into_iter().next().unwrap())
+}
+
+#[tokio::test]
+async fn stored_key_auth_shell_roundtrip() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let (auth, info) = env.stored_key("good");
+    assert_eq!(info.fingerprint, env.fingerprint("good"));
+    let (verifier, _) = accept_all();
+    let session = Session::connect(&[hop(&env, vec![auth])], verifier)
+        .await
+        .unwrap();
+    assert_eq!(session.auth_used(), &[AuthUsed::StoredKey(info)]);
+    let (shell, mut rx) = session.open_shell(80, 24).await.unwrap();
+    shell.write(b"echo klucz-$USER\n".to_vec()).unwrap();
+    read_until(&mut rx, &format!("klucz-{}", env.user)).await;
+    session.disconnect().await;
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+#[tokio::test]
+async fn key_formats_authenticate() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    for (name, pass, algorithm) in [
+        ("good", None, "ssh-ed25519"),
+        ("rsa", None, "ssh-rsa"),
+        ("rsa_pem", None, "ssh-rsa"),
+        ("ecdsa_p8", None, "ecdsa-sha2-nistp256"),
+        ("enc", Some(KEY_PASS), "ssh-ed25519"),
+        ("rsa_pem_enc", Some(KEY_PASS), "ssh-rsa"),
+        ("ecdsa_p8_enc", Some(KEY_PASS), "ecdsa-sha2-nistp256"),
+    ] {
+        let used = connect_one(&env, vec![env.file_key(name, pass)])
+            .await
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(
+            used,
+            AuthUsed::KeyFile {
+                path: env.key_path(name).display().to_string(),
+                info: KeyInfo {
+                    algorithm: algorithm.into(),
+                    fingerprint: env.fingerprint(name),
+                },
+            },
+            "{name}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+/// Serwer bez `ssh-rsa` (SHA-1) przyjmuje klucz RSA podpisany rsa-sha2-*.
+#[tokio::test]
+async fn rsa_key_uses_sha2() {
+    let Some(env) = setup_with(&["PubkeyAcceptedAlgorithms=rsa-sha2-256,rsa-sha2-512,ssh-ed25519"])
+    else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let used = connect_one(&env, vec![env.file_key("rsa", None)])
+        .await
+        .unwrap();
+    assert!(matches!(used, AuthUsed::KeyFile { .. }), "{used:?}");
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+#[tokio::test]
+async fn unknown_key_fails_authentication_with_key() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let err = connect_one(&env, vec![env.file_key("bad1", None)])
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::AuthFailed), "{err:?}");
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+#[tokio::test]
+async fn unavailable_agent_is_skipped_when_key_follows() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let (key, info) = env.stored_key("good");
+    let used = connect_one(
+        &env,
+        vec![Auth::AgentSocket(env.dir.join("nie-ma.sock")), key],
+    )
+    .await
+    .unwrap();
+    assert_eq!(used, AuthUsed::StoredKey(info));
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+#[tokio::test]
+async fn agent_after_rejected_key() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let used = connect_one(
+        &env,
+        vec![
+            env.file_key("bad1", None),
+            Auth::AgentSocket(env.good_agent.clone()),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        used,
+        AuthUsed::Agent(KeyInfo {
+            algorithm: "ssh-ed25519".into(),
+            fingerprint: env.fingerprint("good"),
+        })
+    );
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+/// Agent z sześcioma złymi kluczami nie może zużyć wszystkich prób przed kluczem z pliku:
+/// bez rezerwy sshd (MaxAuthTries 6) rozłączyłby się przed jego próbą.
+#[tokio::test]
+async fn attempt_budget_leaves_room_for_later_methods() {
+    let Some(env) = setup_with(&["MaxAuthTries=6"]) else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let (key, info) = env.stored_key("good");
+    let used = connect_one(
+        &env,
+        vec![Auth::AgentSocket(env.many_bad_agent.clone()), key],
+    )
+    .await
+    .unwrap();
+    assert_eq!(used, AuthUsed::StoredKey(info));
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+/// Limit prób kończy się czytelnym `AuthFailed`, zanim serwer rozłączy się po szóstej nieudanej
+/// próbie. Siedem złych kluczy w dwóch agentach: bez limitu sshd zerwałby połączenie.
+#[tokio::test]
+async fn attempts_never_exceed_limit() {
+    let Some(env) = setup_with(&["MaxAuthTries=6"]) else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let err = connect_one(
+        &env,
+        vec![
+            Auth::AgentSocket(env.many_bad_agent.clone()),
+            Auth::AgentSocket(env.bad_agent.clone()),
+        ],
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, Error::AuthFailed), "{err:?}");
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+#[tokio::test]
+async fn empty_methods_are_rejected() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let err = connect_one(&env, vec![]).await.unwrap_err();
+    assert!(matches!(err, Error::Protocol(_)), "{err:?}");
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+#[tokio::test]
+async fn proxy_jump_with_key_on_bastion() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let (verifier, _) = accept_all();
+    let (key, info) = env.stored_key("good");
+    let session = Session::connect(
+        &[
+            hop(&env, vec![key]),
+            hop(&env, vec![Auth::AgentSocket(env.good_agent.clone())]),
+        ],
+        verifier,
+    )
+    .await
+    .unwrap();
+    let used = session.auth_used();
+    assert_eq!(used.len(), 2);
+    assert_eq!(used[0], AuthUsed::StoredKey(info.clone()));
+    assert_eq!(used[1], AuthUsed::Agent(info));
+    let (shell, mut rx) = session.open_shell(80, 24).await.unwrap();
+    shell.write(b"echo przez-$USER\n".to_vec()).unwrap();
+    read_until(&mut rx, &format!("przez-{}", env.user)).await;
     session.disconnect().await;
     let _ = std::fs::remove_dir_all(&env.dir);
 }

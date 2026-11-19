@@ -91,6 +91,28 @@ pub enum RdpKeys {
     Always,
 }
 
+/// Klucz prywatny SSH zapisany w pliku hostów: odszyfrowany tekst OpenSSH (sekret) oraz dane
+/// klucza publicznego wyliczone przy imporcie. Chroni go wyłącznie hasło główne pliku.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StoredKey {
+    /// Sekret: tekst "-----BEGIN OPENSSH PRIVATE KEY-----" bez hasła. Nie wolno go logować.
+    pub openssh: String,
+    /// Np. "ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa".
+    pub algorithm: String,
+    /// Np. "SHA256:AbC...".
+    pub fingerprint: String,
+}
+
+impl std::fmt::Debug for StoredKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredKey")
+            .field("algorithm", &self.algorithm)
+            .field("fingerprint", &self.fingerprint)
+            .field("openssh", &"***")
+            .finish()
+    }
+}
+
 macro_rules! fields {
     ($($name:ident : $ty:ty),* $(,)?) => {
         /// Nadpisywalne ustawienia. `None` = dziedzicz.
@@ -146,6 +168,10 @@ fields! {
     domain: String,
     // Sekret: nie wolno go logować.
     password: String,
+    // Sekret: odszyfrowany klucz prywatny SSH z pliku hostów.
+    ssh_key: StoredKey,
+    // Ścieżka do pliku klucza prywatnego SSH na dysku, czytanego przy łączeniu.
+    ssh_key_path: String,
     jump_host: Id,
     terminal_scheme: String,
     rdp_multimon: bool,
@@ -662,6 +688,7 @@ mod tests {
         let (t, ..) = tree_with_chain();
         let json = serde_json::to_string(&t).unwrap();
         assert!(!json.contains("password"));
+        assert!(!json.contains("ssh_key"));
         assert_eq!(serde_json::from_str::<Tree>(&json).unwrap(), t);
     }
 
@@ -754,6 +781,56 @@ mod tests {
         let r = t.resolve(h).unwrap();
         assert_eq!(r.fields.rdp_profile, Some(LinkProfile::Fast));
         assert_eq!(r.sources.rdp_profile, Some(Source::Host));
+    }
+
+    fn stored_key(tag: &str) -> StoredKey {
+        StoredKey {
+            openssh: format!("sekret-{tag}"),
+            algorithm: "ssh-ed25519".into(),
+            fingerprint: format!("SHA256:{tag}"),
+        }
+    }
+
+    #[test]
+    fn ssh_key_fields_inherit_host_folder_none() {
+        let mut t = Tree::default();
+        let f = t.add_folder("F", None).unwrap();
+        let h = t.add_host("h", "h", Protocol::Ssh, Some(f)).unwrap();
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.ssh_key, None);
+        assert_eq!(r.sources.ssh_key, None);
+        assert_eq!(r.fields.ssh_key_path, None);
+        assert_eq!(r.sources.ssh_key_path, None);
+
+        // Klucz w katalogu, ścieżka na hoście: pola dziedziczą się niezależnie.
+        t.folders[0].fields.ssh_key = Some(stored_key("a"));
+        t.hosts[0].fields.ssh_key_path = Some("~/.ssh/id".into());
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.ssh_key, Some(stored_key("a")));
+        assert_eq!(r.sources.ssh_key, Some(Source::Folder(f)));
+        assert_eq!(r.fields.ssh_key_path.as_deref(), Some("~/.ssh/id"));
+        assert_eq!(r.sources.ssh_key_path, Some(Source::Host));
+
+        // Ścieżka w katalogu, klucz na hoście nadpisuje klucz katalogu.
+        t.folders[0].fields.ssh_key_path = Some("/k".into());
+        t.hosts[0].fields.ssh_key_path = None;
+        t.hosts[0].fields.ssh_key = Some(stored_key("b"));
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.ssh_key, Some(stored_key("b")));
+        assert_eq!(r.sources.ssh_key, Some(Source::Host));
+        assert_eq!(r.fields.ssh_key_path.as_deref(), Some("/k"));
+        assert_eq!(r.sources.ssh_key_path, Some(Source::Folder(f)));
+    }
+
+    #[test]
+    fn stored_key_debug_hides_secret() {
+        let fields = Fields {
+            ssh_key: Some(stored_key("odcisk1")),
+            ..Fields::default()
+        };
+        let dbg = format!("{fields:?}");
+        assert!(!dbg.contains("sekret-"), "{dbg}");
+        assert!(dbg.contains("SHA256:odcisk1"), "{dbg}");
     }
 
     #[test]

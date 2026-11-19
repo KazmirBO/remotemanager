@@ -2,6 +2,12 @@
 
 Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `wydanie`).
 
+## Niewydane
+
+Zmiany na gałęzi roboczej, które wejdą do następnego wydania.
+
+- SSH: logowanie kluczem prywatnym. Klucz można wkleić albo wczytać z pliku do pliku hostów (wtedy jest odszyfrowywany przy imporcie, więc hasło klucza podajesz raz i nie jest zapisywane) albo wskazać ścieżką do pliku czytanego przy łączeniu (zaszyfrowany klucz wymaga wtedy hasła przy każdym połączeniu). Obie możliwości dziedziczą się z katalogu na host; obsługiwane formaty to OpenSSH, PKCS#8, PEM i PuTTY .ppk, limit 64 KiB. Kolejność prób: klucz z pliku hostów, plik klucza, agent SSH, zapisane hasło, na końcu pytanie o hasło; liczba prób na przystanek jest ograniczona do 5.
+
 ## 0.1.5 - 2026-11-17
 
 Wydanie nadal wstępne: pakiety są niepodpisane.

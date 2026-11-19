@@ -56,7 +56,7 @@ export function matches(h: HostView, query: string): boolean {
 }
 
 export type InheritableKey =
-  | 'port' | 'username' | 'domain' | 'jump_host' | 'terminal_scheme' | 'rdp_multimon' | 'rdp_kerberos' | 'rdp_kdc' | 'rdp_profile' | 'rdp_webauthn' | 'rdp_smartcard';
+  | 'port' | 'username' | 'domain' | 'jump_host' | 'terminal_scheme' | 'rdp_multimon' | 'rdp_kerberos' | 'rdp_kdc' | 'rdp_profile' | 'rdp_webauthn' | 'rdp_smartcard' | 'ssh_key_path';
 
 /**
  * Wartość dziedziczona dla pola, licząc od katalogu `start` w górę.
@@ -86,6 +86,23 @@ export function inheritsPassword(folders: FolderView[], start: Id | null): strin
   while (cur && !seen.has(cur.id)) {
     seen.add(cur.id);
     if (cur.fields.has_password) return cur.name;
+    cur = cur.parent ? map.get(cur.parent) : undefined;
+  }
+  return null;
+}
+
+/** Pierwszy katalog w górę (od `start`), który ma zapisany klucz SSH w pliku hostów. */
+export function inheritsSshKey(
+  folders: FolderView[], start: Id | null,
+): { from: string; algorithm: string; fingerprint: string } | null {
+  const map = new Map(folders.map((f) => [f.id, f]));
+  const seen = new Set<Id>();
+  let cur = start ? map.get(start) : undefined;
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    if (cur.fields.has_ssh_key) {
+      return { from: cur.name, algorithm: cur.fields.ssh_key_algorithm ?? '', fingerprint: cur.fields.ssh_key_fingerprint ?? '' };
+    }
     cur = cur.parent ? map.get(cur.parent) : undefined;
   }
   return null;

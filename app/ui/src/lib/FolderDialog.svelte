@@ -3,7 +3,7 @@
   import FieldsForm from './FieldsForm.svelte';
   import Modal from './Modal.svelte';
   import Icon from './Icon.svelte';
-  import { refresh, ui } from './store.svelte';
+  import { keyImportError, refresh, ui } from './store.svelte';
   import { descendantIds } from './tree';
 
   let { folder, defaultParent = null, onclose }: { folder: FolderView | null; defaultParent?: Id | null; onclose: () => void } = $props();
@@ -14,13 +14,14 @@
   // svelte-ignore state_referenced_locally
   let parent = $state<Id | null>(folder ? folder.parent : defaultParent);
   // svelte-ignore state_referenced_locally
-  let fields = $state<FieldsIo>(folder ? { ...folder.fields, password: '', clear_password: false } : { ...emptyFields(), password: '' });
+  let fields = $state<FieldsIo>(folder ? { ...folder.fields, password: '', clear_password: false, ssh_key: '', ssh_key_passphrase: '', clear_ssh_key: false } : { ...emptyFields(), password: '', ssh_key: '', ssh_key_passphrase: '', clear_ssh_key: false });
   // svelte-ignore state_referenced_locally
   let error = $state('');
   // svelte-ignore state_referenced_locally
   let touched = $state(false);
   // svelte-ignore state_referenced_locally
   let busy = $state(false);
+  let keyPassphraseNeeded = $state(false);
 
   const folders = $derived(ui.doc?.folders ?? []);
   const hosts = $derived(ui.doc?.hosts ?? []);
@@ -38,7 +39,11 @@
       await refresh();
       onclose();
     } catch (err) {
-      error = String(err);
+      const k = keyImportError(err);
+      if (k) {
+        error = k.message;
+        if (k.needsPassphrase) keyPassphraseNeeded = true;
+      } else error = String(err);
     } finally {
       busy = false;
     }
@@ -60,7 +65,7 @@
       </select>
     </div>
     <p class="muted note">Ustawienia poniżej dziedziczą hosty i podkatalogi, dopóki nie nadpiszą ich własnymi.</p>
-    <FieldsForm bind:fields {folders} {hosts} startFolder={parent} protocol={null} />
+    <FieldsForm bind:fields bind:keyPassphraseNeeded {folders} {hosts} startFolder={parent} protocol={null} />
     {#if error}<div class="error" role="alert"><Icon name="alert" size={14} /> {error}</div>{/if}
   </form>
   {#snippet footer()}

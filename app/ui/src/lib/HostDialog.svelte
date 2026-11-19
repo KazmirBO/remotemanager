@@ -3,7 +3,7 @@
   import FieldsForm from './FieldsForm.svelte';
   import Modal from './Modal.svelte';
   import Icon from './Icon.svelte';
-  import { refresh, ui } from './store.svelte';
+  import { keyImportError, refresh, ui } from './store.svelte';
 
   export interface Prefill { protocol: Protocol; address: string; port: number | null; username: string | null; domain: string | null }
   let { host, defaultFolder = null, prefill = null, onclose }: {
@@ -24,13 +24,14 @@
   // svelte-ignore state_referenced_locally
   let fields = $state<FieldsIo>(
     host
-      ? { ...host.fields, password: '', clear_password: false }
-      : { ...emptyFields(), port: prefill?.port ?? null, username: prefill?.username ?? null, domain: prefill?.domain ?? null, password: '' },
+      ? { ...host.fields, password: '', clear_password: false, ssh_key: '', ssh_key_passphrase: '', clear_ssh_key: false }
+      : { ...emptyFields(), port: prefill?.port ?? null, username: prefill?.username ?? null, domain: prefill?.domain ?? null, password: '', ssh_key: '', ssh_key_passphrase: '', clear_ssh_key: false },
   );
   // svelte-ignore state_referenced_locally
   let error = $state('');
   // svelte-ignore state_referenced_locally
   let busy = $state(false);
+  let keyPassphraseNeeded = $state(false);
   // svelte-ignore state_referenced_locally
   let touched = $state(false);
 
@@ -50,7 +51,11 @@
       await refresh();
       onclose();
     } catch (err) {
-      error = String(err);
+      const k = keyImportError(err);
+      if (k) {
+        error = k.message;
+        if (k.needsPassphrase) keyPassphraseNeeded = true;
+      } else error = String(err);
     } finally {
       busy = false;
     }
@@ -88,7 +93,7 @@
         </select>
       </div>
     </div>
-    <FieldsForm bind:fields {folders} {hosts} startFolder={folder} {protocol} selfId={host?.id ?? null} />
+    <FieldsForm bind:fields bind:keyPassphraseNeeded {folders} {hosts} startFolder={folder} {protocol} selfId={host?.id ?? null} />
     <div class="field">
       <label for="h-notes">Notatki</label>
       <textarea id="h-notes" bind:value={notes}></textarea>

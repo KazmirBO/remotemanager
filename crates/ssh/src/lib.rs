@@ -1,4 +1,4 @@
-//! Sesje SSH: uwierzytelnianie (agent albo hasło), bastiony (ProxyJump przez `direct-tcpip`),
+//! Sesje SSH: uwierzytelnianie (klucz prywatny, agent, hasło), bastiony (ProxyJump przez `direct-tcpip`),
 //! weryfikacja klucza hosta przez wstrzyknięty callback, powłoka z PTY.
 
 use std::future::Future;
@@ -10,10 +10,16 @@ use std::time::Duration;
 use russh::client::{self, Handle};
 use russh::keys::agent::AgentIdentity;
 use russh::keys::agent::client::AgentClient;
-use russh::keys::{HashAlg, PublicKeyOrCertificate};
+use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::{AgentAuthError, ChannelMsg, Disconnect, SendError, Signer};
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroizing;
+
+mod keys;
+pub use keys::{KeyError, KeyInfo, MAX_KEY_TEXT, SecretKey, import_key, parse_key, read_key_file};
+
+/// Limit prób uwierzytelniania na jeden przystanek (sshd domyślnie rozłącza po 6).
+pub const MAX_AUTH_ATTEMPTS: usize = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -50,6 +56,12 @@ pub enum Auth {
     /// Agent pod wskazaną ścieżką gniazda (Unix) albo potoku nazwanego (Windows).
     AgentSocket(std::path::PathBuf),
     Password(Arc<Zeroizing<String>>),
+    /// Klucz prywatny (odszyfrowany przed `Session::connect`, więc hasło klucza nie liczy się do
+    /// limitu czasu).
+    Key {
+        key: SecretKey,
+        origin: KeyOrigin,
+    },
 }
 
 impl std::fmt::Debug for Auth {
@@ -58,8 +70,24 @@ impl std::fmt::Debug for Auth {
             Auth::Agent => f.write_str("Auth::Agent"),
             Auth::AgentSocket(p) => write!(f, "Auth::AgentSocket({})", p.display()),
             Auth::Password(_) => f.write_str("Auth::Password(***)"),
+            Auth::Key { origin, .. } => write!(f, "Auth::Key({origin:?}, ***)"),
         }
     }
+}
+
+impl Auth {
+    fn is_agent(&self) -> bool {
+        matches!(self, Auth::Agent | Auth::AgentSocket(_))
+    }
+}
+
+/// Skąd pochodzi klucz `Auth::Key`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyOrigin {
+    /// Z pliku hostów.
+    Stored,
+    /// Ze ścieżki dokładnie tak, jak podał ją użytkownik (do dziennika).
+    File(String),
 }
 
 /// Jeden przystanek łańcucha (bastion albo cel).
@@ -68,7 +96,17 @@ pub struct Hop {
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub auth: Auth,
+    /// Metody w kolejności prób.
+    pub methods: Vec<Auth>,
+}
+
+/// Metoda, która zadziałała na danym przystanku.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthUsed {
+    StoredKey(KeyInfo),
+    KeyFile { path: String, info: KeyInfo },
+    Agent(KeyInfo),
+    Password,
 }
 
 /// Informacje o kluczu hosta pokazywane przy decyzji o zaufaniu.
@@ -199,65 +237,171 @@ impl Signer for UserSigner<'_> {
     }
 }
 
+/// Algorytm skrótu dla kluczy RSA, ustalany najwyżej raz na przystanek (czeka do 1 s na
+/// `server-sig-algs`).
+async fn rsa_hash<H: client::Handler>(
+    handle: &Handle<H>,
+    cache: &mut Option<Option<HashAlg>>,
+) -> Result<Option<HashAlg>> {
+    if let Some(h) = cache {
+        return Ok(*h);
+    }
+    let h = match handle.best_supported_rsa_hash().await? {
+        // Serwer ogłosił rsa-sha2-*.
+        Some(Some(h)) => Some(h),
+        // Serwer zna tylko ssh-rsa.
+        Some(None) => None,
+        // Brak server-sig-algs: rsa-sha2-512, bo OpenSSH >= 8.8 odrzuca ssh-rsa.
+        None => Some(HashAlg::Sha512),
+    };
+    *cache = Some(h);
+    Ok(h)
+}
+
+/// Stan prób na jednym przystanku.
+struct Attempts {
+    /// Zużyte próby (każdy podpis kluczem i każde hasło).
+    used: usize,
+    rsa: Option<Option<HashAlg>>,
+}
+
+/// Próbuje kluczy agenta, najwyżej `budget` razy. `Ok(None)`: żaden klucz nie zadziałał.
+async fn try_agent<H: client::Handler>(
+    handle: &mut Handle<H>,
+    username: &str,
+    socket: Option<&std::path::Path>,
+    asking: &AtomicBool,
+    budget: usize,
+    att: &mut Attempts,
+) -> Result<Option<KeyInfo>> {
+    let mut agent = agent(socket).await?;
+    // Zablokowany agent może przy liście kluczy poprosić użytkownika o odblokowanie.
+    let ids = agent_reply(asking, agent.request_identities())
+        .await
+        .ok_or(Error::AgentTimeout)?
+        .map_err(|e| Error::AgentUnavailable(e.to_string()))?;
+    let keys: Vec<_> = ids
+        .into_iter()
+        .filter_map(|i| match i {
+            AgentIdentity::PublicKey { key, .. } => Some(key),
+            AgentIdentity::Certificate { .. } => None,
+        })
+        .collect();
+    if keys.is_empty() {
+        return Err(Error::NoIdentities);
+    }
+    let mut signer = UserSigner {
+        agent: &mut agent,
+        asking,
+    };
+    for key in keys.into_iter().take(budget) {
+        let hash = if key.algorithm().is_rsa() {
+            rsa_hash(handle, &mut att.rsa).await?
+        } else {
+            None
+        };
+        let info = KeyInfo::of_public(&key);
+        att.used += 1;
+        let res = handle
+            .authenticate_publickey_with(username.to_owned(), key, hash, &mut signer)
+            .await
+            .map_err(|e| match e {
+                SignError::Timeout => Error::AgentTimeout,
+                other => Error::Protocol(other.to_string()),
+            })?;
+        if res.success() {
+            return Ok(Some(info));
+        }
+    }
+    Ok(None)
+}
+
+/// Próbuje metod przystanku po kolei, najwyżej `MAX_AUTH_ATTEMPTS` prób. Agentowi zostawia się
+/// po jednej próbie na każdą późniejszą metodę, żeby agent z wieloma kluczami nie wyczerpał
+/// limitu przed kluczem albo hasłem. Niedostępny agent (albo agent bez kluczy) jest pomijany,
+/// gdy na liście jest inna metoda; jako jedyna metoda zgłasza swój błąd.
 async fn authenticate<H: client::Handler>(
     handle: &mut Handle<H>,
     hop: &Hop,
     asking: &AtomicBool,
-) -> Result<()> {
-    let ok = match &hop.auth {
-        Auth::Password(p) => handle
-            .authenticate_password(hop.username.clone(), p.as_str())
-            .await?
-            .success(),
-        Auth::Agent | Auth::AgentSocket(_) => {
-            let socket = match &hop.auth {
-                Auth::AgentSocket(p) => Some(p.as_path()),
-                _ => None,
-            };
-            let mut agent = agent(socket).await?;
-            // Zablokowany agent może przy liście kluczy poprosić użytkownika o odblokowanie.
-            let ids = agent_reply(asking, agent.request_identities())
-                .await
-                .ok_or(Error::AgentTimeout)?
-                .map_err(|e| Error::AgentUnavailable(e.to_string()))?;
-            let keys: Vec<_> = ids
-                .into_iter()
-                .filter_map(|i| match i {
-                    AgentIdentity::PublicKey { key, .. } => Some(key),
-                    AgentIdentity::Certificate { .. } => None,
-                })
-                .collect();
-            if keys.is_empty() {
-                return Err(Error::NoIdentities);
+) -> Result<AuthUsed> {
+    if hop.methods.is_empty() {
+        return Err(Error::Protocol("brak metod uwierzytelniania".into()));
+    }
+    let mut att = Attempts { used: 0, rsa: None };
+    let mut skipped: Option<Error> = None;
+    for (i, method) in hop.methods.iter().enumerate() {
+        if att.used >= MAX_AUTH_ATTEMPTS {
+            break;
+        }
+        match method {
+            Auth::Password(p) => {
+                att.used += 1;
+                if handle
+                    .authenticate_password(hop.username.clone(), p.as_str())
+                    .await?
+                    .success()
+                {
+                    return Ok(AuthUsed::Password);
+                }
             }
-            let rsa_hash = handle.best_supported_rsa_hash().await?.flatten();
-            let mut signer = UserSigner {
-                agent: &mut agent,
-                asking,
-            };
-            let mut success = false;
-            for key in keys {
-                let hash = if key.algorithm().is_rsa() {
-                    rsa_hash
+            Auth::Key { key, origin } => {
+                let hash = if key.0.algorithm().is_rsa() {
+                    rsa_hash(handle, &mut att.rsa).await?
                 } else {
                     None
                 };
-                let res = handle
-                    .authenticate_publickey_with(hop.username.clone(), key, hash, &mut signer)
-                    .await
-                    .map_err(|e| match e {
-                        SignError::Timeout => Error::AgentTimeout,
-                        other => Error::Protocol(other.to_string()),
-                    })?;
-                if res.success() {
-                    success = true;
-                    break;
+                att.used += 1;
+                let signed = PrivateKeyWithHashAlg::new(key.0.clone(), hash);
+                if handle
+                    .authenticate_publickey(hop.username.clone(), signed)
+                    .await?
+                    .success()
+                {
+                    let info = key.info();
+                    return Ok(match origin {
+                        KeyOrigin::Stored => AuthUsed::StoredKey(info),
+                        KeyOrigin::File(path) => AuthUsed::KeyFile {
+                            path: path.clone(),
+                            info,
+                        },
+                    });
                 }
             }
-            success
+            Auth::Agent | Auth::AgentSocket(_) => {
+                let later = hop.methods[i + 1..]
+                    .iter()
+                    .filter(|m| !m.is_agent())
+                    .count();
+                let budget = MAX_AUTH_ATTEMPTS
+                    .saturating_sub(att.used)
+                    .saturating_sub(later);
+                if budget == 0 {
+                    continue;
+                }
+                let socket = match method {
+                    Auth::AgentSocket(p) => Some(p.as_path()),
+                    _ => None,
+                };
+                match try_agent(handle, &hop.username, socket, asking, budget, &mut att).await {
+                    Ok(Some(info)) => return Ok(AuthUsed::Agent(info)),
+                    Ok(None) => {}
+                    Err(e @ (Error::AgentUnavailable(_) | Error::NoIdentities))
+                        if hop.methods.len() > 1 =>
+                    {
+                        skipped = Some(e);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
         }
-    };
-    if ok { Ok(()) } else { Err(Error::AuthFailed) }
+    }
+    // Żadna próba się nie odbyła, bo jedyne metody to niedostępni agenci: ich błąd jest
+    // czytelniejszy niż ogólne "uwierzytelnianie nie powiodło się".
+    match skipped {
+        Some(e) if att.used == 0 && hop.methods.iter().all(Auth::is_agent) => Err(e),
+        _ => Err(Error::AuthFailed),
+    }
 }
 
 /// Zdarzenia z powłoki.
@@ -271,6 +415,7 @@ pub enum ShellEvent {
 /// Połączona sesja. Trzyma uchwyty wszystkich przystanków, żeby tunel żył razem z nią.
 pub struct Session {
     handles: Vec<Handle<Client>>,
+    auth_used: Vec<AuthUsed>,
 }
 
 /// Polecenie dla pisarza powłoki. Dane i zmiana rozmiaru idą jedną kolejką, więc rozmiar nie
@@ -388,6 +533,7 @@ impl Session {
         limit: Duration,
     ) -> Result<Self> {
         let mut handles: Vec<Handle<Client>> = Vec::new();
+        let mut auth_used = Vec::new();
         for (i, hop) in hops.iter().enumerate() {
             let (rej_tx, rej_rx) = oneshot::channel();
             let asking = Arc::new(AtomicBool::new(false));
@@ -433,7 +579,7 @@ impl Session {
                     });
                 }
             };
-            within(authenticate(&mut handle, hop, &asking), limit, &asking)
+            let used = within(authenticate(&mut handle, hop, &asking), limit, &asking)
                 .await
                 .unwrap_or_else(|| Err(Error::Timeout(target.clone())))
                 .map_err(|e| {
@@ -444,12 +590,19 @@ impl Session {
                         e
                     }
                 })?;
+            auth_used.push(used);
             handles.push(handle);
         }
         if handles.is_empty() {
             return Err(Error::Protocol("pusta lista przystanków".into()));
         }
-        Ok(Self { handles })
+        Ok(Self { handles, auth_used })
+    }
+
+    /// Metoda uwierzytelniania, która zadziałała: po jednym wpisie na przystanek, w kolejności
+    /// `hops`.
+    pub fn auth_used(&self) -> &[AuthUsed] {
+        &self.auth_used
     }
 
     /// Otwiera powłokę z PTY. Zdarzenia płyną kanałem; kanał zamyka się po zakończeniu sesji.

@@ -159,6 +159,21 @@ export function needsPassword(error: unknown): string | null {
   return m.startsWith('NEEDS_PASSWORD:') ? m.slice('NEEDS_PASSWORD:'.length) : null;
 }
 
+/** "NEEDS_KEY_PASSPHRASE:<powód>": klucz ze ścieżki wymaga hasła (także po złym haśle). */
+export function needsKeyPassphrase(error: unknown): string | null {
+  const m = String(error);
+  return m.startsWith('NEEDS_KEY_PASSPHRASE:') ? m.slice('NEEDS_KEY_PASSPHRASE:'.length) : null;
+}
+
+/** Błąd importu klucza przy zapisie: `needsPassphrase` = pokaż pole hasła klucza. */
+export function keyImportError(error: unknown): { message: string; needsPassphrase: boolean } | null {
+  const m = String(error);
+  for (const [prefix, needsPassphrase] of [['KEY_NEEDS_PASSPHRASE:', true], ['KEY_BAD_PASSPHRASE:', true], ['KEY_INVALID:', false]] as const) {
+    if (m.startsWith(prefix)) return { message: m.slice(prefix.length), needsPassphrase };
+  }
+  return null;
+}
+
 export async function refreshSync() {
   try {
     ui.sync = await api.syncStatus();
