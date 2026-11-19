@@ -1180,20 +1180,56 @@ fn connect(
 }
 
 /// Nawiązuje TLS i prosi aplikację o decyzję o certyfikacie, zanim wyśle jakiekolwiek poświadczenia.
+/// Konfiguracja TLS klienta RDP.
+fn tls_client_config() -> rustls::ClientConfig {
+    // Ten sam dostawca kryptografii, którego używa `ClientConfig::builder()`.
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
+    let verifier = PinnedCert {
+        algorithms: provider.signature_verification_algorithms,
+    };
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("domyślne wersje TLS są obsługiwane przez dostawcę")
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
+    // CredSSP nie wspiera wznawiania sesji TLS.
+    config.resumption = rustls::client::Resumption::disabled();
+    config
+}
+
+/// Błąd uzgadniania TLS. Odrzucony podpis dostaje opis po polsku, bo to przypadek, w którym
+/// użytkownik powinien wiedzieć, że połączenie mogło być przechwycone.
+fn handshake_error(e: io::Error) -> anyhow::Error {
+    let bad_signature = e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+        .is_some_and(|r| {
+            matches!(
+                r,
+                rustls::Error::InvalidCertificate(rustls::CertificateError::BadSignature)
+            )
+        });
+    if bad_signature {
+        anyhow!(
+            "serwer nie dowiódł, że ma klucz prywatny z przedstawionego certyfikatu. Połączenie przerwano: to może być próba podsłuchu albo błędna konfiguracja serwera"
+        )
+    } else {
+        anyhow::Error::new(e)
+    }
+}
+
 fn tls_upgrade(
     stream: TcpStream,
     host: &str,
     rx: &Receiver<ToWorker>,
 ) -> anyhow::Result<(Tls, Vec<u8>)> {
-    let mut config = rustls::ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
-        .with_no_client_auth();
-    // CredSSP nie wspiera wznawiania sesji TLS.
-    config.resumption = rustls::client::Resumption::disabled();
-    let client = rustls::ClientConnection::new(Arc::new(config), host.to_owned().try_into()?)?;
+    let client =
+        rustls::ClientConnection::new(Arc::new(tls_client_config()), host.to_owned().try_into()?)?;
     let mut tls = rustls::StreamOwned::new(client, stream);
-    tls.flush()?;
+    tls.flush().map_err(handshake_error)?;
     let cert = tls
         .conn
         .peer_certificates()
@@ -1234,11 +1270,18 @@ fn parse_cert(cert: &[u8]) -> anyhow::Result<(Vec<u8>, String)> {
     Ok((key, cert.tbs_certificate.subject.to_string()))
 }
 
-/// Weryfikację zastępuje decyzja użytkownika o odcisku (patrz `tls_upgrade`).
+/// Weryfikator certyfikatu serwera RDP. Samego certyfikatu nie ocenia: serwery RDP mają zwykle
+/// certyfikaty samopodpisane, a o zaufaniu decyduje odcisk potwierdzony przez użytkownika
+/// i zapamiętany przez aplikację (patrz `tls_upgrade`). Podpis uzgadniania TLS sprawdza jednak
+/// zawsze. Bez tego odcisk nie dowodziłby, że rozmówca ma klucz prywatny z certyfikatu: pośrednik
+/// w sieci mógłby przedstawić cudzy, publicznie znany certyfikat, a zapamiętany odcisk
+/// przepuściłby go bez pytania.
 #[derive(Debug)]
-struct AcceptAnyCert;
+struct PinnedCert {
+    algorithms: rustls::crypto::WebPkiSupportedAlgorithms,
+}
 
-impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
+impl rustls::client::danger::ServerCertVerifier for PinnedCert {
     fn verify_server_cert(
         &self,
         _: &rustls::pki_types::CertificateDer<'_>,
@@ -1251,34 +1294,22 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
     }
     fn verify_tls12_signature(
         &self,
-        _: &[u8],
-        _: &rustls::pki_types::CertificateDer<'_>,
-        _: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.algorithms)
     }
     fn verify_tls13_signature(
         &self,
-        _: &[u8],
-        _: &rustls::pki_types::CertificateDer<'_>,
-        _: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algorithms)
     }
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        use rustls::SignatureScheme::*;
-        vec![
-            RSA_PKCS1_SHA256,
-            RSA_PKCS1_SHA384,
-            RSA_PKCS1_SHA512,
-            ECDSA_NISTP256_SHA256,
-            ECDSA_NISTP384_SHA384,
-            ECDSA_NISTP521_SHA512,
-            RSA_PSS_SHA256,
-            RSA_PSS_SHA384,
-            RSA_PSS_SHA512,
-            ED25519,
-        ]
+        self.algorithms.supported_schemes()
     }
 }
 
@@ -1701,5 +1732,131 @@ mod tests {
         assert_eq!(whole.len(), 1);
         let joined: Vec<u8> = parts.iter().flat_map(|p| p.rgba.clone()).collect();
         assert_eq!(joined, whole[0].rgba);
+    }
+
+    /// Para certyfikat i klucz RSA wygenerowana w locie przez `openssl` (DER).
+    fn openssl_pair(
+        dir: &std::path::Path,
+        name: &str,
+    ) -> Option<(
+        rustls::pki_types::CertificateDer<'static>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    )> {
+        let run = |args: &[&str]| {
+            std::process::Command::new("openssl")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        let (key, cert) = (format!("{name}.key.pem"), format!("{name}.crt.pem"));
+        let (key_der, cert_der) = (format!("{name}.key.der"), format!("{name}.crt.der"));
+        let made = run(&[
+            "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", "/CN=test",
+            "-keyout", &key, "-out", &cert,
+        ]) && run(&["x509", "-in", &cert, "-outform", "DER", "-out", &cert_der])
+            && run(&[
+                "pkcs8", "-topk8", "-nocrypt", "-in", &key, "-outform", "DER", "-out", &key_der,
+            ]);
+        if !made {
+            return None;
+        }
+        let cert = std::fs::read(dir.join(cert_der)).ok()?;
+        let key = std::fs::read(dir.join(key_der)).ok()?;
+        Some((
+            rustls::pki_types::CertificateDer::from(cert),
+            rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+                key,
+            )),
+        ))
+    }
+
+    #[derive(Debug)]
+    struct FixedCert(Arc<rustls::sign::CertifiedKey>);
+
+    impl rustls::server::ResolvesServerCert for FixedCert {
+        fn resolve(
+            &self,
+            _: rustls::server::ClientHello<'_>,
+        ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+            Some(self.0.clone())
+        }
+    }
+
+    /// Uzgadnianie TLS klienta RDP z lokalnym serwerem, który przedstawia `cert`, a podpisuje
+    /// kluczem `key`. Zwraca wynik po stronie klienta.
+    fn handshake_with(
+        version: &'static rustls::SupportedProtocolVersion,
+        cert: rustls::pki_types::CertificateDer<'static>,
+        key: &rustls::pki_types::PrivateKeyDer<'static>,
+    ) -> io::Result<()> {
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let signing = rustls::crypto::aws_lc_rs::sign::any_supported_type(key).unwrap();
+        let certified = Arc::new(rustls::sign::CertifiedKey::new(vec![cert], signing));
+        let server_config = Arc::new(
+            rustls::ServerConfig::builder_with_provider(provider)
+                .with_protocol_versions(&[version])
+                .unwrap()
+                .with_no_client_auth()
+                .with_cert_resolver(Arc::new(FixedCert(certified))),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut conn = rustls::ServerConnection::new(server_config).unwrap();
+            while conn.is_handshaking() {
+                if conn.complete_io(&mut stream).is_err() {
+                    break;
+                }
+            }
+        });
+        let stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let client = rustls::ClientConnection::new(
+            Arc::new(tls_client_config()),
+            "localhost".try_into().unwrap(),
+        )
+        .unwrap();
+        let mut tls = rustls::StreamOwned::new(client, stream);
+        let result = tls.flush();
+        drop(tls);
+        server.join().unwrap();
+        result
+    }
+
+    /// Odcisk certyfikatu ma sens tylko wtedy, gdy serwer dowiedzie, że ma klucz prywatny z tego
+    /// certyfikatu. Pośrednik w sieci zna cudzy certyfikat (jest publiczny), ale podpisuje własnym
+    /// kluczem: takie uzgadnianie musi się nie udać, inaczej zapamiętany odcisk przepuszcza go po cichu.
+    #[test]
+    fn tls_handshake_requires_key_matching_the_certificate() {
+        let dir = std::env::temp_dir().join(format!("mrm-tls-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pairs = (
+            openssl_pair(&dir, "serwer"),
+            openssl_pair(&dir, "posrednik"),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let (Some((server_cert, server_key)), Some((_, intruder_key))) = pairs else {
+            eprintln!("pominięto: brak polecenia openssl");
+            return;
+        };
+        for version in [&rustls::version::TLS13, &rustls::version::TLS12] {
+            handshake_with(version, server_cert.clone(), &server_key)
+                .unwrap_or_else(|e| panic!("{version:?}: właściwy serwer odrzucony: {e}"));
+            let forged = handshake_with(version, server_cert.clone(), &intruder_key);
+            let Err(e) = forged else {
+                panic!("{version:?}: przyjęto serwer bez klucza prywatnego z certyfikatu");
+            };
+            let shown = handshake_error(e).to_string();
+            assert!(shown.contains("klucz prywatny"), "{version:?}: {shown}");
+        }
     }
 }
