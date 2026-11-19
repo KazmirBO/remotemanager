@@ -316,6 +316,8 @@ mod platform {
                 events_rx,
                 |k| {
                     sent.set(sent.get() + 1);
+                    // Klawisze z haka nie docierają do okna, więc aktywność zgłaszamy tutaj.
+                    app.state::<AppState>().touch_activity();
                     let _ = client.send(&ToWorker::Key {
                         scancode: k.scancode,
                         extended: k.extended,

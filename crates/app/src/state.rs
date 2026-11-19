@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use model::Document;
@@ -50,6 +50,10 @@ pub struct AppState {
     /// Licznik przeładowań interfejsu. Połączenie, które zaczęło się przed przeładowaniem, a skończyło
     /// po nim, nie ma karty w nowym interfejsie i zamyka się samo (jak przy blokadzie pliku).
     pub reloads: AtomicU64,
+    /// Pytanie o zakończenie programu zostało wysłane i czeka na odpowiedź.
+    pub quit_pending: AtomicBool,
+    /// Chwila ostatniej aktywności użytkownika (automatyczna blokada).
+    pub activity: Mutex<crate::idle::Activity>,
 }
 
 impl AppState {
@@ -72,11 +76,23 @@ impl AppState {
             ssh_flow: Mutex::new(HashMap::new()),
             keys: crate::keys::Grabs::default(),
             reloads: AtomicU64::new(0),
+            quit_pending: AtomicBool::new(false),
+            activity: Mutex::new(crate::idle::Activity::now()),
         };
         if let Some(w) = warning {
             state.log(w);
         }
         state
+    }
+
+    /// Liczba sesji SSH i RDP w mapach.
+    pub fn live_sessions(&self) -> usize {
+        self.sessions.lock().expect("sessions").len() + self.rdp.lock().expect("rdp").len()
+    }
+
+    /// Zapamiętuje, że użytkownik właśnie czegoś użył (odmierzanie bezczynności).
+    pub fn touch_activity(&self) {
+        *self.activity.lock().expect("activity") = crate::idle::Activity::now();
     }
 
     /// Dopisuje wpis do dziennika diagnostycznego (czas to sekundy epoki UNIX).

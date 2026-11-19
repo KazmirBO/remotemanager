@@ -18,6 +18,13 @@ pub struct Config {
     /// Zapisuje wyjście sesji SSH do plików w katalogu danych (`logs/`).
     #[serde(default)]
     pub log_sessions: bool,
+    /// Liczba kopii zapasowych pliku z hostami (`.bak1..N`) na tej maszynie.
+    #[serde(default = "default_backup_count")]
+    pub backup_count: usize,
+}
+
+fn default_backup_count() -> usize {
+    vault::DEFAULT_BACKUPS
 }
 
 fn default_true() -> bool {
@@ -31,6 +38,7 @@ impl Default for Config {
             sync_base: None,
             rdp_clipboard: true,
             log_sessions: false,
+            backup_count: vault::DEFAULT_BACKUPS,
         }
     }
 }
@@ -101,6 +109,7 @@ mod tests {
             sync_base: Some("abc".into()),
             rdp_clipboard: false,
             log_sessions: true,
+            backup_count: 12,
         };
         assert!(
             Config::default().rdp_clipboard,
@@ -117,6 +126,13 @@ mod tests {
             b"{nie json"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn old_config_without_backup_count_gets_default() {
+        let c: Config = serde_json::from_str(r#"{"log_sessions":true}"#).unwrap();
+        assert_eq!(c.backup_count, 5);
+        assert_eq!(c.backup_count, vault::DEFAULT_BACKUPS);
     }
 
     #[test]

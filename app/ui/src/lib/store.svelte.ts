@@ -1,4 +1,4 @@
-import { api, type DocView, type SyncView, type HostView, type Id, type Protocol, type Settings, type VaultState } from './api';
+import { api, type DocView, type QuitRequest, type SyncView, type HostView, type Id, type Protocol, type Settings, type VaultState } from './api';
 import { loadBarPos, saveBarPos, type BarPos } from './rdpBar';
 
 export interface Tab {
@@ -8,6 +8,8 @@ export interface Tab {
   title: string;
   /** Zwiększany przy ponownym łączeniu, żeby odtworzyć terminal. */
   generation: number;
+  /** Sesja połączona. */
+  live: boolean;
 }
 
 export interface PasswordPrompt {
@@ -39,6 +41,10 @@ export const ui = $state({
   noticeError: false,
   /** Miejsce panelu z przyciskami w widoku RDP, wspólne dla wszystkich kart. */
   rdpBar: loadBarPos(),
+  /** Pytanie o zamknięcie kart z połączonymi sesjami (`live` = ich liczba). */
+  closeConfirm: null as { ids: string[]; live: number } | null,
+  /** Pytanie o zakończenie programu (z backendu). */
+  quitConfirm: null as QuitRequest | null,
 });
 
 /** Ustawia miejsce panelu sesji RDP i zapamiętuje je na tej maszynie. */
@@ -89,6 +95,8 @@ export function modalOpen(): boolean {
 
 /** Stan interfejsu po blokadzie pliku (z przycisku, skrótu, zasobnika albo po pobraniu zdalnej wersji). */
 export function onLocked() {
+  ui.closeConfirm = null;
+  ui.quitConfirm = null;
   ui.tabs = [];
   ui.activeTab = null;
   cancelPasswordPrompts();
@@ -110,7 +118,7 @@ export function openHost(h: HostView) {
   let title = h.name;
   for (let n = 2; titles.has(title); n++) title = `${h.name} (${n})`;
   const id = crypto.randomUUID();
-  ui.tabs.push({ id, hostId: h.id, protocol: h.protocol, title, generation: 0 });
+  ui.tabs.push({ id, hostId: h.id, protocol: h.protocol, title, generation: 0, live: false });
   ui.activeTab = id;
 }
 
@@ -121,9 +129,42 @@ export function closeTab(id: string) {
   if (ui.activeTab === id) ui.activeTab = ui.tabs[Math.min(i, ui.tabs.length - 1)]?.id ?? null;
 }
 
+export function setTabLive(id: string, live: boolean) {
+  const t = ui.tabs.find((x) => x.id === id);
+  if (t) t.live = live;
+}
+
+/** Zamyka karty; przy `confirm_close_tab` i połączonych sesjach najpierw pyta (ui.closeConfirm). */
+export function requestCloseTabs(ids: string[]) {
+  const live = ui.tabs.filter((t) => ids.includes(t.id) && t.live).length;
+  if (live > 0 && ui.doc?.settings.confirm_close_tab) {
+    ui.closeConfirm = { ids: [...ids], live };
+    return;
+  }
+  for (const id of ids) closeTab(id);
+}
+
+export function answerCloseTabs(ok: boolean) {
+  const c = ui.closeConfirm;
+  ui.closeConfirm = null;
+  if (ok && c) for (const id of c.ids) closeTab(id);
+}
+
+const ACTIVITY_INTERVAL_MS = 15_000;
+let lastActivity = -Infinity;
+/** Zgłasza aktywność użytkownika backendowi najwyżej raz na 15 s, tylko przy odblokowanym pliku. */
+export function reportActivity(now: number = Date.now()) {
+  if (ui.phase !== 'unlocked' || now - lastActivity < ACTIVITY_INTERVAL_MS) return;
+  lastActivity = now;
+  void api.userActivity().catch(() => {});
+}
+
 export function reconnect(id: string) {
   const t = ui.tabs.find((x) => x.id === id);
-  if (t) t.generation += 1;
+  if (t) {
+    t.generation += 1;
+    t.live = false;
+  }
 }
 
 /** Pyta o hasło do jednej sesji (nie jest zapisywane). Zwraca `null`, gdy użytkownik anuluje

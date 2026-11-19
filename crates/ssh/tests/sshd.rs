@@ -304,6 +304,7 @@ fn hop(env: &Env, methods: Vec<Auth>) -> Hop {
         username: env.user.clone(),
         methods,
         legacy: false,
+        keepalive: Some(ssh::DEFAULT_KEEPALIVE),
     }
 }
 
@@ -467,6 +468,7 @@ async fn silent_server_times_out() {
         username: "ktos".into(),
         methods: vec![Auth::Agent],
         legacy: false,
+        keepalive: Some(ssh::DEFAULT_KEEPALIVE),
     };
     let started = std::time::Instant::now();
     let err = Session::connect_with_timeout(&[hop], verifier, Duration::from_secs(2))
@@ -944,4 +946,53 @@ async fn legacy_server_needs_legacy_algorithms() {
     };
     let session = Session::connect(&[hop_new], verifier).await.unwrap();
     session.disconnect().await;
+}
+
+#[tokio::test]
+async fn login_command_is_sent_after_shell_opens() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    let (verifier, _) = accept_all();
+    let session = Session::connect(
+        &[hop(&env, vec![Auth::AgentSocket(env.good_agent.clone())])],
+        verifier,
+    )
+    .await
+    .unwrap();
+    let (shell, mut rx) = session
+        .open_shell(ssh::DEFAULT_TERM, 100, 30)
+        .await
+        .unwrap();
+    shell.send_line("echo MRM-$((40+2))").unwrap();
+    read_until(&mut rx, "MRM-42").await;
+    assert!(shell.send_line("ls\nrm").is_err());
+    shell.close().await.unwrap();
+    session.disconnect().await;
+    let _ = std::fs::remove_dir_all(&env.dir);
+}
+
+#[tokio::test]
+async fn keepalive_can_be_disabled_or_shortened() {
+    let Some(env) = setup() else {
+        return eprintln!("pominięto: brak sshd/ssh-agent");
+    };
+    for keepalive in [None, Some(Duration::from_secs(1))] {
+        let (verifier, _) = accept_all();
+        let h = Hop {
+            keepalive,
+            ..hop(&env, vec![Auth::AgentSocket(env.good_agent.clone())])
+        };
+        let session = Session::connect(&[h], verifier).await.unwrap();
+        let (shell, mut rx) = session
+            .open_shell(ssh::DEFAULT_TERM, 100, 30)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        shell.write(b"echo KA-$((1+1))\n".to_vec()).unwrap();
+        read_until(&mut rx, "KA-2").await;
+        shell.close().await.unwrap();
+        session.disconnect().await;
+    }
+    let _ = std::fs::remove_dir_all(&env.dir);
 }

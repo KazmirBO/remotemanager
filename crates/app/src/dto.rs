@@ -39,6 +39,12 @@ pub struct FieldsIo {
     /// Starsze algorytmy SSH dla starych serwerów; `None` dziedziczy.
     #[serde(default)]
     pub ssh_legacy: Option<bool>,
+    /// Rozmiar czcionki terminala; `None` dziedziczy. u16, żeby zła liczba dała czytelny błąd.
+    #[serde(default, deserialize_with = "lenient_font_size")]
+    pub terminal_font_size: Option<u16>,
+    /// Polecenie po zalogowaniu; `None` dziedziczy. Wejście i wyjście.
+    #[serde(default)]
+    pub ssh_login_command: Option<String>,
     /// Tylko wyjście: klucz zapisany w pliku hostów na tym poziomie.
     #[serde(default)]
     pub has_ssh_key: bool,
@@ -80,6 +86,8 @@ impl std::fmt::Debug for FieldsIo {
             .field("ssh_key_path", &self.ssh_key_path)
             .field("ssh_term", &self.ssh_term)
             .field("ssh_legacy", &self.ssh_legacy)
+            .field("terminal_font_size", &self.terminal_font_size)
+            .field("ssh_login_command", &self.ssh_login_command)
             .field("has_ssh_key", &self.has_ssh_key)
             .field("ssh_key_algorithm", &self.ssh_key_algorithm)
             .field("ssh_key_fingerprint", &self.ssh_key_fingerprint)
@@ -91,6 +99,22 @@ impl std::fmt::Debug for FieldsIo {
 }
 
 const TERM_ERROR: &str = "Typ terminala może mieć najwyżej 64 znaki: litery, cyfry oraz - _ . + (np. vt100, aixterm, xterm-256color).";
+/// Przyjmuje dowolną liczbę z formularza (ułamek, liczba ujemna, ponad 65535): wartość, która nie
+/// jest liczbą całkowitą z zakresu u16, zamienia na `u16::MAX`, żeby `prepare` zgłosił `FONT_ERROR`
+/// zamiast angielskiego błędu deserializacji bez wskazania pola.
+fn lenient_font_size<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u16>, D::Error> {
+    let v: Option<f64> = serde::Deserialize::deserialize(d)?;
+    Ok(v.map(|n| {
+        if n.fract() == 0.0 && (0.0..=f64::from(u16::MAX)).contains(&n) {
+            n as u16
+        } else {
+            u16::MAX
+        }
+    }))
+}
+
+const FONT_ERROR: &str = "Rozmiar czcionki terminala musi być liczbą od 9 do 32.";
+const COMMAND_ERROR: &str = "Polecenie po zalogowaniu może mieć najwyżej 1024 znaki i nie może zawierać znaków sterujących poza tabulatorem.";
 const PATH_ERROR: &str = "Ścieżka klucza musi być bezwzględna albo zaczynać się od ~/.";
 
 /// Sprawdza ścieżkę klucza: `~/` albo ścieżka bezwzględna, bez znaków sterujących. Plik hostów bywa
@@ -134,6 +158,8 @@ impl FieldsIo {
             ssh_key_path: f.ssh_key_path.clone(),
             ssh_term: f.ssh_term.clone(),
             ssh_legacy: f.ssh_legacy,
+            terminal_font_size: f.terminal_font_size.map(u16::from),
+            ssh_login_command: f.ssh_login_command.clone(),
             has_ssh_key: f.ssh_key.is_some(),
             ssh_key_algorithm: f.ssh_key.as_ref().map(|k| k.algorithm.clone()),
             ssh_key_fingerprint: f.ssh_key.as_ref().map(|k| k.fingerprint.clone()),
@@ -170,6 +196,22 @@ impl FieldsIo {
             return Err(TERM_ERROR.into());
         }
         self.ssh_term = term;
+        if let Some(n) = self.terminal_font_size
+            && !(9..=32).contains(&n)
+        {
+            return Err(FONT_ERROR.into());
+        }
+        let cmd = self
+            .ssh_login_command
+            .take()
+            .map(|c| c.trim().to_owned())
+            .filter(|c| !c.is_empty());
+        if let Some(c) = &cmd
+            && !ssh::valid_login_command(c)
+        {
+            return Err(COMMAND_ERROR.into());
+        }
+        self.ssh_login_command = cmd;
         // Usunięcie zapisanego klucza wygrywa z wklejonym tekstem: nie importujemy go (błąd
         // importu nie może blokować usuwania), a bufory znikają razem z `text` i `pass`.
         if self.clear_ssh_key {
@@ -239,6 +281,8 @@ impl FieldsIo {
             rdp_profile: self.rdp_profile,
             rdp_webauthn: self.rdp_webauthn,
             rdp_smartcard: self.rdp_smartcard,
+            terminal_font_size: self.terminal_font_size.and_then(|v| u8::try_from(v).ok()),
+            ssh_login_command: self.ssh_login_command.filter(|s| !s.is_empty()),
         }
     }
 }
@@ -481,6 +525,73 @@ mod tests {
             };
             assert_eq!(io.prepare().unwrap_err(), TERM_ERROR, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn font_size_and_login_command_go_both_ways() {
+        let mut io: FieldsIo = serde_json::from_str(
+            r#"{"terminal_font_size":14,"ssh_login_command":"  tmux new -A -s main "}"#,
+        )
+        .unwrap();
+        io.prepare().unwrap();
+        let applied = io.apply(&Fields::default(), None);
+        assert_eq!(applied.terminal_font_size, Some(14));
+        assert_eq!(
+            applied.ssh_login_command.as_deref(),
+            Some("tmux new -A -s main")
+        );
+        let json = serde_json::to_string(&FieldsIo::view(&applied)).unwrap();
+        assert!(
+            json.contains(r#""terminal_font_size":14"#)
+                && json.contains(r#""ssh_login_command":"tmux new -A -s main""#),
+            "{json}"
+        );
+        let mut none: FieldsIo = serde_json::from_str("{}").unwrap();
+        none.prepare().unwrap();
+        let cleared = none.apply(&applied, None);
+        assert_eq!(
+            (cleared.terminal_font_size, cleared.ssh_login_command),
+            (None, None)
+        );
+        for ok in [9u16, 32] {
+            let mut io = FieldsIo {
+                terminal_font_size: Some(ok),
+                ..Default::default()
+            };
+            assert!(io.prepare().is_ok(), "{ok}");
+        }
+        for raw in ["12.5", "-1", "70000", "1e3"] {
+            let mut io: FieldsIo =
+                serde_json::from_str(&format!(r#"{{"terminal_font_size":{raw}}}"#)).unwrap();
+            assert_eq!(io.prepare().unwrap_err(), FONT_ERROR, "{raw}");
+        }
+        for bad in [8u16, 33, 300] {
+            let mut io = FieldsIo {
+                terminal_font_size: Some(bad),
+                ..Default::default()
+            };
+            assert_eq!(io.prepare().unwrap_err(), FONT_ERROR, "{bad}");
+        }
+        for bad in ["ls\nrm".to_owned(), "a".repeat(1025)] {
+            let mut io = FieldsIo {
+                ssh_login_command: Some(bad),
+                ..Default::default()
+            };
+            assert_eq!(io.prepare().unwrap_err(), COMMAND_ERROR);
+        }
+        let mut blank = FieldsIo {
+            ssh_login_command: Some("  ".into()),
+            ..Default::default()
+        };
+        blank.prepare().unwrap();
+        assert_eq!(blank.ssh_login_command, None);
+        let mut tab = FieldsIo {
+            ssh_login_command: Some("cd /srv\t&& ls".into()),
+            ..Default::default()
+        };
+        assert!(tab.prepare().is_ok());
+        let d = format!("{:?}", FieldsIo::view(&applied));
+        assert!(d.contains("terminal_font_size"));
     }
 
     #[test]

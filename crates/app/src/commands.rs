@@ -57,7 +57,10 @@ pub async fn create_vault(state: State<'_, AppState>, password: String) -> Resul
     .await
     .map_err(err)?
     .map_err(vault_err)?;
+    let mut vault = vault;
+    vault.set_backup_count(state.config.lock().expect("config").backup_count);
     *state.inner.lock().await = Some(Unlocked { vault, doc });
+    state.touch_activity();
     Ok(())
 }
 
@@ -69,7 +72,10 @@ pub async fn unlock(state: State<'_, AppState>, password: String) -> Result<(), 
             .await
             .map_err(err)?
             .map_err(|e| unlock_err(e, &state.path))?;
+    let mut vault = vault;
+    vault.set_backup_count(state.config.lock().expect("config").backup_count);
     *state.inner.lock().await = Some(Unlocked { vault, doc });
+    state.touch_activity();
     state.log("odblokowano plik z hostami");
     Ok(())
 }
@@ -88,6 +94,11 @@ pub async fn lock_all(app: &tauri::AppHandle, state: &AppState, log: &str) {
     // Kolejność jest celowa: najpierw znika klucz w pamięci, potem anulowane są pytania o zaufanie
     // i zamykane sesje. Połączenie, które skończy się po opróżnieniu map, zobaczy już zablokowany plik.
     *state.inner.lock().await = None;
+    // Pytanie o zakończenie programu przepada razem z interfejsem (`onLocked`), więc kolejna
+    // prośba o zamknięcie musi znów zapytać, a nie kończyć program jako "druga prośba".
+    state
+        .quit_pending
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     close_all_sessions(state).await;
     state.log(log);
     let _ = app.emit("vault-locked", ());
@@ -126,6 +137,53 @@ pub async fn close_all_sessions(state: &AppState) -> usize {
     count
 }
 
+/// Prośba o zakończenie programu (zamknięcie okna albo "Zakończ" w zasobniku). Bez sesji albo bez
+/// `confirm_quit` kończy od razu. Inaczej pokazuje okno i emituje `quit-requested`; druga prośba,
+/// gdy pytanie czeka na odpowiedź, kończy program bez pytania (interfejs mógł nie odpowiadać).
+pub async fn request_quit(app: tauri::AppHandle) {
+    use std::sync::atomic::Ordering;
+    use tauri::{Emitter, Manager};
+    let state = app.state::<AppState>();
+    let sessions = state.live_sessions();
+    let confirm = sessions > 0
+        && state
+            .inner
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|u| u.doc.settings.confirm_quit);
+    if !confirm || state.quit_pending.swap(true, Ordering::SeqCst) {
+        app.exit(0);
+        return;
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+    let _ = app.emit(
+        "quit-requested",
+        serde_json::json!({ "sessions": sessions }),
+    );
+}
+
+/// Odpowiedź interfejsu na pytanie o zakończenie programu.
+#[tauri::command]
+pub async fn answer_quit(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    quit: bool,
+) -> Result<(), String> {
+    if quit {
+        app.exit(0);
+    } else {
+        state
+            .quit_pending
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    Ok(())
+}
+
 /// Początek ładowania strony w głównym oknie. Po przeładowaniu (F5, Ctrl+R, menu WebView) nowy
 /// interfejs nie ma uchwytów do działających sesji, więc zostałyby osierocone. Plik zostaje
 /// odblokowany. Pierwsze ładowanie przy starcie nie ma sesji i nie ma skutków ubocznych.
@@ -133,6 +191,7 @@ pub async fn reset_after_reload(state: &AppState) {
     use std::sync::atomic::Ordering;
     // Najpierw licznik, potem mapy: połączenie w toku widzi zmianę po wstawieniu sesji do mapy.
     state.reloads.fetch_add(1, Ordering::SeqCst);
+    state.quit_pending.store(false, Ordering::SeqCst);
     let closed = close_all_sessions(state).await;
     if closed > 0 {
         state.log(format!(
@@ -282,6 +341,9 @@ pub async fn save_host(state: State<'_, AppState>, mut input: HostInput) -> Resu
         input.fields.ssh_key_path = None;
         // To samo dotyczy ukrytego typu terminala.
         input.fields.ssh_term = None;
+        // I ukrytemu rozmiarowi czcionki terminala oraz poleceniu po zalogowaniu.
+        input.fields.terminal_font_size = None;
+        input.fields.ssh_login_command = None;
     }
     let (input, imported) = prepare_input(input, |i| &mut i.fields).await?;
     let name = input.name.trim().to_owned();
@@ -423,6 +485,20 @@ fn validate_settings(settings: &Settings) -> Result<(), String> {
     if !(9..=32).contains(&settings.terminal_font_size) {
         return Err("Rozmiar czcionki terminala musi być liczbą od 9 do 32.".into());
     }
+    if !ssh::valid_term(&settings.ssh_term) {
+        return Err("Domyślny typ terminala może mieć najwyżej 64 znaki: litery, cyfry oraz - _ . + (np. xterm-256color).".into());
+    }
+    if settings.terminal_scrollback > 100_000 {
+        return Err("Historia przewijania musi być liczbą od 0 do 100000 wierszy.".into());
+    }
+    if settings.ssh_keepalive_secs > 3600 {
+        return Err(
+            "Odstęp podtrzymywania połączenia SSH musi być liczbą od 0 do 3600 sekund.".into(),
+        );
+    }
+    if settings.auto_lock_minutes > 1440 {
+        return Err("Czas automatycznej blokady musi być liczbą od 0 do 1440 minut.".into());
+    }
     Ok(())
 }
 
@@ -469,6 +545,22 @@ mod tests {
         assert!(validate_settings(&with_size(9)).is_ok());
         assert!(validate_settings(&with_size(32)).is_ok());
 
+        let with = |f: fn(&mut Settings)| {
+            let mut s = Settings::default();
+            f(&mut s);
+            validate_settings(&s)
+        };
+        assert!(with(|s| s.terminal_scrollback = 100_001).is_err());
+        assert!(with(|s| s.ssh_keepalive_secs = 3601).is_err());
+        assert!(with(|s| s.auto_lock_minutes = 1441).is_err());
+        assert!(with(|s| s.ssh_term = "x y".into()).is_err());
+        assert!(with(|s| s.terminal_scrollback = 0).is_ok());
+        assert!(with(|s| s.terminal_scrollback = 100_000).is_ok());
+        assert!(with(|s| s.ssh_keepalive_secs = 0).is_ok());
+        assert!(with(|s| s.ssh_keepalive_secs = 3600).is_ok());
+        assert!(with(|s| s.auto_lock_minutes = 0).is_ok());
+        assert!(with(|s| s.auto_lock_minutes = 1440).is_ok());
+
         let unknown_theme = Settings {
             theme: "neon".into(),
             ..Settings::default()
@@ -480,6 +572,16 @@ mod tests {
             ..Settings::default()
         };
         assert!(validate_settings(&unknown_scheme).is_err());
+    }
+
+    #[test]
+    fn setting_defaults_match_ssh_crate() {
+        let d = Settings::default();
+        assert_eq!(d.ssh_term, ssh::DEFAULT_TERM);
+        assert_eq!(
+            u64::from(d.ssh_keepalive_secs),
+            ssh::DEFAULT_KEEPALIVE.as_secs()
+        );
     }
 
     #[test]

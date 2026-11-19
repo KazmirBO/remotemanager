@@ -4,10 +4,14 @@
   import { initialFocusIndex } from './focus';
 
   let {
-    title, onclose, children, footer, width = 520, dismissible = true,
+    title, onclose, children, footer, width = 520, dismissible = true, height, flush = false,
   }: {
     title: string; onclose: () => void; children: Snippet; footer?: Snippet;
     width?: number; dismissible?: boolean;
+    /** Stała wysokość okna (px, najwyżej 92vh). */
+    height?: number;
+    /** Treść bez paddingu i bez przewijania (rodzic zarządza układem). */
+    flush?: boolean;
   } = $props();
 
   let dialog: HTMLDivElement;
@@ -17,7 +21,8 @@
     previous = document.activeElement;
     // Wyłączone elementy (np. przycisk główny okna zaufania przez pierwsze 500 ms) są pomijane;
     // bez aktywnego kandydata fokus dostaje samo okno, żeby Escape i Tab działały od razu.
-    const found = [...dialog.querySelectorAll<HTMLElement>('input:not([type=hidden]), select, textarea, button.primary')];
+    const found = [...dialog.querySelectorAll<HTMLElement>('input:not([type=hidden]), select, textarea, button.primary')]
+      .filter((el) => el.tabIndex >= 0 && !el.closest('[hidden]'));
     const i = initialFocusIndex(found.map((el) => ({ disabled: (el as HTMLButtonElement).disabled })));
     (i === null ? dialog : found[i]).focus();
     return () => {
@@ -33,8 +38,9 @@
       onclose();
     } else if (e.key === 'Tab') {
       // Pułapka fokusu wewnątrz okna.
+      // Pomijamy wyłączone elementy, ukryte panele i elementy poza kolejnością Tab (tabindex < 0).
       const items = [...dialog.querySelectorAll<HTMLElement>('button, input, select, textarea, [tabindex="0"]')].filter(
-        (el) => !el.hasAttribute('disabled'),
+        (el) => !el.hasAttribute('disabled') && el.tabIndex >= 0 && !el.closest('[hidden]'),
       );
       if (!items.length) return;
       const first = items[0], last = items[items.length - 1];
@@ -49,14 +55,14 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="backdrop" onmousedown={(e) => e.target === e.currentTarget && dismissible && onclose()} onkeydown={keydown}>
-  <div class="dialog" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={dialog} style="width:min({width}px, 94vw)">
+  <div class="dialog" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={dialog} style="width:min({width}px, 94vw){height ? `;height:min(${height}px, 92vh)` : ''}">
     <header>
       <h2>{title}</h2>
       {#if dismissible}
         <button class="icon-btn" aria-label="Zamknij" onclick={onclose}><Icon name="close" /></button>
       {/if}
     </header>
-    <div class="body">{@render children()}</div>
+    <div class="body" class:flush>{@render children()}</div>
     {#if footer}<footer>{@render footer()}</footer>{/if}
   </div>
 </div>
@@ -67,5 +73,6 @@
   header { display: flex; align-items: center; justify-content: space-between; padding: 14px 24px; border-bottom: 1px solid var(--border); }
   h2 { margin: 0; font-size: 16px; font-weight: 600; }
   .body { padding: 20px 24px; overflow: auto; }
-  footer { padding: 14px 24px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
+  .body.flush { padding: 0; overflow: hidden; display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  footer { padding: 14px 24px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 </style>

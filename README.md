@@ -13,12 +13,12 @@ Sprawdzone w działaniu: sesje SSH (także przez bastion), sesje RDP z NLA, zmia
 ## Możliwości
 
 - **Drzewo hostów** z katalogami, ulubionymi, wyszukiwaniem i przeciąganiem. Port, użytkownik, domena, hasło, bastion i schemat terminala dziedziczą się z katalogu, a host może każde pole nadpisać.
-- **Zaszyfrowany plik hostów**: Argon2id i XChaCha20-Poly1305, zapis atomowy, pięć rotowanych kopii zapasowych z przywracaniem. Hasła nie trafiają do warstwy interfejsu.
-- **SSH**: terminal w karcie z rendererem WebGL, uwierzytelnianie kluczem prywatnym (zapisanym w pliku hostów albo wskazanym ścieżką, także zaszyfrowanym), agentem SSH albo hasłem, bastiony (odpowiednik ProxyJump, także łańcuchy), typ terminala i starsze algorytmy SSH dla starych serwerów (np. AIX), zapamiętywanie kluczy hostów z ostrzeżeniem o zmianie, opcjonalny dziennik sesji.
+- **Zaszyfrowany plik hostów**: Argon2id i XChaCha20-Poly1305, zapis atomowy, rotowane kopie zapasowe (domyślnie pięć, do 20) z przywracaniem. Hasła nie trafiają do warstwy interfejsu.
+- **SSH**: terminal w karcie z rendererem WebGL, uwierzytelnianie kluczem prywatnym (zapisanym w pliku hostów albo wskazanym ścieżką, także zaszyfrowanym), agentem SSH albo hasłem, bastiony (odpowiednik ProxyJump, także łańcuchy), typ terminala i starsze algorytmy SSH dla starych serwerów (np. AIX), zapamiętywanie kluczy hostów z ostrzeżeniem o zmianie, polecenie po zalogowaniu, podtrzymywanie połączenia, opcjonalny dziennik sesji.
 - **RDP**: pulpit w karcie z uwierzytelnianiem NLA (CredSSP), rozdzielczość podążająca za rozmiarem okna, pełny ekran, Ctrl+Alt+Del, lokalny kursor, profil łącza (szybkie albo wolne, także dla katalogu i hosta), przechwytywanie klawiszy z ustawieniem i przyciskiem (także klawiszy systemowych, np. Win i Alt+Tab), schowek w obie strony (tekst, HTML, obrazy, pliki i katalogi), zapamiętywanie certyfikatów. Na Windows także przekierowanie kluczy bezpieczeństwa FIDO2/WebAuthn (np. YubiKey) do zdalnego pulpitu, włączane dla hosta albo katalogu; niesprawdzone z prawdziwym kluczem. Tak samo włącza się przekierowanie czytników kart inteligentnych (PIV, klucz sprzętowy z interfejsem kart), też niesprawdzone z prawdziwym czytnikiem.
 - **Szybkie łączenie** (domyślnie Ctrl+Shift+K) i linki `ssh://` oraz `rdp://`. Link nigdy nie łączy sam: otwiera zapisany host z pytaniem albo formularz nowego.
 - **Synchronizacja** zaszyfrowanego pliku przez wskazany folder (np. Syncthing, Nextcloud, dysk sieciowy) z wykrywaniem konfliktów.
-- Ikona w zasobniku, blokada pliku, edytowalne skróty, motyw jasny i ciemny, dziennik diagnostyczny bez sekretów.
+- Ikona w zasobniku, blokada pliku (także automatyczna po bezczynności), ustawienia podzielone na kategorie z wyborem czcionki, kursora i historii terminala, edytowalne skróty, motyw jasny i ciemny, dziennik diagnostyczny bez sekretów.
 
 Poza zakresem: SFTP, tunele, podzielone widoki, import z mRemoteNG. Jeszcze niezrobione: lista ostatnio używanych hostów, wiele monitorów w RDP, rejestracja schematów linków w Windows, pakiet dla Gentoo, aktualizacje.
 

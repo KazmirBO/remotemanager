@@ -1,10 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
-  import type { FolderView, HostView, Id, TrustRequest } from './lib/api';
-  import AboutDialog from './lib/AboutDialog.svelte';
-  import BackupsDialog from './lib/BackupsDialog.svelte';
-  import DiagnosticsDialog from './lib/DiagnosticsDialog.svelte';
+  import type { FolderView, HostView, Id, QuitRequest, TrustRequest } from './lib/api';
+  import type { SettingsCategory } from './lib/settings/categories';
   import FolderDialog from './lib/FolderDialog.svelte';
   import HostDialog, { type Prefill } from './lib/HostDialog.svelte';
   import NotificationsDialog from './lib/NotificationsDialog.svelte';
@@ -13,8 +11,6 @@
   import Modal from './lib/Modal.svelte';
   import QuickConnect from './lib/QuickConnect.svelte';
   import SettingsDialog from './lib/SettingsDialog.svelte';
-  import ShortcutsDialog from './lib/ShortcutsDialog.svelte';
-  import SyncDialog from './lib/SyncDialog.svelte';
   import Sidebar from './lib/Sidebar.svelte';
   import RdpView from './lib/RdpView.svelte';
   import Terminal from './lib/Terminal.svelte';
@@ -23,17 +19,12 @@
   import { allowedWithModal, binding, matchAppAction, tabNumber } from './lib/shortcuts';
   import { api } from './lib/api';
   import { plural } from './lib/tree';
-  import { applyTheme, closeTab, host as hostById, init, lockVault, modalOpen, notify, onLocked, openHost, reconnect, refreshSync, ui } from './lib/store.svelte';
+  import { answerCloseTabs, applyTheme, host as hostById, init, lockVault, modalOpen, notify, onLocked, openHost, reconnect, refreshSync, reportActivity, requestCloseTabs, ui } from './lib/store.svelte';
 
   type Dialog =
     | { kind: 'host'; host: HostView | null; folder: Id | null; prefill?: Prefill | null }
     | { kind: 'folder'; folder: FolderView | null; parent: Id | null }
-    | { kind: 'settings' }
-    | { kind: 'sync' }
-    | { kind: 'backups' }
-    | { kind: 'shortcuts' }
-    | { kind: 'diagnostics' }
-    | { kind: 'about' }
+    | { kind: 'settings'; category?: SettingsCategory }
     | { kind: 'notices' }
     | { kind: 'quick' }
     | { kind: 'link'; host: HostView; target: string };
@@ -59,6 +50,8 @@
         notify('Link czeka na odblokowanie pliku.');
       }
     });
+    // Backend pyta o zakończenie programu, gdy są otwarte sesje i włączono `confirm_quit`.
+    const unlistenQuit = listen<QuitRequest>('quit-requested', (e) => (ui.quitConfirm = e.payload));
     const media = matchMedia('(prefers-color-scheme: light)');
     const onScheme = () => applyTheme(ui.doc?.settings);
     media.addEventListener('change', onScheme);
@@ -67,6 +60,7 @@
       void unlistenLock.then((f) => f());
       void unlistenExpired.then((f) => f());
       void unlistenLink.then((f) => f());
+      void unlistenQuit.then((f) => f());
       media.removeEventListener('change', onScheme);
     };
   });
@@ -114,8 +108,6 @@
 
   function keydown(e: KeyboardEvent) {
     if (ui.phase !== 'unlocked') return;
-    // Okno przechwytujące skrót (ustawianie skrótów) obsługuje klawisze samo.
-    if (dialog?.kind === 'shortcuts') return;
     const action = matchAppAction(ui.doc?.settings, e);
     if (!action) return;
     // Przy otwartym oknie modalnym działa tylko blokada pliku.
@@ -125,7 +117,7 @@
     const i = tabs.findIndex((t) => t.id === ui.activeTab);
     switch (action) {
       case 'quick_connect': dialog = { kind: 'quick' }; break;
-      case 'close_tab': if (ui.activeTab) closeTab(ui.activeTab); break;
+      case 'close_tab': if (ui.activeTab) requestCloseTabs([ui.activeTab]); break;
       case 'new_host': dialog = { kind: 'host', host: null, folder: null }; break;
       case 'next_tab': if (tabs.length) ui.activeTab = tabs[(i + 1) % tabs.length].id; break;
       case 'prev_tab': if (tabs.length) ui.activeTab = tabs[(i - 1 + tabs.length) % tabs.length].id; break;
@@ -173,7 +165,7 @@
 
   /** Zamyka wszystkie karty poza wskazaną (`null` zamyka wszystkie). */
   function closeTabsExcept(keep: string | null) {
-    for (const t of [...ui.tabs]) if (t.id !== keep) closeTab(t.id);
+    requestCloseTabs(ui.tabs.filter((t) => t.id !== keep).map((t) => t.id));
   }
 
   // Pasek kart: karty zwężają się, a gdy i to nie wystarcza, pasek przewija się bez widocznego suwaka.
@@ -207,6 +199,10 @@
   onclick={() => (tabMenu = null)}
   oncontextmenucapture={() => (tabMenu = null)}
   oncontextmenu={contextmenu}
+  onkeydowncapture={() => reportActivity()}
+  onpointerdowncapture={() => reportActivity()}
+  onpointermovecapture={() => reportActivity()}
+  onwheelcapture={() => reportActivity()}
 />
 
 {#if ui.phase === 'loading'}
@@ -221,7 +217,7 @@
       onEditHost={(host) => (dialog = { kind: 'host', host, folder: null })}
       onEditFolder={(folder) => (dialog = { kind: 'folder', folder, parent: null })}
       onSettings={() => (dialog = { kind: 'settings' })}
-      onSync={() => (dialog = { kind: 'sync' })}
+      onSync={() => (dialog = { kind: 'settings', category: 'sync' })}
       onLock={lockVault}
     />
     <main>
@@ -231,7 +227,7 @@
             <button role="tab" aria-selected={ui.activeTab === t.id} title={t.title} onclick={() => (ui.activeTab = t.id)}>
               <span class="badge {t.protocol}">{t.protocol.toUpperCase()}</span> <span class="tab-title">{t.title}</span>
             </button>
-            <button class="icon-btn x" aria-label="Zamknij kartę {t.title}" onclick={() => closeTab(t.id)}><Icon name="close" size={14} /></button>
+            <button class="icon-btn x" aria-label="Zamknij kartę {t.title}" onclick={() => requestCloseTabs([t.id])}><Icon name="close" size={14} /></button>
           </div>
         {/each}
         <!-- Przycisk zostaje przy prawej krawędzi także wtedy, gdy pasek kart jest przewinięty. -->
@@ -278,19 +274,9 @@
   {:else if dialog?.kind === 'folder'}
     <FolderDialog folder={dialog.folder} defaultParent={dialog.parent} onclose={() => (dialog = null)} />
   {:else if dialog?.kind === 'settings'}
-    <SettingsDialog onclose={() => (dialog = null)} onopen={(tool) => (dialog = { kind: tool })} />
-  {:else if dialog?.kind === 'sync'}
-    <SyncDialog onclose={() => (dialog = null)} />
-  {:else if dialog?.kind === 'backups'}
-    <BackupsDialog onclose={() => (dialog = null)} />
-  {:else if dialog?.kind === 'shortcuts'}
-    <ShortcutsDialog onclose={() => (dialog = null)} />
-  {:else if dialog?.kind === 'diagnostics'}
-    <DiagnosticsDialog onclose={() => (dialog = null)} />
+    <SettingsDialog initial={dialog.category} onclose={() => (dialog = null)} />
   {:else if dialog?.kind === 'notices'}
     <NotificationsDialog onclose={() => (dialog = null)} />
-  {:else if dialog?.kind === 'about'}
-    <AboutDialog onclose={() => (dialog = null)} />
   {:else if dialog?.kind === 'quick'}
     <QuickConnect onclose={() => (dialog = null)} onlink={openLink} />
   {:else if dialog?.kind === 'link'}
@@ -303,6 +289,26 @@
       {#snippet footer()}
         <button class="btn" type="button" onclick={() => (dialog = null)}>Anuluj</button>
         <button class="btn primary" type="button" onclick={() => { openHost(d.host); dialog = null; }}>Połącz</button>
+      {/snippet}
+    </Modal>
+  {/if}
+  {#if ui.closeConfirm}
+    {@const c = ui.closeConfirm}
+    <Modal title={c.ids.length > 1 ? 'Zamknąć karty?' : 'Zamknąć kartę?'} onclose={() => answerCloseTabs(false)} width={460}>
+      <p class="link-q">{c.live === 1 && c.ids.length === 1 ? 'Sesja w tej karcie jest połączona i zostanie rozłączona.' : `Połączone sesje (${c.live}) zostaną rozłączone.`}</p>
+      {#snippet footer()}
+        <button class="btn" type="button" onclick={() => answerCloseTabs(false)}>Anuluj</button>
+        <button class="btn primary" type="button" onclick={() => answerCloseTabs(true)}>Zamknij</button>
+      {/snippet}
+    </Modal>
+  {/if}
+  {#if ui.quitConfirm}
+    {@const q = ui.quitConfirm}
+    <Modal title="Zakończyć program?" onclose={() => { ui.quitConfirm = null; void api.answerQuit(false); }} width={460}>
+      <p class="link-q">Otwarte sesje ({q.sessions}) zostaną rozłączone.</p>
+      {#snippet footer()}
+        <button class="btn" type="button" onclick={() => { ui.quitConfirm = null; void api.answerQuit(false); }}>Anuluj</button>
+        <button class="btn primary" type="button" onclick={() => { ui.quitConfirm = null; void api.answerQuit(true); }}>Zakończ</button>
       {/snippet}
     </Modal>
   {/if}
@@ -322,7 +328,7 @@
     <button role="menuitem" onclick={() => reconnect(tab.id)}><Icon name="refresh" /> Połącz ponownie</button>
     <button role="menuitem" disabled={!menuTabHost} onclick={() => menuTabHost && openHost(menuTabHost)}><Icon name="copy" /> Duplikuj kartę</button>
     <hr />
-    <button role="menuitem" onclick={() => closeTab(tab.id)}><Icon name="close" /> Zamknij kartę</button>
+    <button role="menuitem" onclick={() => requestCloseTabs([tab.id])}><Icon name="close" /> Zamknij kartę</button>
     <button role="menuitem" disabled={ui.tabs.length < 2} onclick={() => closeTabsExcept(tab.id)}><Icon name="close" /> Zamknij pozostałe</button>
     <button role="menuitem" onclick={() => closeTabsExcept(null)}><Icon name="close" /> Zamknij wszystkie</button>
   </div>

@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { ACTIONS, allowedWithModal, binding, comboFromEvent, findConflict, matchAction, validCombo, OFF, REQUIRED_ACTIONS, tabNumber, matchAppAction } from './shortcuts';
-import type { Settings } from './api';
+import { defaultSettings, type Settings } from './api';
 
 const ev = (code: string, mods: Partial<Record<'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey', boolean>> = {}) => ({
   ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, code, ...mods,
 });
 const settings = (shortcuts: Record<string, string>): Settings => ({
-  theme: 'dark', terminal_font_size: 13, terminal_scheme: 'domyslny', shortcuts, rdp_profile: 'fast', rdp_keys: 'never',
+  ...defaultSettings(), theme: 'dark', shortcuts,
 });
 
 describe('comboFromEvent', () => {

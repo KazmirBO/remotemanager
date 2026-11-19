@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod dto;
 mod flow;
+mod idle;
 mod keys;
 mod maintenance;
 mod rdp_sessions;
@@ -63,7 +64,18 @@ fn main() {
             );
             app.manage(state);
             tray::setup(app.handle())?;
+            idle::spawn(app.handle().clone());
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            use tauri::Manager;
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                tauri::async_runtime::spawn(commands::request_quit(window.app_handle().clone()));
+            }
         })
         .on_page_load(|webview, payload| {
             use tauri::{Manager, webview::PageLoadEvent};
@@ -93,6 +105,10 @@ fn main() {
             commands::move_folder,
             commands::set_favorite,
             commands::save_settings,
+            commands::answer_quit,
+            idle::user_activity,
+            maintenance::set_backup_count,
+            clipboard::read_clipboard_text,
             sessions::connect_ssh,
             sessions::ssh_write,
             sessions::ssh_resize,

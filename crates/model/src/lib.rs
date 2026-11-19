@@ -200,6 +200,11 @@ fields! {
     rdp_profile: LinkProfile,
     rdp_webauthn: bool,
     rdp_smartcard: CardRedirect,
+    // Rozmiar czcionki terminala (px) dla hosta albo katalogu; bez ustawienia rozmiar z Settings.
+    terminal_font_size: u8,
+    // Polecenie wysyłane do powłoki po zalogowaniu (tylko cel połączenia SSH, nie bastiony).
+    // Zapisane w pliku z hostami; nie jest sekretem, ale nie wolno go logować.
+    ssh_login_command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -467,6 +472,70 @@ pub struct Settings {
     /// Przechwytywanie klawiszy systemowych w sesji RDP.
     #[serde(default)]
     pub rdp_keys: RdpKeys,
+    /// Krój czcionki terminala.
+    #[serde(default)]
+    pub terminal_font: TerminalFont,
+    #[serde(default)]
+    pub terminal_cursor: CursorShape,
+    #[serde(default = "default_true")]
+    pub terminal_cursor_blink: bool,
+    /// Długość historii przewijania w wierszach.
+    #[serde(default = "default_scrollback")]
+    pub terminal_scrollback: u32,
+    #[serde(default)]
+    pub terminal_copy_on_select: bool,
+    #[serde(default)]
+    pub terminal_paste_right_click: bool,
+    /// TERM, gdy host ani katalog go nie ustawia. Musi być równy `ssh::DEFAULT_TERM`.
+    #[serde(default = "default_ssh_term")]
+    pub ssh_term: String,
+    #[serde(default)]
+    pub confirm_close_tab: bool,
+    #[serde(default)]
+    pub confirm_quit: bool,
+    /// Odstęp podtrzymywania połączenia SSH w sekundach; 0 wyłącza.
+    #[serde(default = "default_keepalive_secs")]
+    pub ssh_keepalive_secs: u16,
+    /// Automatyczna blokada pliku z hostami po tylu minutach bezczynności; 0 wyłącza.
+    #[serde(default)]
+    pub auto_lock_minutes: u16,
+}
+
+/// Krój czcionki terminala.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalFont {
+    /// JetBrains Mono dołączona do programu.
+    #[default]
+    Bundled,
+    /// Systemowa czcionka o stałej szerokości (`monospace`).
+    System,
+}
+
+/// Kształt kursora terminala (nazwy jak `cursorStyle` w xterm.js).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CursorShape {
+    #[default]
+    Block,
+    Bar,
+    Underline,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_scrollback() -> u32 {
+    5000
+}
+
+fn default_ssh_term() -> String {
+    "xterm-256color".into()
+}
+
+fn default_keepalive_secs() -> u16 {
+    30
 }
 
 fn default_terminal_scheme() -> String {
@@ -482,6 +551,17 @@ impl Default for Settings {
             shortcuts: BTreeMap::new(),
             rdp_profile: LinkProfile::default(),
             rdp_keys: RdpKeys::default(),
+            terminal_font: TerminalFont::default(),
+            terminal_cursor: CursorShape::default(),
+            terminal_cursor_blink: true,
+            terminal_scrollback: default_scrollback(),
+            terminal_copy_on_select: false,
+            terminal_paste_right_click: false,
+            ssh_term: default_ssh_term(),
+            confirm_close_tab: false,
+            confirm_quit: false,
+            ssh_keepalive_secs: default_keepalive_secs(),
+            auto_lock_minutes: 0,
         }
     }
 }
@@ -781,6 +861,64 @@ mod tests {
             serde_json::from_str::<RdpKeys>(r#""always""#).unwrap(),
             RdpKeys::Always
         );
+    }
+
+    #[test]
+    fn old_settings_get_new_defaults_and_roundtrip() {
+        let old: Settings =
+            serde_json::from_str(r#"{"theme":"dark","terminal_font_size":14}"#).unwrap();
+        assert_eq!(old.terminal_font, TerminalFont::Bundled);
+        assert_eq!(old.terminal_cursor, CursorShape::Block);
+        assert!(old.terminal_cursor_blink);
+        assert_eq!(old.terminal_scrollback, 5000);
+        assert!(!old.terminal_copy_on_select && !old.terminal_paste_right_click);
+        assert_eq!(old.ssh_term, "xterm-256color");
+        assert!(!old.confirm_close_tab && !old.confirm_quit);
+        assert_eq!(old.ssh_keepalive_secs, 30);
+        assert_eq!(old.auto_lock_minutes, 0);
+        assert_eq!(old.terminal_font_size, 14);
+        let st = Settings {
+            terminal_font: TerminalFont::System,
+            terminal_cursor: CursorShape::Underline,
+            terminal_cursor_blink: false,
+            terminal_scrollback: 0,
+            ssh_term: "vt100".into(),
+            ssh_keepalive_secs: 0,
+            auto_lock_minutes: 15,
+            confirm_quit: true,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&st).unwrap();
+        assert!(json.contains(r#""terminal_font":"system""#));
+        assert!(json.contains(r#""terminal_cursor":"underline""#));
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), st);
+        assert!(serde_json::from_str::<Settings>(r#"{}"#).is_err());
+        assert!(serde_json::from_str::<Document>(r#"{"settings":{}}"#).is_err());
+    }
+
+    #[test]
+    fn font_size_and_login_command_are_inherited() {
+        let mut t = Tree::default();
+        let parent = t.add_folder("P", None).unwrap();
+        let child = t.add_folder("C", Some(parent)).unwrap();
+        let h = t.add_host("h", "h", Protocol::Ssh, Some(child)).unwrap();
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.terminal_font_size, None);
+        assert_eq!(r.fields.ssh_login_command, None);
+        t.folders[0].fields.terminal_font_size = Some(18);
+        t.folders[0].fields.ssh_login_command = Some("tmux new -A -s main".into());
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.terminal_font_size, Some(18));
+        assert_eq!(r.sources.terminal_font_size, Some(Source::Folder(parent)));
+        assert_eq!(r.sources.ssh_login_command, Some(Source::Folder(parent)));
+        t.hosts[0].fields.terminal_font_size = Some(11);
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.terminal_font_size, Some(11));
+        assert_eq!(r.sources.terminal_font_size, Some(Source::Host));
+        // Stary plik bez nowych pól drzewa czyta się z None.
+        let f: Fields = serde_json::from_str(r#"{"port":22}"#).unwrap();
+        assert_eq!(f.terminal_font_size, None);
+        assert_eq!(f.ssh_login_command, None);
     }
 
     #[test]

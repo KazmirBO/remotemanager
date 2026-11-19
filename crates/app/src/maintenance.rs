@@ -284,6 +284,7 @@ pub struct LocalConfig {
     log_sessions: bool,
     rdp_clipboard: bool,
     logs_dir: String,
+    backup_count: usize,
 }
 
 #[tauri::command]
@@ -294,15 +295,40 @@ pub async fn get_local_config(state: State<'_, AppState>) -> Result<LocalConfig,
 fn local_config(state: &AppState) -> LocalConfig {
     // Jedna blokada: dwa `lock()` w jednym wyrażeniu zakleszczały wątek, bo tymczasowa blokada
     // z pierwszego pola żyje do końca całego wyrażenia.
-    let (log_sessions, rdp_clipboard) = {
+    let (log_sessions, rdp_clipboard, backup_count) = {
         let c = state.config.lock().expect("config");
-        (c.log_sessions, c.rdp_clipboard)
+        (c.log_sessions, c.rdp_clipboard, c.backup_count)
     };
     LocalConfig {
         log_sessions,
         rdp_clipboard,
+        backup_count,
         logs_dir: state.data_dir.join("logs").display().to_string(),
     }
+}
+
+/// Zmienia liczbę kopii zapasowych: zapis w config.json, ustawienie w otwartym pliku i usunięcie
+/// kopii o numerach powyżej nowego limitu (do 20).
+#[tauri::command]
+pub async fn set_backup_count(state: State<'_, AppState>, count: usize) -> Result<(), String> {
+    if !(1..=20).contains(&count) {
+        return Err("Liczba kopii zapasowych musi być liczbą od 1 do 20.".into());
+    }
+    state.config.lock().expect("config").backup_count = count;
+    state.save_config();
+    if let Some(u) = state.inner.lock().await.as_mut() {
+        u.vault.set_backup_count(count);
+    }
+    let removed = prune_backups(&state.path, count);
+    state.log(format!("kopie zapasowe: limit {count}, usunięto {removed}"));
+    Ok(())
+}
+
+/// Usuwa `.bak{n}` dla n w (count+1)..=20; zwraca liczbę usuniętych.
+fn prune_backups(path: &std::path::Path, count: usize) -> usize {
+    ((count + 1)..=20)
+        .filter(|&n| std::fs::remove_file(vault::backup_file(path, n)).is_ok())
+        .count()
 }
 
 #[tauri::command]
@@ -431,6 +457,25 @@ mod tests {
         );
         // Blokada konfiguracji jest wolna po odczycie.
         assert!(state.config.try_lock().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_backups_removes_only_numbers_above_limit() {
+        let dir = std::env::temp_dir().join(format!("mrm-prune-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hosts.mrm");
+        for n in 1..=8 {
+            std::fs::write(vault::backup_file(&path, n), b"x").unwrap();
+        }
+        assert_eq!(prune_backups(&path, 5), 3);
+        for n in 1..=5 {
+            assert!(vault::backup_file(&path, n).exists(), "{n}");
+        }
+        for n in 6..=8 {
+            assert!(!vault::backup_file(&path, n).exists(), "{n}");
+        }
+        assert_eq!(prune_backups(&path, 5), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

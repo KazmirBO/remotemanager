@@ -46,6 +46,12 @@ describe('inherited', () => {
     expect(inherited(f, 'a', 'port', 2222)).toBeNull();
     expect(inherited(f, 'b', 'username', 'ktoś-inny')).toEqual({ value: 'admin', from: 'Firma' });
   });
+  it('dziedziczy rozmiar czcionki i polecenie po zalogowaniu z katalogu nadrzędnego', () => {
+    const p = [folder('a', 'Firma', null, { terminal_font_size: 16, ssh_login_command: 'tmux new -A -s main' }), folder('b', 'Sub', 'a')];
+    expect(inherited(p, 'b', 'terminal_font_size')).toEqual({ value: 16, from: 'Firma' });
+    expect(inherited(p, 'b', 'ssh_login_command')).toEqual({ value: 'tmux new -A -s main', from: 'Firma' });
+    expect(inherited(p, null, 'terminal_font_size')).toBeNull();
+  });
   it('dziedziczy profil łącza RDP z najbliższego katalogu, który go ustawia', () => {
     const p = [folder('a', 'Firma', null, { rdp_profile: 'slow' }), folder('b', 'Sub', 'a'), folder('c', 'Biuro', 'b', { rdp_profile: 'fast' })];
     expect(inherited(p, 'b', 'rdp_profile')).toEqual({ value: 'slow', from: 'Firma' });

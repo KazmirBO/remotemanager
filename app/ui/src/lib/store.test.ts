@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./api', () => ({ api: { lock: vi.fn(async () => {}) } }));
+const userActivity = vi.fn(async () => {});
+vi.mock('./api', () => ({ api: { lock: vi.fn(async () => {}), userActivity } }));
 
-const { cancelPasswordPrompts, keyImportError, lockVault, needsKeyPassphrase, closeTab, openHost, requestPassword, ui } = await import('./store.svelte');
+const { cancelPasswordPrompts, keyImportError, lockVault, needsKeyPassphrase, closeTab, openHost, requestCloseTabs, answerCloseTabs, reportActivity, setTabLive, onLocked, requestPassword, ui } = await import('./store.svelte');
 
 function host(id: string) {
   return { id, name: id, address: id, protocol: 'ssh' as const, folder: null, favorite: false, notes: '', fields: {} as never };
@@ -13,6 +14,10 @@ beforeEach(() => {
   ui.activeTab = null;
   cancelPasswordPrompts();
   ui.phase = 'unlocked';
+  ui.closeConfirm = null;
+  ui.quitConfirm = null;
+  ui.doc = null;
+  userActivity.mockClear();
 });
 
 describe('tytuły kart', () => {
@@ -77,5 +82,70 @@ describe('błędy kluczy SSH', () => {
     expect(keyImportError('KEY_BAD_PASSPHRASE:Zle.')).toEqual({ message: 'Zle.', needsPassphrase: true });
     expect(keyImportError('KEY_INVALID:Śmieci')).toEqual({ message: 'Śmieci', needsPassphrase: false });
     expect(keyImportError('Nazwa jest wymagana.')).toBeNull();
+  });
+});
+
+function docWith(confirm: boolean) {
+  return { settings: { confirm_close_tab: confirm } } as never;
+}
+
+describe('zamykanie kart z pytaniem', () => {
+  it('bez opcji zamyka od razu', () => {
+    openHost(host('a'));
+    setTabLive(ui.tabs[0].id, true);
+    ui.doc = docWith(false);
+    requestCloseTabs([ui.tabs[0].id]);
+    expect(ui.tabs.length).toBe(0);
+    expect(ui.closeConfirm).toBeNull();
+  });
+
+  it('z opcją pyta tylko o połączone sesje', () => {
+    ui.doc = docWith(true);
+    openHost(host('a'));
+    requestCloseTabs([ui.tabs[0].id]);
+    expect(ui.tabs.length).toBe(0);
+    openHost(host('b'));
+    openHost(host('c'));
+    setTabLive(ui.tabs[0].id, true);
+    setTabLive(ui.tabs[1].id, true);
+    const ids = ui.tabs.map((t) => t.id);
+    requestCloseTabs(ids);
+    expect(ui.closeConfirm?.live).toBe(2);
+    expect(ui.tabs.length).toBe(2);
+  });
+
+  it('anulowanie nic nie zamyka, potwierdzenie zamyka', () => {
+    ui.doc = docWith(true);
+    openHost(host('a'));
+    setTabLive(ui.tabs[0].id, true);
+    requestCloseTabs([ui.tabs[0].id]);
+    answerCloseTabs(false);
+    expect(ui.tabs.length).toBe(1);
+    expect(ui.closeConfirm).toBeNull();
+    requestCloseTabs([ui.tabs[0].id]);
+    answerCloseTabs(true);
+    expect(ui.tabs.length).toBe(0);
+  });
+
+  it('blokada zeruje pytania', () => {
+    ui.closeConfirm = { ids: ['x'], live: 1 };
+    ui.quitConfirm = { sessions: 2 };
+    onLocked();
+    expect(ui.closeConfirm).toBeNull();
+    expect(ui.quitConfirm).toBeNull();
+  });
+});
+
+describe('aktywność użytkownika', () => {
+  it('zgłasza najwyżej raz na 15 s i tylko przy odblokowanym pliku', () => {
+    ui.phase = 'locked';
+    reportActivity(1_000_000);
+    expect(userActivity).not.toHaveBeenCalled();
+    ui.phase = 'unlocked';
+    reportActivity(1_000_000);
+    reportActivity(1_010_000);
+    expect(userActivity).toHaveBeenCalledTimes(1);
+    reportActivity(1_015_000);
+    expect(userActivity).toHaveBeenCalledTimes(2);
   });
 });

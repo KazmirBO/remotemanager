@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createSerialQueue, grabActive, grabWanted, keyRoute, parseRelease } from './rdpKeys';
 import { ACTIONS, binding, comboFromEvent, findConflict, hasScancode, matchAction, matchAppAction, validCombo } from './shortcuts';
 import { validPointer } from './rdpPointer';
+import { defaultSettings } from './api';
 
 describe('parseRelease', () => {
   it('zamienia skrót domyślny na scancode i modyfikatory', () => {
@@ -61,7 +62,7 @@ describe('keyRoute', () => {
 
 describe('akcja release_keys', () => {
   const settings = (shortcuts: Record<string, string>) => ({
-    theme: 'dark' as const, terminal_font_size: 13, terminal_scheme: 'domyslny', shortcuts, rdp_profile: 'fast' as const, rdp_keys: 'never' as const,
+    ...defaultSettings(), theme: 'dark' as const, shortcuts,
   });
   const ev = { ctrlKey: true, metaKey: false, altKey: false, shiftKey: true, code: 'F12' };
   it('ma skrót domyślny i jest edytowalna', () => {

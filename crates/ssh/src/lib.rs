@@ -100,6 +100,21 @@ pub struct Hop {
     pub methods: Vec<Auth>,
     /// Dopuszcza starsze algorytmy dla serwerów, które nie znają nowych (patrz `legacy_preferred`).
     pub legacy: bool,
+    /// Odstęp pakietów podtrzymujących (`keepalive@openssh.com`); `None` wyłącza podtrzymywanie.
+    pub keepalive: Option<Duration>,
+}
+
+/// Domyślny odstęp podtrzymywania połączenia (zgodny z `Settings::ssh_keepalive_secs`).
+pub const DEFAULT_KEEPALIVE: Duration = Duration::from_secs(30);
+
+/// Najdłuższe polecenie po zalogowaniu (w znakach).
+pub const MAX_LOGIN_COMMAND: usize = 1024;
+
+/// Czy polecenie po zalogowaniu jest poprawne: od 1 do `MAX_LOGIN_COMMAND` znaków, bez znaków
+/// sterujących poza tabulatorem.
+pub fn valid_login_command(cmd: &str) -> bool {
+    let n = cmd.chars().count();
+    (1..=MAX_LOGIN_COMMAND).contains(&n) && !cmd.chars().any(|c| c.is_control() && c != '\t')
 }
 
 /// Metoda, która zadziałała na danym przystanku.
@@ -200,10 +215,10 @@ fn legacy_preferred() -> russh::Preferred {
     }
 }
 
-fn config(legacy: bool) -> Arc<client::Config> {
+fn config(legacy: bool, keepalive: Option<Duration>) -> Arc<client::Config> {
     Arc::new(client::Config {
         nodelay: true,
-        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_interval: keepalive,
         keepalive_max: 3,
         preferred: if legacy {
             legacy_preferred()
@@ -509,6 +524,19 @@ impl ShellHandle {
         self.enqueue(ShellCmd::Write(data))
     }
 
+    /// Kolejkuje `line` zakończone "\n" (jak `write`). Niepoprawne polecenie
+    /// (`valid_login_command`) daje błąd i niczego nie wysyła.
+    pub fn send_line(&self, line: &str) -> Result<()> {
+        if !valid_login_command(line) {
+            return Err(Error::Protocol(
+                "niepoprawne polecenie po zalogowaniu".into(),
+            ));
+        }
+        let mut data = line.as_bytes().to_vec();
+        data.push(b'\n');
+        self.write(data)
+    }
+
     pub fn resize(&self, cols: u32, rows: u32) -> Result<()> {
         self.enqueue(ShellCmd::Resize(cols, rows))
     }
@@ -603,8 +631,12 @@ impl Session {
             let connecting = async {
                 match handles.last() {
                     None => Ok::<_, Error>(
-                        client::connect(config(hop.legacy), (hop.host.as_str(), hop.port), handler)
-                            .await,
+                        client::connect(
+                            config(hop.legacy, hop.keepalive),
+                            (hop.host.as_str(), hop.port),
+                            handler,
+                        )
+                        .await,
                     ),
                     Some(prev) => {
                         let ch = prev
@@ -616,10 +648,12 @@ impl Session {
                             )
                             .await
                             .map_err(|_| Error::Connect(target.clone()))?;
-                        Ok(
-                            client::connect_stream(config(hop.legacy), ch.into_stream(), handler)
-                                .await,
+                        Ok(client::connect_stream(
+                            config(hop.legacy, hop.keepalive),
+                            ch.into_stream(),
+                            handler,
                         )
+                        .await)
                     }
                 }
             };
@@ -725,6 +759,36 @@ impl Session {
     pub async fn disconnect(&self) {
         for h in self.handles.iter().rev() {
             let _ = h.disconnect(Disconnect::ByApplication, "", "pl").await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keepalive_goes_into_config() {
+        assert_eq!(config(false, None).keepalive_interval, None);
+        let five = Duration::from_secs(5);
+        assert_eq!(config(false, Some(five)).keepalive_interval, Some(five));
+        assert_eq!(config(true, Some(five)).keepalive_max, 3);
+    }
+
+    #[test]
+    fn login_command_validation() {
+        for ok in ["tmux attach", "cd /srv\t&& ls", &"a".repeat(1024)] {
+            assert!(valid_login_command(ok), "{ok:?}");
+        }
+        for bad in [
+            "",
+            &"a".repeat(1025),
+            "ls\n",
+            "ls\r",
+            "a\u{1b}[0m",
+            "a\u{7f}",
+        ] {
+            assert!(!valid_login_command(bad), "{bad:?}");
         }
     }
 }

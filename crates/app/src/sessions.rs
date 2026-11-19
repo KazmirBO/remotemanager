@@ -211,6 +211,8 @@ struct HopPlan {
     legacy: bool,
     /// Typ terminala (używany tylko dla celu).
     term: Option<String>,
+    /// Polecenie po zalogowaniu (używane tylko dla celu). Nie trafia do dziennika.
+    login_command: Option<String>,
 }
 
 fn plan_for(doc: &model::Document, id: Id) -> Result<HopPlan, String> {
@@ -224,6 +226,7 @@ fn plan_for(doc: &model::Document, id: Id) -> Result<HopPlan, String> {
         password,
         ssh_term,
         ssh_legacy,
+        ssh_login_command,
         ..
     } = r.fields;
     let username =
@@ -238,7 +241,13 @@ fn plan_for(doc: &model::Document, id: Id) -> Result<HopPlan, String> {
         password: password.map(Zeroizing::new),
         legacy: ssh_legacy.unwrap_or(false),
         term: ssh_term,
+        login_command: ssh_login_command,
     })
+}
+
+/// Odstęp podtrzymywania połączenia z ustawień (sekundy); 0 wyłącza.
+fn keepalive(secs: u16) -> Option<Duration> {
+    (secs > 0).then(|| Duration::from_secs(secs.into()))
 }
 
 /// "~/" i "~\\" (Windows) rozwija przez HOME albo USERPROFILE.
@@ -263,6 +272,7 @@ fn build_hop(
     target: bool,
     one_time_password: Option<&str>,
     key_passphrase: Option<&str>,
+    keepalive: Option<Duration>,
 ) -> Result<(Hop, Option<String>), String> {
     let HopPlan {
         name,
@@ -274,6 +284,7 @@ fn build_hop(
         password,
         legacy,
         term: _,
+        login_command: _,
     } = plan;
     let hop = |methods| Hop {
         host: host.clone(),
@@ -281,6 +292,7 @@ fn build_hop(
         username: username.clone(),
         methods,
         legacy,
+        keepalive,
     };
     if let (true, Some(pw)) = (target, one_time_password) {
         return Ok((
@@ -383,7 +395,7 @@ pub async fn connect_ssh(
     // Licznik przeładowań musi być odczytany przed pierwszym `await`, inaczej przeładowanie
     // w czasie czekania na blokadę dokumentu uszłoby uwadze kontroli po wstawieniu sesji.
     let reloads = state.reloads.load(Ordering::SeqCst);
-    let (plans, host_name) = state
+    let (plans, host_name, keepalive_secs, settings_term) = state
         .read(|doc| {
             let host = doc.tree.host(host_id).ok_or("Nie ma takiego hosta")?;
             if host.protocol != Protocol::Ssh {
@@ -396,7 +408,12 @@ pub async fn connect_ssh(
                 .into_iter()
                 .map(|id| plan_for(doc, id))
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok((plans, name))
+            Ok((
+                plans,
+                name,
+                doc.settings.ssh_keepalive_secs,
+                doc.settings.ssh_term.clone(),
+            ))
         })
         .await?;
     // Hasło podane przy łączeniu i hasło klucza dotyczą tylko celu i nie są nigdzie zapisywane.
@@ -406,7 +423,9 @@ pub async fn connect_ssh(
     let term = plans
         .last()
         .and_then(|p| p.term.clone())
-        .unwrap_or_else(|| ssh::DEFAULT_TERM.to_owned());
+        .unwrap_or(settings_term);
+    let login_command = plans.last().and_then(|p| p.login_command.clone());
+    let keepalive = keepalive(keepalive_secs);
     let legacy_hops = plans.iter().filter(|p| p.legacy).count();
     let last = plans.len().saturating_sub(1);
     // Odczyt pliku klucza i jego odszyfrowanie (KDF) poza blokadą dokumentu.
@@ -422,6 +441,7 @@ pub async fn connect_ssh(
                     i == last,
                     password.as_deref().map(String::as_str),
                     key_passphrase.as_deref().map(String::as_str),
+                    keepalive,
                 )
             })
             .collect::<Result<Vec<_>, _>>()
@@ -523,11 +543,12 @@ pub async fn connect_ssh(
         state.log(format!("SSH: {host_name}: {hop}: uwierzytelniono {how}"));
     }
     let id = Uuid::new_v4();
+    let live = Arc::new(Live { session, shell });
     state
         .sessions
         .lock()
         .expect("sessions")
-        .insert(id, Arc::new(Live { session, shell }));
+        .insert(id, live.clone());
     let flow = Arc::new(Flow::new(SSH_WINDOW));
     state
         .ssh_flow
@@ -548,6 +569,17 @@ pub async fn connect_ssh(
             l.session.disconnect().await;
         }
         return Err(interrupted_message(locked).into());
+    }
+    // Polecenie po zalogowaniu (tylko cel). Treść nigdy nie trafia do dziennika.
+    if let Some(cmd) = login_command {
+        match live.shell.send_line(&cmd) {
+            Ok(()) => state.log(format!(
+                "SSH: {host_name}: wysłano polecenie po zalogowaniu"
+            )),
+            Err(e) => state.log(format!(
+                "SSH: {host_name}: nie wysłano polecenia po zalogowaniu: {e}"
+            )),
+        }
     }
 
     let app3 = app.clone();
@@ -737,19 +769,35 @@ mod tests {
             password: None,
             legacy: false,
             term: None,
+            login_command: None,
         }
+    }
+
+    fn hop4(
+        plan: HopPlan,
+        target: bool,
+        pw: Option<&str>,
+        kp: Option<&str>,
+    ) -> Result<(Hop, Option<String>), String> {
+        build_hop(plan, target, pw, kp, Some(ssh::DEFAULT_KEEPALIVE))
+    }
+
+    #[test]
+    fn keepalive_from_settings() {
+        assert_eq!(keepalive(0), None);
+        assert_eq!(keepalive(30), Some(Duration::from_secs(30)));
     }
 
     #[test]
     fn legacy_flag_reaches_the_hop() {
-        let (modern, _) = build_hop(plan(), true, None, None).unwrap();
+        let (modern, _) = hop4(plan(), true, None, None).unwrap();
         assert!(!modern.legacy);
         let old = HopPlan {
             legacy: true,
             ..plan()
         };
         // Także przy haśle jednorazowym, które zastępuje metody celu.
-        let (hop, _) = build_hop(old, true, Some("jednorazowe"), None).unwrap();
+        let (hop, _) = hop4(old, true, Some("jednorazowe"), None).unwrap();
         assert!(hop.legacy);
     }
 
@@ -781,7 +829,7 @@ mod tests {
         let d = dir("order");
         let Some(k) = keygen(&d, "k", "") else { return };
         let text = std::fs::read_to_string(&k).unwrap();
-        let hop = build_hop(
+        let hop = hop4(
             HopPlan {
                 stored_key: Some(stored(&text)),
                 key_path: Some(k.to_string_lossy().into_owned()),
@@ -809,7 +857,7 @@ mod tests {
                 Auth::Password(_)
             ]
         ));
-        let (bare, _) = build_hop(plan(), true, None, None).unwrap();
+        let (bare, _) = hop4(plan(), true, None, None).unwrap();
         assert!(matches!(bare.methods.as_slice(), [Auth::Agent]));
         std::fs::remove_dir_all(&d).ok();
     }
@@ -822,10 +870,10 @@ mod tests {
             ..plan()
         };
         // Plik klucza nie jest czytany, więc brak pliku nie przeszkadza.
-        let (hop, _) = build_hop(p, true, Some("jednorazowe"), None).unwrap();
+        let (hop, _) = hop4(p, true, Some("jednorazowe"), None).unwrap();
         assert!(matches!(hop.methods.as_slice(), [Auth::Password(_)]));
         // Bastion nie dostaje hasła jednorazowego.
-        let (b, _) = build_hop(plan(), false, Some("x"), None).unwrap();
+        let (b, _) = hop4(plan(), false, Some("x"), None).unwrap();
         assert!(matches!(b.methods.as_slice(), [Auth::Agent]));
     }
 
@@ -839,12 +887,12 @@ mod tests {
             key_path: Some(k.to_string_lossy().into_owned()),
             ..plan()
         };
-        let e = build_hop(p(), true, None, None).unwrap_err();
+        let e = hop4(p(), true, None, None).unwrap_err();
         assert!(e.starts_with("NEEDS_KEY_PASSPHRASE:"), "{e}");
-        let e = build_hop(p(), false, None, Some("haslo-klucza")).unwrap_err();
+        let e = hop4(p(), false, None, Some("haslo-klucza")).unwrap_err();
         assert!(!e.starts_with("NEEDS_KEY_PASSPHRASE:"), "{e}");
         assert!(e.contains("bastionu") && e.contains("agenta SSH"), "{e}");
-        let (ok, _) = build_hop(p(), true, None, Some("haslo-klucza")).unwrap();
+        let (ok, _) = hop4(p(), true, None, Some("haslo-klucza")).unwrap();
         assert_eq!(ok.methods.len(), 2);
         std::fs::remove_dir_all(&d).ok();
     }
@@ -859,7 +907,7 @@ mod tests {
             key_path: Some(k.to_string_lossy().into_owned()),
             ..plan()
         };
-        let e = build_hop(p, true, None, Some("zle")).unwrap_err();
+        let e = hop4(p, true, None, Some("zle")).unwrap_err();
         assert!(
             e.starts_with("NEEDS_KEY_PASSPHRASE:Nieprawidłowe hasło"),
             "{e}"
@@ -876,14 +924,14 @@ mod tests {
             key_path: Some(f.to_string_lossy().into_owned()),
             ..plan()
         };
-        let e = build_hop(p, true, None, None).unwrap_err();
+        let e = hop4(p, true, None, None).unwrap_err();
         assert!(e.contains("za duży"), "{e}");
         let p = HopPlan {
             key_path: Some(d.join("brak").to_string_lossy().into_owned()),
             ..plan()
         };
         // Pliku, którego nie ma, nie traktujemy jak błędu: metoda wypada, pozostałe zostają.
-        let (hop, skipped) = build_hop(p, true, None, None).unwrap();
+        let (hop, skipped) = hop4(p, true, None, None).unwrap();
         assert!(matches!(hop.methods.as_slice(), [Auth::Agent]));
         let note = skipped.expect("notatka o pominiętym pliku");
         assert!(note.starts_with("pominięto plik klucza"), "{note}");
