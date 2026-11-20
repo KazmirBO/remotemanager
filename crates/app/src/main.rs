@@ -118,6 +118,7 @@ fn main() {
             maintenance::sync_status,
             maintenance::sync_set_folder,
             maintenance::sync_run,
+            maintenance::sync_diff,
             maintenance::list_backups,
             maintenance::restore_backup,
             maintenance::get_diagnostics,

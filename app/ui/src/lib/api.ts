@@ -1,6 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { createAcker } from './sshAck';
 import type { ExportDone, ImportReport, ImportSummary, Parts } from './transfer';
+import type { SyncDiff } from './syncDiff';
 
 export type Protocol = 'ssh' | 'rdp';
 export type Id = string;
@@ -151,6 +152,7 @@ export const api = {
   syncStatus: () => call<SyncView>('sync_status'),
   syncSetFolder: (folder: string | null) => call<SyncView>('sync_set_folder', { folder }),
   syncRun: (keep?: 'local' | 'remote') => call<{ view: SyncView; locked: boolean }>('sync_run', { keep: keep ?? null }),
+  syncDiff: () => call<SyncDiff>('sync_diff'),
   listBackups: () => call<BackupInfo[]>('list_backups'),
   restoreBackup: (n: number, password: string) => call<void>('restore_backup', { n, password }),
   getDiagnostics: () => call<string[]>('get_diagnostics'),

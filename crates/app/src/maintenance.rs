@@ -204,6 +204,66 @@ pub async fn sync_run(
     })
 }
 
+/// Różnice między wersją lokalną a plikiem z folderu synchronizacji.
+#[derive(Serialize)]
+pub struct SyncDiff {
+    /// `false`: plik z folderu ma inne hasło główne, więc nie da się go odczytać kluczem z pamięci.
+    readable: bool,
+    diff: Option<model::diff::DocDiff>,
+}
+
+/// Porównuje dokument z pamięci z plikiem z folderu. Plik jest tylko czytany: przechodzi tę samą
+/// kontrolę struktury co przed pobraniem, a odszyfrowuje go klucz z pamięci (bez pytania o hasło).
+/// Wynik nazywa różnice bez wartości pól, więc hasła i klucze nie trafiają do interfejsu;
+/// komunikaty błędów nie przytaczają treści pliku.
+async fn sync_diff_for(state: &AppState, folder: &std::path::Path) -> Result<SyncDiff, String> {
+    let remote = sync::remote_path(folder);
+    // Blokada dokumentu na czas porównania, żeby porównywać spójną wersję lokalną.
+    let guard = state.inner.lock().await;
+    let u = guard.as_ref().ok_or("Plik z hostami jest zablokowany")?;
+    if !remote.is_file() {
+        return Err("W folderze synchronizacji nie ma jeszcze pliku z hostami.".into());
+    }
+    vault::validate_file(&remote)
+        .map_err(|e| format!("Plik w folderze nie wygląda na poprawny plik z hostami ({e})."))?;
+    let other = u
+        .vault
+        .read_file::<Document>(&remote)
+        .map_err(|e| match e {
+            vault::Error::Decrypt => {
+                "Plik w folderze jest uszkodzony: nie przechodzi uwierzytelnienia.".to_string()
+            }
+            vault::Error::Serde(_) => {
+                "Plik w folderze ma nieznaną strukturę (być może pochodzi z nowszej wersji programu)."
+                    .to_string()
+            }
+            other => format!("Nie można odczytać pliku z folderu: {other}."),
+        })?;
+    Ok(match other {
+        None => SyncDiff {
+            readable: false,
+            diff: None,
+        },
+        Some(doc) => SyncDiff {
+            readable: true,
+            diff: Some(model::diff::diff(&u.doc, &doc)),
+        },
+    })
+}
+
+/// Pokazuje, czym różni się wersja lokalna od pliku w folderze synchronizacji. Niczego nie zmienia.
+#[tauri::command]
+pub async fn sync_diff(state: State<'_, AppState>) -> Result<SyncDiff, String> {
+    let folder = state
+        .config
+        .lock()
+        .expect("config")
+        .sync_folder
+        .clone()
+        .ok_or("Synchronizacja nie jest skonfigurowana.")?;
+    sync_diff_for(&state, &folder).await
+}
+
 // ---------- kopie zapasowe ----------
 
 #[derive(Serialize)]
@@ -507,6 +567,79 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         state.trust.lock().unwrap().insert(Uuid::new_v4(), tx);
         (state, rx)
+    }
+
+    #[tokio::test]
+    async fn sync_diff_compares_with_remote_file_and_changes_nothing() {
+        let (path, remote) = dirs("diff");
+        let (state, _rx) = unlocked(path.clone()).await;
+        // Bez pliku w folderze nie ma czego porównywać.
+        let e = sync_diff_for(&state, &remote).await.err().unwrap();
+        assert!(e.contains("nie ma jeszcze pliku"), "{e}");
+        // Zsynchronizowane: brak różnic.
+        sync::sync(&path, &remote, None, None).unwrap();
+        let same = sync_diff_for(&state, &remote).await.unwrap();
+        assert!(same.readable);
+        assert!(same.diff.unwrap().is_empty());
+        // Lokalna zmiana z hasłem: różnica nazwana, bez wartości.
+        state
+            .mutate(|d| {
+                let id = d
+                    .tree
+                    .add_host("db", "10.0.0.5", model::Protocol::Ssh, None)
+                    .map_err(err)?;
+                d.tree
+                    .hosts
+                    .iter_mut()
+                    .find(|h| h.id == id)
+                    .unwrap()
+                    .fields
+                    .password = Some("sekret-bazy".into());
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let local_before = std::fs::read(&path).unwrap();
+        let remote_before = std::fs::read(sync::remote_path(&remote)).unwrap();
+        let out = sync_diff_for(&state, &remote).await.unwrap();
+        let d = out.diff.unwrap();
+        assert_eq!(d.hosts.len(), 1);
+        assert_eq!(d.hosts[0].side, model::diff::Side::LocalOnly);
+        assert_eq!(d.hosts[0].name, "db");
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(!json.contains("sekret-bazy"), "{json}");
+        // Porównanie niczego nie zapisuje.
+        assert_eq!(std::fs::read(&path).unwrap(), local_before);
+        assert_eq!(
+            std::fs::read(sync::remote_path(&remote)).unwrap(),
+            remote_before
+        );
+        // Plik w folderze z innym hasłem głównym: nieczytelny, ale to nie błąd.
+        let foreign = remote.join("obcy.mrm");
+        Vault::create(
+            &foreign,
+            "inne-haslo",
+            KdfParams::FAST_FOR_TESTS,
+            &doc_with("Obcy"),
+        )
+        .unwrap();
+        std::fs::copy(&foreign, sync::remote_path(&remote)).unwrap();
+        let out = sync_diff_for(&state, &remote).await.unwrap();
+        assert!(!out.readable);
+        assert!(out.diff.is_none());
+        // Uszkodzony i obcy plik: czytelny błąd.
+        let mut broken = remote_before.clone();
+        *broken.last_mut().unwrap() ^= 1;
+        std::fs::write(sync::remote_path(&remote), &broken).unwrap();
+        let e = sync_diff_for(&state, &remote).await.err().unwrap();
+        assert!(e.contains("uszkodzony"), "{e}");
+        std::fs::write(sync::remote_path(&remote), b"to nie jest plik z hostami").unwrap();
+        let e = sync_diff_for(&state, &remote).await.err().unwrap();
+        assert!(e.contains("nie wygląda na poprawny plik"), "{e}");
+        // Zablokowany plik lokalny.
+        *state.inner.lock().await = None;
+        let e = sync_diff_for(&state, &remote).await.err().unwrap();
+        assert!(e.contains("zablokowany"), "{e}");
     }
 
     #[tokio::test]
