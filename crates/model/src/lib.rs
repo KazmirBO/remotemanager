@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 pub mod link;
+pub mod transfer;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

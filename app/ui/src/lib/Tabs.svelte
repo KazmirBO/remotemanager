@@ -78,4 +78,10 @@
   .horizontal .bad { margin-left: 0; }
   .panels { flex: 1; min-height: 0; overflow: auto; padding: 20px 24px; }
   [role='tabpanel'][hidden] { display: none; }
+  /* Niskie okno (minimum 480 px): ciaśniejsza lista pionowa, żeby wszystkie kategorie ustawień były
+     widoczne bez przewijania listy. */
+  @media (max-height: 520px) {
+    .vertical .list { padding: 6px 8px; gap: 0; }
+    .vertical .tab { height: 32px; }
+  }
 </style>

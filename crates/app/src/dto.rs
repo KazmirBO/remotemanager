@@ -98,7 +98,7 @@ impl std::fmt::Debug for FieldsIo {
     }
 }
 
-const TERM_ERROR: &str = "Typ terminala może mieć najwyżej 64 znaki: litery, cyfry oraz - _ . + (np. vt100, aixterm, xterm-256color).";
+pub(crate) const TERM_ERROR: &str = "Typ terminala może mieć najwyżej 64 znaki: litery, cyfry oraz - _ . + (np. vt100, aixterm, xterm-256color).";
 /// Przyjmuje dowolną liczbę z formularza (ułamek, liczba ujemna, ponad 65535): wartość, która nie
 /// jest liczbą całkowitą z zakresu u16, zamienia na `u16::MAX`, żeby `prepare` zgłosił `FONT_ERROR`
 /// zamiast angielskiego błędu deserializacji bez wskazania pola.
@@ -113,9 +113,9 @@ fn lenient_font_size<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u1
     }))
 }
 
-const FONT_ERROR: &str = "Rozmiar czcionki terminala musi być liczbą od 9 do 32.";
-const COMMAND_ERROR: &str = "Polecenie po zalogowaniu może mieć najwyżej 1024 znaki i nie może zawierać znaków sterujących poza tabulatorem.";
-const PATH_ERROR: &str = "Ścieżka klucza musi być bezwzględna albo zaczynać się od ~/.";
+pub(crate) const FONT_ERROR: &str = "Rozmiar czcionki terminala musi być liczbą od 9 do 32.";
+pub(crate) const COMMAND_ERROR: &str = "Polecenie po zalogowaniu może mieć najwyżej 1024 znaki i nie może zawierać znaków sterujących poza tabulatorem.";
+pub(crate) const PATH_ERROR: &str = "Ścieżka klucza musi być bezwzględna albo zaczynać się od ~/.";
 
 /// Sprawdza ścieżkę klucza: `~/` albo ścieżka bezwzględna, bez znaków sterujących. Plik hostów bywa
 /// zsynchronizowany między Linuksem a Windows, więc na każdym systemie przechodzą obie konwencje

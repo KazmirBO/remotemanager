@@ -227,7 +227,7 @@ pub async fn change_password(
 
 /// Zmiana nie może zepsuć łańcucha bastionów hosta, który przed nią działał (cykl, bastion RDP,
 /// bastion poza drzewem). Hosty zepsute wcześniej nie blokują niezwiązanych zmian.
-fn check_jumps(before: &model::Tree, after: &model::Tree) -> Result<(), String> {
+pub(crate) fn check_jumps(before: &model::Tree, after: &model::Tree) -> Result<(), String> {
     for h in &after.hosts {
         if before.host(h.id).is_some() && before.jump_chain(h.id).is_err() {
             continue;

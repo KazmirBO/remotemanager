@@ -24,7 +24,7 @@
   type Dialog =
     | { kind: 'host'; host: HostView | null; folder: Id | null; prefill?: Prefill | null }
     | { kind: 'folder'; folder: FolderView | null; parent: Id | null }
-    | { kind: 'settings'; category?: SettingsCategory }
+    | { kind: 'settings'; category?: SettingsCategory; exportFolder?: Id }
     | { kind: 'notices' }
     | { kind: 'quick' }
     | { kind: 'link'; host: HostView; target: string };
@@ -290,6 +290,7 @@
       onEditFolder={(folder) => (dialog = { kind: 'folder', folder, parent: null })}
       onSettings={() => (dialog = { kind: 'settings' })}
       onSync={() => (dialog = { kind: 'settings', category: 'sync' })}
+      onExportFolder={(folder) => (dialog = { kind: 'settings', category: 'transfer', exportFolder: folder })}
       onLock={lockVault}
     />
     <main>
@@ -352,7 +353,7 @@
   {:else if dialog?.kind === 'folder'}
     <FolderDialog folder={dialog.folder} defaultParent={dialog.parent} onclose={() => (dialog = null)} />
   {:else if dialog?.kind === 'settings'}
-    <SettingsDialog initial={dialog.category} onclose={() => (dialog = null)} />
+    <SettingsDialog initial={dialog.category} exportFolder={dialog.exportFolder ?? null} onclose={() => (dialog = null)} />
   {:else if dialog?.kind === 'notices'}
     <NotificationsDialog onclose={() => (dialog = null)} />
   {:else if dialog?.kind === 'quick'}
