@@ -921,8 +921,82 @@ mod tests {
             from_json, EXPECTED_FROM,
             "zmiana migawki wymaga podbicia PROTOCOL"
         );
-        // Migawka zapisana dla PROTOCOL = 2; przy podbiciu zaktualizuj obie stałe i tę liczbę.
+        // Migawka zapisana dla bieżącej wartości PROTOCOL; przy podbiciu zaktualizuj obie stałe
+        // i liczbę w asercji poniżej.
         assert_eq!(PROTOCOL, 4, "po podbiciu PROTOCOL zaktualizuj migawkę");
+    }
+
+    /// Migawka układu binarnego: zmiana numerów rodzajów ramek, bajtów `ClipKind`, kolejności pól
+    /// nagłówków obrazu i wskaźnika albo limitów wymaga podbicia `PROTOCOL` (testy okrągłe używają
+    /// tych samych funkcji po obu stronach, więc takiej zmiany nie wykryją).
+    #[test]
+    fn binary_layout_snapshot_requires_protocol_bump() {
+        const MSG: &str = "zmiana układu binarnego wymaga podbicia PROTOCOL";
+        assert_eq!(
+            (KIND_JSON, KIND_IMAGE, KIND_CLIP, KIND_POINTER),
+            (1, 2, 3, 4),
+            "{MSG}"
+        );
+        assert_eq!(MAX_FRAME, 64 * 1024 * 1024, "{MSG}");
+        assert_eq!(MAX_POINTER_SIDE, 384, "{MSG}");
+
+        let mut buf = Vec::new();
+        write_image(
+            &mut buf,
+            &Image {
+                x: 1,
+                y: 2,
+                width: 1,
+                height: 1,
+                rgba: vec![0xa1, 0xa2, 0xa3, 0xa4],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            buf,
+            [
+                13, 0, 0, 0, 2, 1, 0, 2, 0, 1, 0, 1, 0, 0xa1, 0xa2, 0xa3, 0xa4
+            ],
+            "{MSG}"
+        );
+
+        buf.clear();
+        write_pointer(
+            &mut buf,
+            &Pointer {
+                width: 1,
+                height: 1,
+                hot_x: 3,
+                hot_y: 5,
+                rgba: vec![0xb1, 0xb2, 0xb3, 0xb4],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            buf,
+            [
+                13, 0, 0, 0, 4, 1, 0, 1, 0, 3, 0, 5, 0, 0xb1, 0xb2, 0xb3, 0xb4
+            ],
+            "{MSG}"
+        );
+
+        for (kind, byte) in [
+            (ClipKind::Text, 1u8),
+            (ClipKind::Html, 2),
+            (ClipKind::Image, 3),
+        ] {
+            buf.clear();
+            write_clip(&mut buf, kind, b"ab").unwrap();
+            assert_eq!(buf, [4, 0, 0, 0, 3, byte, b'a', b'b'], "{MSG}");
+        }
+
+        buf.clear();
+        write_json(&mut buf, &ToWorker::CtrlAltDel).unwrap();
+        assert_eq!(
+            buf[..5],
+            [(1 + br#"{"t":"ctrl_alt_del"}"#.len()) as u8, 0, 0, 0, 1],
+            "{MSG}"
+        );
     }
 
     /// Miejsce wariantu `ClipData` w migawce: nie ma postaci JSON.

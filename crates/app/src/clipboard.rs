@@ -190,6 +190,7 @@ enum Req {
     Snapshot(mpsc::Sender<Snapshot>),
     Item(Item, mpsc::Sender<()>),
     Files(Vec<PathBuf>, mpsc::Sender<()>),
+    Text(mpsc::Sender<Option<String>>),
 }
 
 /// Limit czasu odpowiedzi wątku schowka. Brak odpowiedzi to brak wiedzy o schowku, a nie pusty schowek.
@@ -233,6 +234,12 @@ fn handle_req(cb: &mut Option<arboard::Clipboard>, req: Req) {
             let _ = c.set().file_list(&paths);
             let _ = reply.send(());
         }
+        (Req::Text(reply), Some(c)) => {
+            let _ = reply.send(c.get_text().ok());
+        }
+        (Req::Text(reply), None) => {
+            let _ = reply.send(None);
+        }
         (Req::Item(_, reply) | Req::Files(_, reply), None) => {
             let _ = reply.send(());
         }
@@ -263,6 +270,25 @@ fn ask<T>(make: impl FnOnce(mpsc::Sender<T>) -> Req) -> Option<T> {
 /// Bieżąca zawartość schowka systemowego (blokujące). `None` oznacza brak odczytu.
 pub fn snapshot() -> Option<Snapshot> {
     ask(Req::Snapshot)
+}
+
+/// Najdłuższy tekst wklejany ze schowka przez interfejs.
+const MAX_PASTE: usize = 1024 * 1024;
+
+/// Tekst ze schowka systemowego dla wklejania prawym przyciskiem (odczyt w WebKitGTK bywa
+/// zablokowany, więc idzie przez wątek schowka). Nie zależy od przełącznika schowka RDP, a treść
+/// nie trafia do dziennika.
+#[tauri::command]
+pub async fn read_clipboard_text() -> Result<String, String> {
+    let reply = tokio::task::spawn_blocking(|| ask(Req::Text))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("Nie można odczytać schowka.")?;
+    let text = reply.unwrap_or_default();
+    if text.len() > MAX_PASTE {
+        return Err("Tekst w schowku jest za duży do wklejenia (limit 1 MiB).".into());
+    }
+    Ok(text)
 }
 
 /// Co wiadomo o ostatnio widzianej zawartości lokalnego schowka.

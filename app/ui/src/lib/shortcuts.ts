@@ -25,6 +25,8 @@ export const ACTIONS: ActionDef[] = [
   { id: 'copy_terminal', label: 'Kopiuj zaznaczenie (terminal SSH)', default: 'Ctrl+Shift+C' },
   { id: 'reconnect_tab', label: 'Połącz ponownie (bieżąca karta)', default: '' },
   { id: 'duplicate_tab', label: 'Duplikuj kartę', default: '' },
+  { id: 'move_tab_left', label: 'Przesuń kartę w lewo', default: '' },
+  { id: 'move_tab_right', label: 'Przesuń kartę w prawo', default: '' },
   { id: 'focus_search', label: 'Szukaj hosta', default: '' },
   ...Array.from({ length: 9 }, (_, i) => ({ id: `tab_${i + 1}`, label: `Przejdź do karty ${i + 1}`, default: '' })),
 ];

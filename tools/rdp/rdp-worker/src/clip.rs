@@ -999,6 +999,12 @@ fn walk(
     entries: &mut Vec<LocalEntry>,
     skipped: &mut usize,
 ) {
+    // Limit sprawdzamy przed wywołaniem systemowym: po jego osiągnięciu reszta drzewa
+    // jest tylko liczona jako pominięta, bez dotykania dysku ani udziału sieciowego.
+    if entries.len() >= MAX_ENTRIES {
+        *skipped += 1;
+        return;
+    }
     let Ok(meta) = fs::symlink_metadata(path) else {
         *skipped += 1;
         return;
@@ -1017,7 +1023,6 @@ fn walk(
         || name.is_empty()
         || wire_len > MAX_WIRE_NAME
         || wire_looks_absolute(first)
-        || entries.len() >= MAX_ENTRIES
     {
         *skipped += 1;
         return;

@@ -34,6 +34,10 @@ fn percent_decode(s: &str) -> Result<String, LinkError> {
     while i < bytes.len() {
         if bytes[i] == b'%' {
             let hex = s.get(i + 1..i + 3).ok_or(LinkError::Chars)?;
+            // `from_str_radix` przyjmuje też wiodący '+', a RFC 3986 dopuszcza tylko cyfry szesnastkowe.
+            if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(LinkError::Chars);
+            }
             out.push(u8::from_str_radix(hex, 16).map_err(|_| LinkError::Chars)?);
             i += 3;
         } else {
@@ -44,8 +48,15 @@ fn percent_decode(s: &str) -> Result<String, LinkError> {
     String::from_utf8(out).map_err(|_| LinkError::Chars)
 }
 
+/// Znaki formatujące Unicode (kategoria Cf): kierunek tekstu, znaki zerowej szerokości, BOM.
+/// Pozwalałyby sfałszować adres pokazany w oknie potwierdzenia.
+fn is_format_char(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
+}
+
 fn valid_text(s: &str) -> bool {
-    !s.chars().any(|c| c.is_control() || c.is_whitespace())
+    !s.chars()
+        .any(|c| c.is_control() || c.is_whitespace() || is_format_char(c))
 }
 
 pub fn parse_link(input: &str) -> Result<Link, LinkError> {
@@ -75,6 +86,7 @@ pub fn parse_link(input: &str) -> Result<Link, LinkError> {
         .map(percent_decode)
         .transpose()?;
 
+    let bracketed = hostport.starts_with('[');
     let (host, port) = if let Some(r) = hostport.strip_prefix('[') {
         let (h, after) = r.split_once(']').ok_or(LinkError::Ipv6)?;
         if h.is_empty()
@@ -104,12 +116,22 @@ pub fn parse_link(input: &str) -> Result<Link, LinkError> {
         return Err(LinkError::NoHost);
     }
     // Host zaczynający się od '-' wyglądałby jak opcja dla narzędzi wiersza poleceń.
-    if !valid_text(&host) || host.starts_with('-') || host.contains(['/', '\\', '@']) {
+    // Po dekodowaniu zostają zabronione też znaki struktury adresu (`%3A`, `%3F` itd.); dwukropek
+    // jest dozwolony tylko w adresie IPv6 w nawiasach.
+    if !valid_text(&host)
+        || host.starts_with('-')
+        || host.contains(['/', '\\', '@', '?', '#', '[', ']'])
+        || (!bracketed && host.contains(':'))
+    {
         return Err(LinkError::Chars);
     }
     let port = match port {
         None | Some("") => None,
         Some(p) => {
+            // `parse` przyjmuje też wiodący '+', więc wymagamy samych cyfr ASCII.
+            if !p.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(LinkError::Port);
+            }
             let n: u16 = p.parse().map_err(|_| LinkError::Port)?;
             if n == 0 {
                 return Err(LinkError::Port);
@@ -213,6 +235,32 @@ mod tests {
             parse_link("ssh://-oProxyCommand=evil"),
             Err(LinkError::Chars)
         );
+    }
+
+    #[test]
+    fn rejects_encoded_structure_and_format_chars() {
+        assert_eq!(parse_link("ssh://a%3Ab"), Err(LinkError::Chars));
+        assert_eq!(parse_link("ssh://h%3Fx"), Err(LinkError::Chars));
+        assert_eq!(parse_link("ssh://h%23x"), Err(LinkError::Chars));
+        assert_eq!(parse_link("ssh://h%5Bx"), Err(LinkError::Chars));
+        assert_eq!(parse_link("ssh://a\u{202e}b"), Err(LinkError::Chars));
+        assert_eq!(parse_link("ssh://a%E2%80%AEb"), Err(LinkError::Chars));
+        assert_eq!(parse_link("ssh://a\u{200b}b@host"), Err(LinkError::Chars));
+        assert_eq!(
+            parse_link("rdp://host?domain=a%E2%80%AEb"),
+            Err(LinkError::Chars)
+        );
+        // IPv6 w nawiasach nadal działa, podobnie jak nazwy z polskimi znakami (IDN).
+        assert_eq!(ok("ssh://[fe80::1]").host, "fe80::1");
+        assert_eq!(ok("ssh://zażółć.example").host, "zażółć.example");
+    }
+
+    #[test]
+    fn rejects_plus_in_percent_escape_and_port() {
+        assert_eq!(parse_link("ssh://host%+1"), Err(LinkError::Chars));
+        assert_eq!(parse_link("rdp://host?user=a%+1"), Err(LinkError::Chars));
+        assert_eq!(parse_link("ssh://host:+80"), Err(LinkError::Port));
+        assert_eq!(ok("ssh://host:80").port, Some(80));
     }
 
     #[test]

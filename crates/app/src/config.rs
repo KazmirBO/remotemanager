@@ -18,6 +18,13 @@ pub struct Config {
     /// Zapisuje wyjście sesji SSH do plików w katalogu danych (`logs/`).
     #[serde(default)]
     pub log_sessions: bool,
+    /// Liczba kopii zapasowych pliku z hostami (`.bak1..N`) na tej maszynie.
+    #[serde(default = "default_backup_count")]
+    pub backup_count: usize,
+}
+
+fn default_backup_count() -> usize {
+    vault::DEFAULT_BACKUPS
 }
 
 fn default_true() -> bool {
@@ -31,6 +38,7 @@ impl Default for Config {
             sync_base: None,
             rdp_clipboard: true,
             log_sessions: false,
+            backup_count: vault::DEFAULT_BACKUPS,
         }
     }
 }
@@ -50,17 +58,24 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
             Err(e) => format!("nie można odczytać konfiguracji ({e})"),
         };
-        let mut bad = path.as_os_str().to_owned();
-        bad.push(".bad");
-        let kept = std::fs::rename(path, PathBuf::from(&bad)).is_ok();
+        // Wolna nazwa (.bad, .bad-2, ...): kolejne uszkodzenie nie może zatrzeć wcześniej odłożonego pliku.
+        let with_suffix = |suffix: &str| {
+            let mut s = path.as_os_str().to_owned();
+            s.push(suffix);
+            PathBuf::from(s)
+        };
+        let bad = std::iter::once(with_suffix(".bad"))
+            .chain((2..1000).map(|n| with_suffix(&format!(".bad-{n}"))))
+            .find(|p| std::fs::symlink_metadata(p).is_err());
+        let kept = bad.as_ref().filter(|b| std::fs::rename(path, b).is_ok());
         (
             Self::default(),
             Some(format!(
                 "{problem}, użyto wartości domyślnych{}",
-                if kept {
-                    "; poprzedni plik zachowano jako config.json.bad"
-                } else {
-                    ""
+                match kept.and_then(|b| b.file_name()) {
+                    Some(name) =>
+                        format!("; poprzedni plik zachowano jako {}", name.to_string_lossy()),
+                    None => String::new(),
                 }
             )),
         )
@@ -94,6 +109,7 @@ mod tests {
             sync_base: Some("abc".into()),
             rdp_clipboard: false,
             log_sessions: true,
+            backup_count: 12,
         };
         assert!(
             Config::default().rdp_clipboard,
@@ -108,6 +124,34 @@ mod tests {
         assert_eq!(
             std::fs::read(dir.join("config.json.bad")).unwrap(),
             b"{nie json"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn old_config_without_backup_count_gets_default() {
+        let c: Config = serde_json::from_str(r#"{"log_sessions":true}"#).unwrap();
+        assert_eq!(c.backup_count, 5);
+        assert_eq!(c.backup_count, vault::DEFAULT_BACKUPS);
+    }
+
+    #[test]
+    fn second_broken_file_does_not_overwrite_first_backup() {
+        let dir = std::env::temp_dir().join(format!("mrm-cfg-twice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("config.json");
+        std::fs::write(&p, b"{pierwszy").unwrap();
+        let _ = Config::load(&p);
+        std::fs::write(&p, b"{drugi").unwrap();
+        let (_, warning) = Config::load(&p);
+        assert!(warning.unwrap().contains("config.json.bad-2"));
+        assert_eq!(
+            std::fs::read(dir.join("config.json.bad")).unwrap(),
+            b"{pierwszy"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("config.json.bad-2")).unwrap(),
+            b"{drugi"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

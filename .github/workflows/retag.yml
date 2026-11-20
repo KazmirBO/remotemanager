@@ -1,0 +1,33 @@
+name: przenumerowanie
+# Jednorazowe: przenosi wydania wstępne 0.1.0-0.1.5 na numery 0.0.0-0.0.5 (tag, tytuł, opis, nazwy
+# plików) skryptem scripts/retag-prereleases.sh i usuwa dawne tagi, żeby numer 0.1.0 był wolny dla
+# zwykłego wydania. Uruchamiany ręcznie z gałęzi main; bez zaznaczenia "wykonaj" tylko wypisuje plan.
+# Po użyciu workflow i skrypt można usunąć.
+on:
+  workflow_dispatch:
+    inputs:
+      wykonaj:
+        description: Wprowadź zmiany (bez zaznaczenia tylko plan)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  retag:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Przenumerowanie wydań wstępnych
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          WYKONAJ: ${{ inputs.wykonaj }}
+        run: |
+          if [ "$WYKONAJ" = "true" ]; then
+            bash scripts/retag-prereleases.sh wykonaj
+          else
+            bash scripts/retag-prereleases.sh
+          fi

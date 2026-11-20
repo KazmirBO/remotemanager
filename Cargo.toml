@@ -2,12 +2,12 @@
 resolver = "3"
 members = ["crates/app", "crates/rdp-proto", "crates/vault", "crates/model", "crates/ssh", "crates/rdp", "crates/sync", "crates/keygrab"]
 
-# rdp-probe ma własny workspace: IronRDP (sspi 0.21) przypina curve25519-dalek =5.0.0-rc.1,
+# tools/rdp (proces RDP i sonda rdp-probe) ma własny workspace: IronRDP (sspi 0.21) przypina curve25519-dalek =5.0.0-rc.1,
 # co koliduje z russh. Patrz PROJECT.md.
 exclude = ["tools/rdp"]
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.90"

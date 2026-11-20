@@ -217,10 +217,8 @@ impl RdpClient {
 
     /// Prosi proces o zamknięcie, a gdyby nie zdążył, kończy go po krótkiej zwłoce.
     pub fn close(&self) {
-        let _ = self.send(&ToWorker::Close);
-        if let Ok(mut s) = self.inner.stdin.lock() {
-            *s = None;
-        }
+        // Zabicie uzbrajamy przed wysłaniem `Close`: `send` pisze pod blokadą stdin i przy
+        // zapełnionym potoku (proces stoi) blokuje się, a dopiero zabicie procesu przerywa zapis.
         let inner = self.inner.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(3));
@@ -229,6 +227,10 @@ impl RdpClient {
                 let _ = c.wait();
             }
         });
+        let _ = self.send(&ToWorker::Close);
+        if let Ok(mut s) = self.inner.stdin.lock() {
+            *s = None;
+        }
     }
 }
 
@@ -286,5 +288,77 @@ mod tests {
             subject: String::new(),
         }));
         assert!(mismatch_message(Path::new("/x/rdp-worker")).contains("/x/rdp-worker"));
+    }
+
+    /// Proces, który nie czyta stdin, a potok jest zapełniony: `close` nie może się zawiesić,
+    /// a proces ma zostać zabity po zwłoce.
+    #[cfg(unix)]
+    #[test]
+    fn close_kills_worker_even_when_stdin_pipe_is_full() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join(format!("mrm-rdp-close-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("rdp-worker");
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 100\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let params = ConnectParams {
+            host: "127.0.0.1".into(),
+            port: 3389,
+            username: "u".into(),
+            domain: None,
+            password: "p".into(),
+            kerberos: false,
+            kdc: None,
+            width: 800,
+            height: 600,
+            profile: LinkProfile::Fast,
+            webauthn: false,
+            smartcard: CardRedirect::Off,
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(EVENT_QUEUE);
+        // Świeżo zapisany skrypt bywa chwilowo "zajęty" (ETXTBSY), gdy inny test forkuje proces.
+        let mut attempts = 0;
+        let client = loop {
+            match RdpClient::spawn(&script, params.clone(), tx.clone()) {
+                Ok(c) => break c,
+                Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
+                    attempts += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        };
+        // Zapełnia potok: zapis blokuje się z trzymaną blokadą stdin.
+        let writer = client.clone();
+        let filler =
+            std::thread::spawn(
+                move || {
+                    while writer.send(&ToWorker::MouseMove { x: 1, y: 2 }).is_ok() {}
+                },
+            );
+        std::thread::sleep(Duration::from_millis(500));
+        let closer = std::thread::spawn({
+            let c = client.clone();
+            move || c.close()
+        });
+        let start = Instant::now();
+        let mut exited = false;
+        while start.elapsed() < Duration::from_secs(10) {
+            if let Ok(mut c) = client.inner.child.lock()
+                && matches!(c.try_wait(), Ok(Some(_)))
+            {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(exited, "proces powinien zostać zabity po zwłoce");
+        closer.join().unwrap();
+        filler.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

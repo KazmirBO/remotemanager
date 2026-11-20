@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { api, type SyncStatus } from './api';
-  import Icon from './Icon.svelte';
-  import Modal from './Modal.svelte';
-  import { lockedBySync, notify, refreshSync, ui } from './store.svelte';
+  import { api, type SyncStatus } from '../api';
+  import Icon from '../Icon.svelte';
+  import { onLocked, notify, refreshSync, ui } from '../store.svelte';
 
   let { onclose }: { onclose: () => void } = $props();
   // svelte-ignore state_referenced_locally
@@ -12,7 +11,7 @@
 
   const texts: Record<SyncStatus, string> = {
     aktualny: 'Plik jest aktualny.',
-    brak_pliku: 'W folderze nie ma jeszcze pliku. Pierwsza synchronizacja wyśle lokalny.',
+    brak_pliku: 'W folderze nie ma jeszcze pliku. Pierwsza synchronizacja wyśle lokalny plik.',
     lokalne_zmiany: 'Lokalny plik ma zmiany do wysłania.',
     zdalne_zmiany: 'W folderze jest nowsza wersja pliku. Pobranie zablokuje plik, odblokujesz go hasłem głównym.',
     konflikt: 'Plik zmieniono po obu stronach. Wybierz, którą wersję zachować. Druga zostanie zapisana jako kopia konfliktu.',
@@ -38,14 +37,14 @@
       if (r.locked) {
         notify('Pobrano zdalną wersję. Odblokuj plik hasłem głównym.');
         onclose();
-        lockedBySync();
+        onLocked();
       } else {
         notify('Synchronizacja zakończona.');
       }
     });
 </script>
 
-<Modal title="Synchronizacja" {onclose} width={560}>
+  <p class="form-note">Działania w tej kategorii wykonują się od razu, przycisk Zapisz ich nie dotyczy.</p>
   <p class="muted note">
     Zaszyfrowany plik jest kopiowany do wskazanego folderu (np. zsynchronizowanego przez Syncthing, Nextcloud albo dysk sieciowy). Zawartość
     pozostaje zaszyfrowana hasłem głównym.
@@ -53,8 +52,8 @@
   <div class="field">
     <label for="sy-folder">Folder synchronizacji</label>
     <div class="row">
-      <input id="sy-folder" type="text" bind:value={folder} placeholder="/ścieżka/do/folderu" class="mono" />
-      <button class="btn" onclick={setFolder} disabled={busy}>{folder.trim() ? 'Ustaw' : 'Wyłącz'}</button>
+      <input id="sy-folder" type="text" bind:value={folder} onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void setFolder(); } }} placeholder="/ścieżka/do/folderu" class="mono" />
+      <button type="button" class="btn" onclick={setFolder} disabled={busy}>{folder.trim() ? 'Ustaw' : 'Wyłącz'}</button>
     </div>
   </div>
 
@@ -65,20 +64,16 @@
     </div>
     {#if ui.sync.status === 'konflikt'}
       <div class="actions">
-        <button class="btn" disabled={busy} onclick={() => sync('local')}><Icon name="upload" /> Zachowaj lokalną</button>
-        <button class="btn" disabled={busy} onclick={() => sync('remote')}><Icon name="download" /> Zachowaj zdalną</button>
+        <button type="button" class="btn" disabled={busy} onclick={() => sync('local')}><Icon name="upload" /> Zachowaj lokalną</button>
+        <button type="button" class="btn" disabled={busy} onclick={() => sync('remote')}><Icon name="download" /> Zachowaj zdalną</button>
       </div>
     {:else}
       <div class="actions">
-        <button class="btn primary" disabled={busy || !!ui.sync.error} onclick={() => sync()}><Icon name="sync" /> Synchronizuj teraz</button>
+        <button type="button" class="btn primary" disabled={busy || !!ui.sync.error} onclick={() => sync()}><Icon name="sync" /> Synchronizuj teraz</button>
       </div>
     {/if}
   {/if}
   {#if error}<div class="error" role="alert"><Icon name="alert" size={14} /> {error}</div>{/if}
-  {#snippet footer()}
-    <button class="btn" onclick={onclose}>Zamknij</button>
-  {/snippet}
-</Modal>
 
 <style>
   .note { font-size: 12px; margin: 0 0 16px; }

@@ -16,7 +16,11 @@
     return () => clearTimeout(t);
   });
 
+  // Odpowiedź idzie raz: drugie kliknięcie albo Escape w trakcie wywołania nie może zdjąć kolejnego pytania.
+  let answering = false;
   async function answer(accept: boolean, remember: boolean) {
+    if (answering) return;
+    answering = true;
     try {
       await api.answerTrust(request.id, accept, remember);
     } catch (e) {
@@ -26,7 +30,7 @@
   }
 </script>
 
-<Modal title={rdp ? (changed ? 'Certyfikat serwera się zmienił' : 'Nowy certyfikat serwera') : changed ? 'Klucz hosta się zmienił' : 'Nowy host'} onclose={() => answer(false, false)} width={560}>
+<Modal title={rdp ? (changed ? 'Certyfikat serwera się zmienił' : 'Nowy certyfikat serwera') : changed ? 'Klucz hosta się zmienił' : 'Nowy klucz hosta'} onclose={() => answer(false, false)} width={560}>
   <div class="head">
     <Icon name={changed ? 'alert' : 'shield'} size={28} />
     <p>

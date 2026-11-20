@@ -56,7 +56,7 @@ export function matches(h: HostView, query: string): boolean {
 }
 
 export type InheritableKey =
-  | 'port' | 'username' | 'domain' | 'jump_host' | 'terminal_scheme' | 'rdp_multimon' | 'rdp_kerberos' | 'rdp_kdc' | 'rdp_profile' | 'rdp_webauthn' | 'rdp_smartcard';
+  | 'port' | 'username' | 'domain' | 'jump_host' | 'terminal_scheme' | 'rdp_multimon' | 'rdp_kerberos' | 'rdp_kdc' | 'rdp_profile' | 'rdp_webauthn' | 'rdp_smartcard' | 'ssh_key_path' | 'ssh_term' | 'ssh_legacy' | 'terminal_font_size' | 'ssh_login_command';
 
 /**
  * Wartość dziedziczona dla pola, licząc od katalogu `start` w górę.
@@ -67,28 +67,45 @@ export type InheritableKey =
 export function inherited(
   folders: FolderView[], start: Id | null, key: InheritableKey, skip?: FieldsIo[InheritableKey],
 ): { value: NonNullable<FieldsIo[InheritableKey]>; from: string } | null {
+  return firstUp(folders, start, (f) => {
+    const v = f.fields[key];
+    return v !== null && v !== undefined && v !== skip ? { value: v, from: f.name } : null;
+  });
+}
+
+/** Pierwszy niepusty wynik `pick` idąc od katalogu `start` w górę; pętla w drzewie kończy wędrówkę. */
+function firstUp<T>(folders: FolderView[], start: Id | null, pick: (f: FolderView) => T | null): T | null {
   const map = new Map(folders.map((f) => [f.id, f]));
   const seen = new Set<Id>();
   let cur = start ? map.get(start) : undefined;
   while (cur && !seen.has(cur.id)) {
     seen.add(cur.id);
-    const v = cur.fields[key];
-    if (v !== null && v !== undefined && v !== skip) return { value: v, from: cur.name };
+    const v = pick(cur);
+    if (v !== null) return v;
     cur = cur.parent ? map.get(cur.parent) : undefined;
   }
   return null;
 }
 
 export function inheritsPassword(folders: FolderView[], start: Id | null): string | null {
-  const map = new Map(folders.map((f) => [f.id, f]));
-  const seen = new Set<Id>();
-  let cur = start ? map.get(start) : undefined;
-  while (cur && !seen.has(cur.id)) {
-    seen.add(cur.id);
-    if (cur.fields.has_password) return cur.name;
-    cur = cur.parent ? map.get(cur.parent) : undefined;
-  }
-  return null;
+  return firstUp(folders, start, (f) => (f.fields.has_password ? f.name : null));
+}
+
+/** Pierwszy katalog w górę (od `start`), który ma zapisany klucz SSH w pliku hostów. */
+export function inheritsSshKey(
+  folders: FolderView[], start: Id | null,
+): { from: string; algorithm: string; fingerprint: string } | null {
+  return firstUp(folders, start, (f) =>
+    f.fields.has_ssh_key
+      ? { from: f.name, algorithm: f.fields.ssh_key_algorithm ?? '', fingerprint: f.fields.ssh_key_fingerprint ?? '' }
+      : null);
+}
+
+/** Odmiana rzeczownika po liczbie: `one` dla 1, `few` dla 2-4 (poza 12-14), `many` w pozostałych. */
+export function plural(n: number, one: string, few: string, many: string): string {
+  if (n === 1) return one;
+  const t = n % 10, h = n % 100;
+  return t >= 2 && t <= 4 && (h < 12 || h > 14) ? few : many;
 }
 
 /** Strefa przy krawędzi listy (w pikselach), w której przeciągany element przewija listę. */

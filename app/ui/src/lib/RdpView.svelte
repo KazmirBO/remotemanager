@@ -9,7 +9,7 @@
   import { createSerialQueue, grabActive, grabWanted, keyRoute, parseRelease } from './rdpKeys';
   import { validPointer } from './rdpPointer';
   import { binding, matchAction } from './shortcuts';
-  import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsPassword, notify, reconnect, requestPassword, setRdpBar, ui } from './store.svelte';
+  import { cancelPasswordPrompts, closeTab, host as hostById, modalOpen, needsPassword, notify, reconnect, requestPassword, setRdpBar, setTabLive, ui } from './store.svelte';
 
   let { tabId, hostId, active }: { tabId: string; hostId: Id; active: boolean } = $props();
 
@@ -179,6 +179,8 @@
   }
 
   // Panel znika razem z połączeniem; przerwane przeciąganie nie może zostać jako jego położenie.
+  $effect(() => setTabLive(tabId, status === 'connected'));
+
   $effect(() => {
     if (status !== 'connected') drag = null;
   });
@@ -313,7 +315,7 @@
         // RDP z NLA wymaga hasła: bez zapisanego pytamy na tę sesję.
         const reason = needsPassword(e);
         if (reason === null || password !== null) throw e;
-        const pw = await requestPassword(hostById(hostId)?.name ?? 'host', reason, tabId);
+        const pw = await requestPassword(`hosta ${hostById(hostId)?.name ?? ''}`.trim(), reason, tabId);
         if (pw === null || disposed) throw 'Anulowano łączenie.';
         return attempt(pw);
       });

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use model::Document;
@@ -31,6 +31,8 @@ pub struct AppState {
     pub path: PathBuf,
     pub data_dir: PathBuf,
     pub config: Mutex<Config>,
+    /// Serializuje zapis `config.json` (wspólny plik tymczasowy): ostatni zapis niesie najnowszy stan.
+    pub config_save: Mutex<()>,
     /// Dziennik diagnostyczny w pamięci. Nigdy nie trafiają tu hasła ani klucze.
     pub diag: Mutex<VecDeque<String>>,
     pub pending_link: Mutex<Option<String>>,
@@ -48,6 +50,10 @@ pub struct AppState {
     /// Licznik przeładowań interfejsu. Połączenie, które zaczęło się przed przeładowaniem, a skończyło
     /// po nim, nie ma karty w nowym interfejsie i zamyka się samo (jak przy blokadzie pliku).
     pub reloads: AtomicU64,
+    /// Pytanie o zakończenie programu zostało wysłane i czeka na odpowiedź.
+    pub quit_pending: AtomicBool,
+    /// Chwila ostatniej aktywności użytkownika (automatyczna blokada).
+    pub activity: Mutex<crate::idle::Activity>,
 }
 
 impl AppState {
@@ -58,6 +64,7 @@ impl AppState {
             path,
             data_dir,
             config: Mutex::new(config),
+            config_save: Mutex::new(()),
             diag: Mutex::new(VecDeque::new()),
             pending_link: Mutex::new(None),
             inner: tokio::sync::Mutex::new(None),
@@ -69,11 +76,23 @@ impl AppState {
             ssh_flow: Mutex::new(HashMap::new()),
             keys: crate::keys::Grabs::default(),
             reloads: AtomicU64::new(0),
+            quit_pending: AtomicBool::new(false),
+            activity: Mutex::new(crate::idle::Activity::now()),
         };
         if let Some(w) = warning {
             state.log(w);
         }
         state
+    }
+
+    /// Liczba sesji SSH i RDP w mapach.
+    pub fn live_sessions(&self) -> usize {
+        self.sessions.lock().expect("sessions").len() + self.rdp.lock().expect("rdp").len()
+    }
+
+    /// Zapamiętuje, że użytkownik właśnie czegoś użył (odmierzanie bezczynności).
+    pub fn touch_activity(&self) {
+        *self.activity.lock().expect("activity") = crate::idle::Activity::now();
     }
 
     /// Dopisuje wpis do dziennika diagnostycznego (czas to sekundy epoki UNIX).
@@ -90,6 +109,7 @@ impl AppState {
     }
 
     pub fn save_config(&self) {
+        let _serial = self.config_save.lock().expect("config_save");
         let cfg = self.config.lock().expect("config").clone();
         if let Err(e) = cfg.save(&self.data_dir.join("config.json")) {
             self.log(format!("nie udało się zapisać konfiguracji: {e}"));

@@ -29,6 +29,25 @@ export interface FieldsIo {
   /** Tylko wejście. */
   password?: string | null;
   clear_password?: boolean;
+  /** Ścieżka do pliku klucza prywatnego; `null` dziedziczy z katalogu. */
+  ssh_key_path: string | null;
+  /** Typ terminala zgłaszany serwerowi SSH (TERM); `null` dziedziczy, a bez ustawienia `xterm-256color`. */
+  ssh_term: string | null;
+  /** Starsze algorytmy SSH dla starych serwerów; `null` dziedziczy z katalogu. */
+  ssh_legacy: boolean | null;
+  /** Tylko wyjście: klucz zapisany w pliku hostów na tym poziomie. */
+  has_ssh_key: boolean;
+  ssh_key_algorithm: string | null;
+  ssh_key_fingerprint: string | null;
+  /** Tylko wejście: tekst klucza do importu. */
+  ssh_key?: string | null;
+  /** Tylko wejście: hasło importowanego klucza. */
+  ssh_key_passphrase?: string | null;
+  clear_ssh_key?: boolean;
+  /** Rozmiar czcionki terminala (px); `null` dziedziczy z katalogu albo z ustawień programu. */
+  terminal_font_size: number | null;
+  /** Polecenie po zalogowaniu (SSH, tylko cel); `null` dziedziczy z katalogu. */
+  ssh_login_command: string | null;
 }
 
 export interface FolderView { id: Id; name: string; parent: Id | null; fields: FieldsIo }
@@ -36,6 +55,9 @@ export interface HostView {
   id: Id; name: string; address: string; protocol: Protocol; folder: Id | null;
   favorite: boolean; notes: string; fields: FieldsIo;
 }
+export type TerminalFont = 'bundled' | 'system';
+export type CursorShape = 'block' | 'bar' | 'underline';
+
 export interface Settings {
   theme: 'dark' | 'light' | 'system';
   terminal_font_size: number;
@@ -45,7 +67,29 @@ export interface Settings {
   rdp_profile: RdpProfile;
   /** Kiedy sesja RDP przechwytuje klawisze (skróty aplikacji i systemu). */
   rdp_keys: RdpKeys;
+  terminal_font: TerminalFont;
+  terminal_cursor: CursorShape;
+  terminal_cursor_blink: boolean;
+  /** Długość historii przewijania w wierszach. */
+  terminal_scrollback: number;
+  terminal_copy_on_select: boolean;
+  terminal_paste_right_click: boolean;
+  /** TERM, gdy host ani katalog go nie ustawia. */
+  ssh_term: string;
+  confirm_close_tab: boolean;
+  confirm_quit: boolean;
+  /** Odstęp podtrzymywania połączenia SSH w sekundach; 0 wyłącza. */
+  ssh_keepalive_secs: number;
+  /** Automatyczna blokada po tylu minutach bezczynności; 0 wyłącza. */
+  auto_lock_minutes: number;
 }
+export const defaultSettings = (): Settings => ({
+  theme: 'system', terminal_font_size: 13, terminal_scheme: 'domyslny', shortcuts: {},
+  rdp_profile: 'fast', rdp_keys: 'never', terminal_font: 'bundled', terminal_cursor: 'block',
+  terminal_cursor_blink: true, terminal_scrollback: 5000, terminal_copy_on_select: false,
+  terminal_paste_right_click: false, ssh_term: 'xterm-256color', confirm_close_tab: false,
+  confirm_quit: false, ssh_keepalive_secs: 30, auto_lock_minutes: 0,
+});
 export interface DocView { folders: FolderView[]; hosts: HostView[]; settings: Settings; trusted_count: number }
 
 export type VaultState = 'missing' | 'locked' | 'unlocked';
@@ -59,6 +103,8 @@ export type ShellControl = { t: 'exit'; code: number } | { t: 'closed' };
 export const emptyFields = (): FieldsIo => ({
   port: null, username: null, domain: null, jump_host: null,
   terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, rdp_profile: null, rdp_webauthn: null, rdp_smartcard: null, has_password: false,
+  ssh_key_path: null, ssh_term: null, ssh_legacy: null, has_ssh_key: false, ssh_key_algorithm: null, ssh_key_fingerprint: null,
+  terminal_font_size: null, ssh_login_command: null,
 });
 
 /** Backend zwraca błędy jako tekst; sprowadzamy wszystko do `string`. */
@@ -73,7 +119,8 @@ const call = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 export type SyncStatus = 'brak_pliku' | 'aktualny' | 'lokalne_zmiany' | 'zdalne_zmiany' | 'konflikt';
 export interface SyncView { folder: string | null; status: SyncStatus | null; error: string | null }
 export interface BackupInfo { n: number; modified: number; size: number }
-export interface LocalConfig { log_sessions: boolean; rdp_clipboard: boolean; logs_dir: string }
+export interface LocalConfig { log_sessions: boolean; rdp_clipboard: boolean; logs_dir: string; backup_count: number }
+export interface QuitRequest { sessions: number }
 export interface LinkView {
   protocol: Protocol; host: string; port: number | null; username: string | null;
   /** Port z linku albo domyślny dla protokołu (rozstrzyga backend). */
@@ -109,6 +156,10 @@ export const api = {
   clearDiagnostics: () => call<void>('clear_diagnostics'),
   getLocalConfig: () => call<LocalConfig>('get_local_config'),
   setRdpClipboard: (enabled: boolean) => call<void>('set_rdp_clipboard', { enabled }),
+  setBackupCount: (count: number) => call<void>('set_backup_count', { count }),
+  userActivity: () => call<void>('user_activity'),
+  answerQuit: (quit: boolean) => call<void>('answer_quit', { quit }),
+  readClipboardText: () => call<string>('read_clipboard_text'),
   setLogSessions: (enabled: boolean) => call<void>('set_log_sessions', { enabled }),
   resolveLink: (url: string) => call<LinkView>('resolve_link', { url }),
   takePendingLink: () => call<string | null>('take_pending_link'),
@@ -134,7 +185,7 @@ export function sshWrite(id: string, data: Uint8Array): Promise<void> {
 }
 
 export async function connectSsh(
-  hostId: Id, cols: number, rows: number, password: string | null,
+  hostId: Id, cols: number, rows: number, password: string | null, keyPassphrase: string | null,
   onData: (bytes: Uint8Array, done: () => void) => void, onControl: (c: ShellControl) => void,
 ): Promise<string> {
   const channel = new Channel<ArrayBuffer | ShellControl>();
@@ -156,7 +207,10 @@ export async function connectSsh(
   const data = (bytes: Uint8Array) => onData(bytes, acker.receive(bytes.length));
   channel.onmessage = (msg) => {
     if (msg instanceof ArrayBuffer) data(new Uint8Array(msg));
-    else if (ArrayBuffer.isView(msg)) data(new Uint8Array((msg as ArrayBufferView).buffer));
+    else if (ArrayBuffer.isView(msg)) {
+      const v = msg as ArrayBufferView;
+      data(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+    }
     else if (Array.isArray(msg)) data(Uint8Array.from(msg as number[]));
     else {
       stop();
@@ -164,7 +218,7 @@ export async function connectSsh(
     }
   };
   try {
-    id = await call<string>('connect_ssh', { hostId, cols, rows, password, onEvent: channel });
+    id = await call<string>('connect_ssh', { hostId, cols, rows, password, keyPassphrase, onEvent: channel });
   } catch (e) {
     stop();
     throw e;
@@ -214,10 +268,14 @@ export async function connectRdp(
   channel.onmessage = (msg) => {
     if (msg instanceof ArrayBuffer) {
       const v = new DataView(msg);
-      onImage(v.getUint16(0, true), v.getUint16(2, true), v.getUint16(4, true), v.getUint16(6, true),
-        new Uint8ClampedArray(msg, 8));
+      // Bajty liczymy przed rysowaniem: wyjątek w `onImage` nie może pominąć potwierdzenia.
       unacked += msg.byteLength;
-      ack();
+      try {
+        onImage(v.getUint16(0, true), v.getUint16(2, true), v.getUint16(4, true), v.getUint16(6, true),
+          new Uint8ClampedArray(msg, 8));
+      } finally {
+        ack();
+      }
     } else {
       onControl(msg as RdpControl);
     }

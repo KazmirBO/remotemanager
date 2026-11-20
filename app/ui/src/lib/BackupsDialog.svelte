@@ -5,7 +5,7 @@
   import Modal from './Modal.svelte';
   import { notify, refresh } from './store.svelte';
 
-  let { onclose }: { onclose: () => void } = $props();
+  let { onclose, onrestored }: { onclose: () => void; onrestored?: () => void } = $props();
   let backups = $state<BackupInfo[] | null>(null);
   let restoring = $state<number | null>(null);
   let password = $state('');
@@ -29,6 +29,7 @@
       await refresh();
       notify('Przywrócono kopię zapasową.');
       onclose();
+      onrestored?.();
     } catch (err) {
       error = String(err);
     } finally {
@@ -39,7 +40,7 @@
 
 <Modal title="Kopie zapasowe" {onclose} width={520}>
   <p class="muted note">
-    Przy każdym zapisie poprzednia wersja pliku trafia do kopii (do 5 ostatnich). Przywrócenie zastępuje obecną zawartość, a obecna wersja sama staje się kopią.
+    Przy każdym zapisie poprzednia wersja pliku trafia do kopii (liczbę kopii ustawisz w kategorii Bezpieczeństwo). Przywrócenie zastępuje obecną zawartość, a obecna wersja sama staje się kopią.
   </p>
   {#if backups === null}
     <p class="muted">Wczytywanie...</p>

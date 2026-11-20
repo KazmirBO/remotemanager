@@ -60,7 +60,10 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
                     .await;
                 });
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(crate::commands::request_quit(app));
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

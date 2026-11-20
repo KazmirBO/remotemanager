@@ -1,10 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
-  import type { FolderView, HostView, Id, TrustRequest } from './lib/api';
-  import AboutDialog from './lib/AboutDialog.svelte';
-  import BackupsDialog from './lib/BackupsDialog.svelte';
-  import DiagnosticsDialog from './lib/DiagnosticsDialog.svelte';
+  import type { FolderView, HostView, Id, QuitRequest, TrustRequest } from './lib/api';
+  import type { SettingsCategory } from './lib/settings/categories';
   import FolderDialog from './lib/FolderDialog.svelte';
   import HostDialog, { type Prefill } from './lib/HostDialog.svelte';
   import NotificationsDialog from './lib/NotificationsDialog.svelte';
@@ -13,8 +11,6 @@
   import Modal from './lib/Modal.svelte';
   import QuickConnect from './lib/QuickConnect.svelte';
   import SettingsDialog from './lib/SettingsDialog.svelte';
-  import ShortcutsDialog from './lib/ShortcutsDialog.svelte';
-  import SyncDialog from './lib/SyncDialog.svelte';
   import Sidebar from './lib/Sidebar.svelte';
   import RdpView from './lib/RdpView.svelte';
   import Terminal from './lib/Terminal.svelte';
@@ -22,17 +18,13 @@
   import Unlock from './lib/Unlock.svelte';
   import { allowedWithModal, binding, matchAppAction, tabNumber } from './lib/shortcuts';
   import { api } from './lib/api';
-  import { applyTheme, closeTab, host as hostById, init, lockVault, modalOpen, notify, onLocked, openHost, reconnect, refreshSync, ui } from './lib/store.svelte';
+  import { edgeScrollSpeed, plural } from './lib/tree';
+  import { answerCloseTabs, applyTheme, host as hostById, init, lockVault, modalOpen, moveTab, moveTabNextTo, notify, onLocked, openHost, reconnect, refreshSync, reportActivity, requestCloseTabs, ui } from './lib/store.svelte';
 
   type Dialog =
     | { kind: 'host'; host: HostView | null; folder: Id | null; prefill?: Prefill | null }
     | { kind: 'folder'; folder: FolderView | null; parent: Id | null }
-    | { kind: 'settings' }
-    | { kind: 'sync' }
-    | { kind: 'backups' }
-    | { kind: 'shortcuts' }
-    | { kind: 'diagnostics' }
-    | { kind: 'about' }
+    | { kind: 'settings'; category?: SettingsCategory }
     | { kind: 'notices' }
     | { kind: 'quick' }
     | { kind: 'link'; host: HostView; target: string };
@@ -58,6 +50,8 @@
         notify('Link czeka na odblokowanie pliku.');
       }
     });
+    // Backend pyta o zakończenie programu, gdy są otwarte sesje i włączono `confirm_quit`.
+    const unlistenQuit = listen<QuitRequest>('quit-requested', (e) => (ui.quitConfirm = e.payload));
     const media = matchMedia('(prefers-color-scheme: light)');
     const onScheme = () => applyTheme(ui.doc?.settings);
     media.addEventListener('change', onScheme);
@@ -66,6 +60,7 @@
       void unlistenLock.then((f) => f());
       void unlistenExpired.then((f) => f());
       void unlistenLink.then((f) => f());
+      void unlistenQuit.then((f) => f());
       media.removeEventListener('change', onScheme);
     };
   });
@@ -113,8 +108,6 @@
 
   function keydown(e: KeyboardEvent) {
     if (ui.phase !== 'unlocked') return;
-    // Okno przechwytujące skrót (ustawianie skrótów) obsługuje klawisze samo.
-    if (dialog?.kind === 'shortcuts') return;
     const action = matchAppAction(ui.doc?.settings, e);
     if (!action) return;
     // Przy otwartym oknie modalnym działa tylko blokada pliku.
@@ -124,7 +117,7 @@
     const i = tabs.findIndex((t) => t.id === ui.activeTab);
     switch (action) {
       case 'quick_connect': dialog = { kind: 'quick' }; break;
-      case 'close_tab': if (ui.activeTab) closeTab(ui.activeTab); break;
+      case 'close_tab': if (ui.activeTab) requestCloseTabs([ui.activeTab]); break;
       case 'new_host': dialog = { kind: 'host', host: null, folder: null }; break;
       case 'next_tab': if (tabs.length) ui.activeTab = tabs[(i + 1) % tabs.length].id; break;
       case 'prev_tab': if (tabs.length) ui.activeTab = tabs[(i - 1 + tabs.length) % tabs.length].id; break;
@@ -136,6 +129,8 @@
         if (host) openHost(host);
         break;
       }
+      case 'move_tab_left': if (ui.activeTab) moveTab(ui.activeTab, -1); break;
+      case 'move_tab_right': if (ui.activeTab) moveTab(ui.activeTab, 1); break;
       case 'focus_search': {
         const search = document.getElementById('host-search');
         if (search instanceof HTMLInputElement) {
@@ -172,7 +167,7 @@
 
   /** Zamyka wszystkie karty poza wskazaną (`null` zamyka wszystkie). */
   function closeTabsExcept(keep: string | null) {
-    for (const t of [...ui.tabs]) if (t.id !== keep) closeTab(t.id);
+    requestCloseTabs(ui.tabs.filter((t) => t.id !== keep).map((t) => t.id));
   }
 
   // Pasek kart: karty zwężają się, a gdy i to nie wystarcza, pasek przewija się bez widocznego suwaka.
@@ -185,10 +180,80 @@
     tabsEl.scrollLeft += e.deltaY;
   }
 
-  // Aktywna karta ma być widoczna także po przełączeniu skrótem albo otwarciu nowej sesji.
+  // Widoki sesji w kolejności otwarcia, niezależnie od kolejności kart: przestawienie karty nie
+  // przenosi wtedy widoku w dokumencie, więc terminal ani pulpit nie tracą fokusu.
+  const stageTabs = $derived([...ui.tabs].sort((a, b) => a.seq - b.seq));
+
+  // Przeciąganie kart na pasku. Własny typ danych sprawia, że drzewo hostów nie bierze karty za hosta.
+  const TAB_DRAG = 'application/x-mrm-tab';
+  let dragTab = $state<string | null>(null);
+  let dropMark = $state<{ id: string; after: boolean } | null>(null);
+  let tabScrollSpeed = 0;
+  let tabScrollFrame = 0;
+
+  function tabDragStart(e: DragEvent, id: string) {
+    e.dataTransfer?.setData(TAB_DRAG, id);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    dragTab = id;
+    tabMenu = null;
+  }
+
+  function tabDragEnd() {
+    dragTab = null;
+    dropMark = null;
+    tabScrollSpeed = 0;
+  }
+
+  /** Karta, nad którą jest wskaźnik: lewa połowa oznacza wstawienie przed nią, prawa za nią. */
+  function tabDragOver(e: DragEvent, id: string) {
+    if (!dragTab) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    dropMark = id === dragTab ? null : { id, after: e.clientX > r.left + r.width / 2 };
+    tabDragScroll(e);
+  }
+
+  /** Wolne miejsce paska za ostatnią kartą: wstawienie na koniec. */
+  function tabsDragOver(e: DragEvent) {
+    if (!dragTab) return;
+    e.preventDefault();
+    const last = ui.tabs[ui.tabs.length - 1];
+    dropMark = last && last.id !== dragTab ? { id: last.id, after: true } : null;
+    tabDragScroll(e);
+  }
+
+  function tabDrop(e: DragEvent) {
+    if (!dragTab) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (dropMark) moveTabNextTo(dragTab, dropMark.id, dropMark.after);
+    tabDragEnd();
+  }
+
+  // Podczas przeciągania przeglądarka nie dostarcza zdarzeń kółka, więc pasek przewija się sam,
+  // gdy wskaźnik jest przy jego lewej albo prawej krawędzi (jak lista hostów w pionie).
+  function tabDragScroll(e: DragEvent) {
+    if (!tabsEl) return;
+    const r = tabsEl.getBoundingClientRect();
+    tabScrollSpeed = edgeScrollSpeed(e.clientX, r.left, r.right);
+    if (tabScrollSpeed && !tabScrollFrame) tabScrollFrame = requestAnimationFrame(tabScrollStep);
+  }
+
+  function tabScrollStep() {
+    tabScrollFrame = 0;
+    if (!dragTab || !tabScrollSpeed || !tabsEl) return;
+    tabsEl.scrollLeft += tabScrollSpeed;
+    tabScrollFrame = requestAnimationFrame(tabScrollStep);
+  }
+
+  // Aktywna karta ma być widoczna także po przełączeniu skrótem, otwarciu nowej sesji albo
+  // przestawieniu kart.
   $effect(() => {
     const id = ui.activeTab;
     void ui.tabs.length;
+    void ui.tabs.map((t) => t.id).join();
     if (!id) return;
     queueMicrotask(() => {
       const el = Array.from(tabsEl?.children ?? []).find((c) => (c as HTMLElement).dataset.tab === id);
@@ -206,6 +271,10 @@
   onclick={() => (tabMenu = null)}
   oncontextmenucapture={() => (tabMenu = null)}
   oncontextmenu={contextmenu}
+  onkeydowncapture={() => reportActivity()}
+  onpointerdowncapture={() => reportActivity()}
+  onpointermovecapture={() => reportActivity()}
+  onwheelcapture={() => reportActivity()}
 />
 
 {#if ui.phase === 'loading'}
@@ -220,17 +289,23 @@
       onEditHost={(host) => (dialog = { kind: 'host', host, folder: null })}
       onEditFolder={(folder) => (dialog = { kind: 'folder', folder, parent: null })}
       onSettings={() => (dialog = { kind: 'settings' })}
-      onSync={() => (dialog = { kind: 'sync' })}
+      onSync={() => (dialog = { kind: 'settings', category: 'sync' })}
       onLock={lockVault}
     />
     <main>
-      <div class="tabs" role="tablist" aria-label="Sesje" bind:this={tabsEl} onwheel={tabsWheel}>
+      <div class="tabs" role="tablist" aria-label="Sesje" tabindex="-1" bind:this={tabsEl} onwheel={tabsWheel}
+        ondragenter={tabsDragOver} ondragover={tabsDragOver} ondrop={tabDrop}>
         {#each ui.tabs as t (t.id)}
-          <div class="tab" class:active={ui.activeTab === t.id} role="presentation" data-tab={t.id} oncontextmenu={(e) => openTabMenu(e, t.id)}>
+          <div class="tab" class:active={ui.activeTab === t.id} class:dragged={dragTab === t.id}
+            class:drop-before={dropMark?.id === t.id && !dropMark.after} class:drop-after={dropMark?.id === t.id && dropMark.after}
+            role="presentation" data-tab={t.id} draggable="true"
+            ondragstart={(e) => tabDragStart(e, t.id)} ondragend={tabDragEnd}
+            ondragenter={(e) => tabDragOver(e, t.id)} ondragover={(e) => tabDragOver(e, t.id)} ondrop={tabDrop}
+            oncontextmenu={(e) => openTabMenu(e, t.id)}>
             <button role="tab" aria-selected={ui.activeTab === t.id} title={t.title} onclick={() => (ui.activeTab = t.id)}>
               <span class="badge {t.protocol}">{t.protocol.toUpperCase()}</span> <span class="tab-title">{t.title}</span>
             </button>
-            <button class="icon-btn x" aria-label="Zamknij kartę {t.title}" onclick={() => closeTab(t.id)}><Icon name="close" size={14} /></button>
+            <button class="icon-btn x" aria-label="Zamknij kartę {t.title}" onclick={() => requestCloseTabs([t.id])}><Icon name="close" size={14} /></button>
           </div>
         {/each}
         <!-- Przycisk zostaje przy prawej krawędzi także wtedy, gdy pasek kart jest przewinięty. -->
@@ -241,7 +316,7 @@
         </div>
       </div>
       <div class="stage">
-        {#each ui.tabs as t (t.id)}
+        {#each stageTabs as t (t.id)}
           {#key t.generation}
             {#if t.protocol === 'rdp'}
               <RdpView tabId={t.id} hostId={t.hostId} active={ui.activeTab === t.id} />
@@ -262,7 +337,7 @@
         {/if}
       </div>
       <div class="status mono muted">
-        <span>{ui.doc?.hosts.length ?? 0} hostów</span>
+        <span>{ui.doc?.hosts.length ?? 0} {plural(ui.doc?.hosts.length ?? 0, 'host', 'hosty', 'hostów')}</span>
         <span>Otwartych sesji: {ui.tabs.length}</span>
         <button class="bell" aria-label="Powiadomienia ({ui.history.length})" title="Powiadomienia" onclick={() => (dialog = { kind: 'notices' })}>
           <Icon name="bell" size={14} />
@@ -277,19 +352,9 @@
   {:else if dialog?.kind === 'folder'}
     <FolderDialog folder={dialog.folder} defaultParent={dialog.parent} onclose={() => (dialog = null)} />
   {:else if dialog?.kind === 'settings'}
-    <SettingsDialog onclose={() => (dialog = null)} onopen={(tool) => (dialog = { kind: tool })} />
-  {:else if dialog?.kind === 'sync'}
-    <SyncDialog onclose={() => (dialog = null)} />
-  {:else if dialog?.kind === 'backups'}
-    <BackupsDialog onclose={() => (dialog = null)} />
-  {:else if dialog?.kind === 'shortcuts'}
-    <ShortcutsDialog onclose={() => (dialog = null)} />
-  {:else if dialog?.kind === 'diagnostics'}
-    <DiagnosticsDialog onclose={() => (dialog = null)} />
+    <SettingsDialog initial={dialog.category} onclose={() => (dialog = null)} />
   {:else if dialog?.kind === 'notices'}
     <NotificationsDialog onclose={() => (dialog = null)} />
-  {:else if dialog?.kind === 'about'}
-    <AboutDialog onclose={() => (dialog = null)} />
   {:else if dialog?.kind === 'quick'}
     <QuickConnect onclose={() => (dialog = null)} onlink={openLink} />
   {:else if dialog?.kind === 'link'}
@@ -305,9 +370,30 @@
       {/snippet}
     </Modal>
   {/if}
+  {#if ui.closeConfirm}
+    {@const c = ui.closeConfirm}
+    <Modal title={c.ids.length > 1 ? 'Zamknąć karty?' : 'Zamknąć kartę?'} onclose={() => answerCloseTabs(false)} width={460}>
+      <p class="link-q">{c.live === 1 && c.ids.length === 1 ? 'Sesja w tej karcie jest połączona i zostanie rozłączona.' : `Połączone sesje (${c.live}) zostaną rozłączone.`}</p>
+      {#snippet footer()}
+        <button class="btn" type="button" onclick={() => answerCloseTabs(false)}>Anuluj</button>
+        <button class="btn primary" type="button" onclick={() => answerCloseTabs(true)}>Zamknij</button>
+      {/snippet}
+    </Modal>
+  {/if}
+  {#if ui.quitConfirm}
+    {@const q = ui.quitConfirm}
+    <Modal title="Zakończyć program?" onclose={() => { ui.quitConfirm = null; void api.answerQuit(false); }} width={460}>
+      <p class="link-q">Otwarte sesje ({q.sessions}) zostaną rozłączone.</p>
+      {#snippet footer()}
+        <button class="btn" type="button" onclick={() => { ui.quitConfirm = null; void api.answerQuit(false); }}>Anuluj</button>
+        <button class="btn primary" type="button" onclick={() => { ui.quitConfirm = null; void api.answerQuit(true); }}>Zakończ</button>
+      {/snippet}
+    </Modal>
+  {/if}
   {#if trustQueue.length}
-    {#key trustQueue[0].id}
-      <TrustDialog request={trustQueue[0]} ondone={() => trustQueue.shift()} />
+    {@const first = trustQueue[0]}
+    {#key first.id}
+      <TrustDialog request={first} ondone={() => (trustQueue = trustQueue.filter((r) => r.id !== first.id))} />
     {/key}
   {/if}
 {/if}
@@ -320,7 +406,10 @@
     <button role="menuitem" onclick={() => reconnect(tab.id)}><Icon name="refresh" /> Połącz ponownie</button>
     <button role="menuitem" disabled={!menuTabHost} onclick={() => menuTabHost && openHost(menuTabHost)}><Icon name="copy" /> Duplikuj kartę</button>
     <hr />
-    <button role="menuitem" onclick={() => closeTab(tab.id)}><Icon name="close" /> Zamknij kartę</button>
+    <button role="menuitem" disabled={ui.tabs[0]?.id === tab.id} onclick={() => moveTab(tab.id, -1)}><Icon name="chevron-left" /> Przesuń w lewo</button>
+    <button role="menuitem" disabled={ui.tabs[ui.tabs.length - 1]?.id === tab.id} onclick={() => moveTab(tab.id, 1)}><Icon name="chevron-right" /> Przesuń w prawo</button>
+    <hr />
+    <button role="menuitem" onclick={() => requestCloseTabs([tab.id])}><Icon name="close" /> Zamknij kartę</button>
     <button role="menuitem" disabled={ui.tabs.length < 2} onclick={() => closeTabsExcept(tab.id)}><Icon name="close" /> Zamknij pozostałe</button>
     <button role="menuitem" onclick={() => closeTabsExcept(null)}><Icon name="close" /> Zamknij wszystkie</button>
   </div>
@@ -350,6 +439,16 @@
   .tab > .x { flex-shrink: 0; }
   .tab.active { background: var(--terminal); box-shadow: inset 0 -2px 0 var(--accent); }
   .tab:not(.active):hover { background: var(--hover); }
+  /* Przeciąganie: przenoszona karta blednie, a kreska przy krawędzi karty pod wskaźnikiem pokazuje,
+     gdzie trafi upuszczona (znaczenie niesie położenie kreski, nie kolor). */
+  /* Pasek ma tabindex tylko ze względu na obsługę upuszczania; fokus po kliknięciu wolnego miejsca
+     nie ma nic pokazywać. */
+  .tabs:focus { outline: none; }
+  .tab.dragged { opacity: 0.5; }
+  .tab.drop-before { box-shadow: inset 3px 0 0 var(--text); }
+  .tab.drop-after { box-shadow: inset -3px 0 0 var(--text); }
+  .tab.active.drop-before { box-shadow: inset 3px 0 0 var(--text), inset 0 -2px 0 var(--accent); }
+  .tab.active.drop-after { box-shadow: inset -3px 0 0 var(--text), inset 0 -2px 0 var(--accent); }
   .add { position: sticky; right: 0; flex-shrink: 0; display: flex; align-items: center; padding: 0 6px; background: var(--panel); }
   .stage { flex: 1; position: relative; background: var(--terminal); min-height: 0; }
   .welcome { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center; text-align: center; padding: 16px; }

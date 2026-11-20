@@ -1,5 +1,6 @@
-import { api, type DocView, type SyncView, type HostView, type Id, type Protocol, type Settings, type VaultState } from './api';
+import { api, type DocView, type QuitRequest, type SyncView, type HostView, type Id, type Protocol, type Settings, type VaultState } from './api';
 import { loadBarPos, saveBarPos, type BarPos } from './rdpBar';
+import { dropIndex, moveItem } from './tabOrder';
 
 export interface Tab {
   id: string;
@@ -8,6 +9,12 @@ export interface Tab {
   title: string;
   /** Zwiększany przy ponownym łączeniu, żeby odtworzyć terminal. */
   generation: number;
+  /** Sesja połączona. */
+  live: boolean;
+  /** Numer kolejny otwarcia karty. Widoki sesji są ułożone według niego, a nie według kolejności
+   * kart, więc przestawienie karty nie rusza widoku w dokumencie (przeniesienie węzła odbierałoby
+   * fokus terminalowi albo pulpitowi). */
+  seq: number;
 }
 
 export interface PasswordPrompt {
@@ -39,6 +46,10 @@ export const ui = $state({
   noticeError: false,
   /** Miejsce panelu z przyciskami w widoku RDP, wspólne dla wszystkich kart. */
   rdpBar: loadBarPos(),
+  /** Pytanie o zamknięcie kart z połączonymi sesjami (`live` = ich liczba). */
+  closeConfirm: null as { ids: string[]; live: number } | null,
+  /** Pytanie o zakończenie programu (z backendu). */
+  quitConfirm: null as QuitRequest | null,
 });
 
 /** Ustawia miejsce panelu sesji RDP i zapamiętuje je na tej maszynie. */
@@ -89,6 +100,8 @@ export function modalOpen(): boolean {
 
 /** Stan interfejsu po blokadzie pliku (z przycisku, skrótu, zasobnika albo po pobraniu zdalnej wersji). */
 export function onLocked() {
+  ui.closeConfirm = null;
+  ui.quitConfirm = null;
   ui.tabs = [];
   ui.activeTab = null;
   cancelPasswordPrompts();
@@ -105,24 +118,75 @@ export function host(id: Id): HostView | undefined {
   return ui.doc?.hosts.find((h) => h.id === id);
 }
 
+let tabSeq = 0;
+
 export function openHost(h: HostView) {
-  const same = ui.tabs.filter((t) => t.hostId === h.id).length;
+  const titles = new Set(ui.tabs.filter((t) => t.hostId === h.id).map((t) => t.title));
+  let title = h.name;
+  for (let n = 2; titles.has(title); n++) title = `${h.name} (${n})`;
   const id = crypto.randomUUID();
-  ui.tabs.push({ id, hostId: h.id, protocol: h.protocol, title: same ? `${h.name} (${same + 1})` : h.name, generation: 0 });
+  ui.tabs.push({ id, hostId: h.id, protocol: h.protocol, title, generation: 0, live: false, seq: ++tabSeq });
   ui.activeTab = id;
 }
 
-function closeTabNow(id: string) {
+export function closeTab(id: string) {
   const i = ui.tabs.findIndex((t) => t.id === id);
   if (i < 0) return;
   ui.tabs.splice(i, 1);
   if (ui.activeTab === id) ui.activeTab = ui.tabs[Math.min(i, ui.tabs.length - 1)]?.id ?? null;
 }
-export const closeTab = closeTabNow;
+
+/** Przesuwa kartę o jedno miejsce w lewo (`-1`) albo w prawo (`1`); na skraju nic nie robi. */
+export function moveTab(id: string, delta: -1 | 1) {
+  const i = ui.tabs.findIndex((t) => t.id === id);
+  if (i < 0) return;
+  ui.tabs = moveItem(ui.tabs, i, i + delta);
+}
+
+/** Przenosi kartę `id` przed albo za kartę `targetId` (upuszczenie przy przeciąganiu). */
+export function moveTabNextTo(id: string, targetId: string, after: boolean) {
+  const from = ui.tabs.findIndex((t) => t.id === id);
+  const target = ui.tabs.findIndex((t) => t.id === targetId);
+  if (from < 0 || target < 0) return;
+  ui.tabs = moveItem(ui.tabs, from, dropIndex(from, target, after));
+}
+
+export function setTabLive(id: string, live: boolean) {
+  const t = ui.tabs.find((x) => x.id === id);
+  if (t) t.live = live;
+}
+
+/** Zamyka karty; przy `confirm_close_tab` i połączonych sesjach najpierw pyta (ui.closeConfirm). */
+export function requestCloseTabs(ids: string[]) {
+  const live = ui.tabs.filter((t) => ids.includes(t.id) && t.live).length;
+  if (live > 0 && ui.doc?.settings.confirm_close_tab) {
+    ui.closeConfirm = { ids: [...ids], live };
+    return;
+  }
+  for (const id of ids) closeTab(id);
+}
+
+export function answerCloseTabs(ok: boolean) {
+  const c = ui.closeConfirm;
+  ui.closeConfirm = null;
+  if (ok && c) for (const id of c.ids) closeTab(id);
+}
+
+const ACTIVITY_INTERVAL_MS = 15_000;
+let lastActivity = -Infinity;
+/** Zgłasza aktywność użytkownika backendowi najwyżej raz na 15 s, tylko przy odblokowanym pliku. */
+export function reportActivity(now: number = Date.now()) {
+  if (ui.phase !== 'unlocked' || now - lastActivity < ACTIVITY_INTERVAL_MS) return;
+  lastActivity = now;
+  void api.userActivity().catch(() => {});
+}
 
 export function reconnect(id: string) {
   const t = ui.tabs.find((x) => x.id === id);
-  if (t) t.generation += 1;
+  if (t) {
+    t.generation += 1;
+    t.live = false;
+  }
 }
 
 /** Pyta o hasło do jednej sesji (nie jest zapisywane). Zwraca `null`, gdy użytkownik anuluje
@@ -159,6 +223,21 @@ export function needsPassword(error: unknown): string | null {
   return m.startsWith('NEEDS_PASSWORD:') ? m.slice('NEEDS_PASSWORD:'.length) : null;
 }
 
+/** "NEEDS_KEY_PASSPHRASE:<powód>": klucz ze ścieżki wymaga hasła (także po złym haśle). */
+export function needsKeyPassphrase(error: unknown): string | null {
+  const m = String(error);
+  return m.startsWith('NEEDS_KEY_PASSPHRASE:') ? m.slice('NEEDS_KEY_PASSPHRASE:'.length) : null;
+}
+
+/** Błąd importu klucza przy zapisie: `needsPassphrase` = pokaż pole hasła klucza. */
+export function keyImportError(error: unknown): { message: string; needsPassphrase: boolean } | null {
+  const m = String(error);
+  for (const [prefix, needsPassphrase] of [['KEY_NEEDS_PASSPHRASE:', true], ['KEY_BAD_PASSPHRASE:', true], ['KEY_INVALID:', false]] as const) {
+    if (m.startsWith(prefix)) return { message: m.slice(prefix.length), needsPassphrase };
+  }
+  return null;
+}
+
 export async function refreshSync() {
   try {
     ui.sync = await api.syncStatus();
@@ -167,5 +246,3 @@ export async function refreshSync() {
   }
 }
 
-/** Po pobraniu zdalnej wersji plik jest zablokowany: zamykamy karty i wracamy do odblokowania. */
-export const lockedBySync = onLocked;

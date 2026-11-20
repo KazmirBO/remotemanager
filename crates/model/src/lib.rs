@@ -91,12 +91,50 @@ pub enum RdpKeys {
     Always,
 }
 
+/// Klucz prywatny SSH zapisany w pliku hostów: odszyfrowany tekst OpenSSH (sekret) oraz dane
+/// klucza publicznego wyliczone przy imporcie. Chroni go wyłącznie hasło główne pliku.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StoredKey {
+    /// Sekret: tekst "-----BEGIN OPENSSH PRIVATE KEY-----" bez hasła. Nie wolno go logować.
+    pub openssh: String,
+    /// Np. "ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa".
+    pub algorithm: String,
+    /// Np. "SHA256:AbC...".
+    pub fingerprint: String,
+}
+
+impl std::fmt::Debug for StoredKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredKey")
+            .field("algorithm", &self.algorithm)
+            .field("fingerprint", &self.fingerprint)
+            .field("openssh", &"***")
+            .finish()
+    }
+}
+
 macro_rules! fields {
     ($($name:ident : $ty:ty),* $(,)?) => {
         /// Nadpisywalne ustawienia. `None` = dziedzicz.
-        #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+        #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
         pub struct Fields {
             $(#[serde(default, skip_serializing_if = "Option::is_none")] pub $name: Option<$ty>,)*
+        }
+
+        /// Ręczny `Debug`: pole `password` jest maskowane, żeby `{:?}` na dokumencie, hoście czy
+        /// katalogu (które biorą `Debug` stąd) nie ujawniło hasła.
+        impl std::fmt::Debug for Fields {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let mut d = f.debug_struct("Fields");
+                $(
+                    if stringify!($name) == "password" {
+                        d.field(stringify!($name), &self.$name.as_ref().map(|_| "***"));
+                    } else {
+                        d.field(stringify!($name), &self.$name);
+                    }
+                )*
+                d.finish()
+            }
         }
 
         /// Pola ze znanym źródłem wartości, do oznaczania dziedziczenia w interfejsie.
@@ -146,6 +184,14 @@ fields! {
     domain: String,
     // Sekret: nie wolno go logować.
     password: String,
+    // Sekret: odszyfrowany klucz prywatny SSH z pliku hostów.
+    ssh_key: StoredKey,
+    // Ścieżka do pliku klucza prywatnego SSH na dysku, czytanego przy łączeniu.
+    ssh_key_path: String,
+    // Typ terminala zgłaszany serwerowi SSH (zmienna TERM), np. vt100 albo aixterm.
+    ssh_term: String,
+    // Starsze algorytmy SSH (wymiana kluczy i skróty SHA-1, szyfry CBC) dla starych serwerów.
+    ssh_legacy: bool,
     jump_host: Id,
     terminal_scheme: String,
     rdp_multimon: bool,
@@ -154,6 +200,11 @@ fields! {
     rdp_profile: LinkProfile,
     rdp_webauthn: bool,
     rdp_smartcard: CardRedirect,
+    // Rozmiar czcionki terminala (px) dla hosta albo katalogu; bez ustawienia rozmiar z Settings.
+    terminal_font_size: u8,
+    // Polecenie wysyłane do powłoki po zalogowaniu (tylko cel połączenia SSH, nie bastiony).
+    // Zapisane w pliku z hostami; nie jest sekretem, ale nie wolno go logować.
+    ssh_login_command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -421,6 +472,70 @@ pub struct Settings {
     /// Przechwytywanie klawiszy systemowych w sesji RDP.
     #[serde(default)]
     pub rdp_keys: RdpKeys,
+    /// Krój czcionki terminala.
+    #[serde(default)]
+    pub terminal_font: TerminalFont,
+    #[serde(default)]
+    pub terminal_cursor: CursorShape,
+    #[serde(default = "default_true")]
+    pub terminal_cursor_blink: bool,
+    /// Długość historii przewijania w wierszach.
+    #[serde(default = "default_scrollback")]
+    pub terminal_scrollback: u32,
+    #[serde(default)]
+    pub terminal_copy_on_select: bool,
+    #[serde(default)]
+    pub terminal_paste_right_click: bool,
+    /// TERM, gdy host ani katalog go nie ustawia. Musi być równy `ssh::DEFAULT_TERM`.
+    #[serde(default = "default_ssh_term")]
+    pub ssh_term: String,
+    #[serde(default)]
+    pub confirm_close_tab: bool,
+    #[serde(default)]
+    pub confirm_quit: bool,
+    /// Odstęp podtrzymywania połączenia SSH w sekundach; 0 wyłącza.
+    #[serde(default = "default_keepalive_secs")]
+    pub ssh_keepalive_secs: u16,
+    /// Automatyczna blokada pliku z hostami po tylu minutach bezczynności; 0 wyłącza.
+    #[serde(default)]
+    pub auto_lock_minutes: u16,
+}
+
+/// Krój czcionki terminala.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalFont {
+    /// JetBrains Mono dołączona do programu.
+    #[default]
+    Bundled,
+    /// Systemowa czcionka o stałej szerokości (`monospace`).
+    System,
+}
+
+/// Kształt kursora terminala (nazwy jak `cursorStyle` w xterm.js).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CursorShape {
+    #[default]
+    Block,
+    Bar,
+    Underline,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_scrollback() -> u32 {
+    5000
+}
+
+fn default_ssh_term() -> String {
+    "xterm-256color".into()
+}
+
+fn default_keepalive_secs() -> u16 {
+    30
 }
 
 fn default_terminal_scheme() -> String {
@@ -436,6 +551,17 @@ impl Default for Settings {
             shortcuts: BTreeMap::new(),
             rdp_profile: LinkProfile::default(),
             rdp_keys: RdpKeys::default(),
+            terminal_font: TerminalFont::default(),
+            terminal_cursor: CursorShape::default(),
+            terminal_cursor_blink: true,
+            terminal_scrollback: default_scrollback(),
+            terminal_copy_on_select: false,
+            terminal_paste_right_click: false,
+            ssh_term: default_ssh_term(),
+            confirm_close_tab: false,
+            confirm_quit: false,
+            ssh_keepalive_secs: default_keepalive_secs(),
+            auto_lock_minutes: 0,
         }
     }
 }
@@ -662,6 +788,7 @@ mod tests {
         let (t, ..) = tree_with_chain();
         let json = serde_json::to_string(&t).unwrap();
         assert!(!json.contains("password"));
+        assert!(!json.contains("ssh_key"));
         assert_eq!(serde_json::from_str::<Tree>(&json).unwrap(), t);
     }
 
@@ -737,6 +864,64 @@ mod tests {
     }
 
     #[test]
+    fn old_settings_get_new_defaults_and_roundtrip() {
+        let old: Settings =
+            serde_json::from_str(r#"{"theme":"dark","terminal_font_size":14}"#).unwrap();
+        assert_eq!(old.terminal_font, TerminalFont::Bundled);
+        assert_eq!(old.terminal_cursor, CursorShape::Block);
+        assert!(old.terminal_cursor_blink);
+        assert_eq!(old.terminal_scrollback, 5000);
+        assert!(!old.terminal_copy_on_select && !old.terminal_paste_right_click);
+        assert_eq!(old.ssh_term, "xterm-256color");
+        assert!(!old.confirm_close_tab && !old.confirm_quit);
+        assert_eq!(old.ssh_keepalive_secs, 30);
+        assert_eq!(old.auto_lock_minutes, 0);
+        assert_eq!(old.terminal_font_size, 14);
+        let st = Settings {
+            terminal_font: TerminalFont::System,
+            terminal_cursor: CursorShape::Underline,
+            terminal_cursor_blink: false,
+            terminal_scrollback: 0,
+            ssh_term: "vt100".into(),
+            ssh_keepalive_secs: 0,
+            auto_lock_minutes: 15,
+            confirm_quit: true,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&st).unwrap();
+        assert!(json.contains(r#""terminal_font":"system""#));
+        assert!(json.contains(r#""terminal_cursor":"underline""#));
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), st);
+        assert!(serde_json::from_str::<Settings>(r#"{}"#).is_err());
+        assert!(serde_json::from_str::<Document>(r#"{"settings":{}}"#).is_err());
+    }
+
+    #[test]
+    fn font_size_and_login_command_are_inherited() {
+        let mut t = Tree::default();
+        let parent = t.add_folder("P", None).unwrap();
+        let child = t.add_folder("C", Some(parent)).unwrap();
+        let h = t.add_host("h", "h", Protocol::Ssh, Some(child)).unwrap();
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.terminal_font_size, None);
+        assert_eq!(r.fields.ssh_login_command, None);
+        t.folders[0].fields.terminal_font_size = Some(18);
+        t.folders[0].fields.ssh_login_command = Some("tmux new -A -s main".into());
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.terminal_font_size, Some(18));
+        assert_eq!(r.sources.terminal_font_size, Some(Source::Folder(parent)));
+        assert_eq!(r.sources.ssh_login_command, Some(Source::Folder(parent)));
+        t.hosts[0].fields.terminal_font_size = Some(11);
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.terminal_font_size, Some(11));
+        assert_eq!(r.sources.terminal_font_size, Some(Source::Host));
+        // Stary plik bez nowych pól drzewa czyta się z None.
+        let f: Fields = serde_json::from_str(r#"{"port":22}"#).unwrap();
+        assert_eq!(f.terminal_font_size, None);
+        assert_eq!(f.ssh_login_command, None);
+    }
+
+    #[test]
     fn rdp_profile_is_inherited_host_folder_none() {
         let mut t = Tree::default();
         let f = t.add_folder("F", None).unwrap();
@@ -754,6 +939,72 @@ mod tests {
         let r = t.resolve(h).unwrap();
         assert_eq!(r.fields.rdp_profile, Some(LinkProfile::Fast));
         assert_eq!(r.sources.rdp_profile, Some(Source::Host));
+    }
+
+    fn stored_key(tag: &str) -> StoredKey {
+        StoredKey {
+            openssh: format!("sekret-{tag}"),
+            algorithm: "ssh-ed25519".into(),
+            fingerprint: format!("SHA256:{tag}"),
+        }
+    }
+
+    #[test]
+    fn ssh_key_fields_inherit_host_folder_none() {
+        let mut t = Tree::default();
+        let f = t.add_folder("F", None).unwrap();
+        let h = t.add_host("h", "h", Protocol::Ssh, Some(f)).unwrap();
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.ssh_key, None);
+        assert_eq!(r.sources.ssh_key, None);
+        assert_eq!(r.fields.ssh_key_path, None);
+        assert_eq!(r.sources.ssh_key_path, None);
+
+        // Klucz w katalogu, ścieżka na hoście: pola dziedziczą się niezależnie.
+        t.folders[0].fields.ssh_key = Some(stored_key("a"));
+        t.hosts[0].fields.ssh_key_path = Some("~/.ssh/id".into());
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.ssh_key, Some(stored_key("a")));
+        assert_eq!(r.sources.ssh_key, Some(Source::Folder(f)));
+        assert_eq!(r.fields.ssh_key_path.as_deref(), Some("~/.ssh/id"));
+        assert_eq!(r.sources.ssh_key_path, Some(Source::Host));
+
+        // Ścieżka w katalogu, klucz na hoście nadpisuje klucz katalogu.
+        t.folders[0].fields.ssh_key_path = Some("/k".into());
+        t.hosts[0].fields.ssh_key_path = None;
+        t.hosts[0].fields.ssh_key = Some(stored_key("b"));
+        let r = t.resolve(h).unwrap();
+        assert_eq!(r.fields.ssh_key, Some(stored_key("b")));
+        assert_eq!(r.sources.ssh_key, Some(Source::Host));
+        assert_eq!(r.fields.ssh_key_path.as_deref(), Some("/k"));
+        assert_eq!(r.sources.ssh_key_path, Some(Source::Folder(f)));
+    }
+
+    #[test]
+    fn stored_key_debug_hides_secret() {
+        let fields = Fields {
+            ssh_key: Some(stored_key("odcisk1")),
+            ..Fields::default()
+        };
+        let dbg = format!("{fields:?}");
+        assert!(!dbg.contains("sekret-"), "{dbg}");
+        assert!(dbg.contains("SHA256:odcisk1"), "{dbg}");
+    }
+
+    #[test]
+    fn fields_debug_hides_password() {
+        let fields = Fields {
+            password: Some("TAJNE-HASLO".into()),
+            username: Some("jan".into()),
+            ..Fields::default()
+        };
+        let dbg = format!("{fields:?}");
+        assert!(!dbg.contains("TAJNE-HASLO"), "{dbg}");
+        assert!(dbg.contains("***") && dbg.contains("jan"), "{dbg}");
+        let mut t = Tree::default();
+        t.add_host("h", "h", Protocol::Ssh, None).unwrap();
+        t.hosts[0].fields = fields;
+        assert!(!format!("{t:?}").contains("TAJNE-HASLO"));
     }
 
     #[test]

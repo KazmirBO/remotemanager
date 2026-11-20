@@ -184,9 +184,17 @@ fn connect(
 }
 
 fn tls_upgrade(stream: TcpStream, host: &str) -> anyhow::Result<(Tls, Vec<u8>)> {
-    let mut config = rustls::ClientConfig::builder()
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
+    let verifier = PinnedCert {
+        algorithms: provider.signature_verification_algorithms,
+    };
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("domyślne wersje TLS są obsługiwane przez dostawcę")
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
+        .with_custom_certificate_verifier(Arc::new(verifier))
         .with_no_client_auth();
     // CredSSP nie wspiera wznawiania sesji TLS.
     config.resumption = rustls::client::Resumption::disabled();
@@ -278,10 +286,14 @@ fn save_png(path: &std::path::Path, image: &DecodedImage) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Jak w procesie RDP: certyfikatu nie ocenia (sonda tylko wypisuje jego odcisk), ale podpis
+/// uzgadniania TLS sprawdza, żeby odcisk dotyczył serwera, który ma klucz prywatny z certyfikatu.
 #[derive(Debug)]
-struct AcceptAnyCert;
+struct PinnedCert {
+    algorithms: rustls::crypto::WebPkiSupportedAlgorithms,
+}
 
-impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
+impl rustls::client::danger::ServerCertVerifier for PinnedCert {
     fn verify_server_cert(
         &self,
         _: &rustls::pki_types::CertificateDer<'_>,
@@ -294,33 +306,21 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
     }
     fn verify_tls12_signature(
         &self,
-        _: &[u8],
-        _: &rustls::pki_types::CertificateDer<'_>,
-        _: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.algorithms)
     }
     fn verify_tls13_signature(
         &self,
-        _: &[u8],
-        _: &rustls::pki_types::CertificateDer<'_>,
-        _: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algorithms)
     }
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        use rustls::SignatureScheme::*;
-        vec![
-            RSA_PKCS1_SHA256,
-            RSA_PKCS1_SHA384,
-            RSA_PKCS1_SHA512,
-            ECDSA_NISTP256_SHA256,
-            ECDSA_NISTP384_SHA384,
-            ECDSA_NISTP521_SHA512,
-            RSA_PSS_SHA256,
-            RSA_PSS_SHA384,
-            RSA_PSS_SHA512,
-            ED25519,
-        ]
+        self.algorithms.supported_schemes()
     }
 }

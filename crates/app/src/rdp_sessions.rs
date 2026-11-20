@@ -54,11 +54,12 @@ pub async fn connect_rdp(
                 return Err("Ten host nie używa RDP.".to_string());
             }
             let r = doc.tree.resolve(host_id).map_err(|e| e.to_string())?;
-            let username = r
-                .fields
-                .username
-                .clone()
-                .ok_or_else(|| format!("Host {} nie ma ustawionego użytkownika.", host.name))?;
+            let username = r.fields.username.clone().ok_or_else(|| {
+                format!(
+                    "Host {} nie ma ustawionego użytkownika. Ustaw go w edycji hosta.",
+                    host.name
+                )
+            })?;
             // Hasło podane przy łączeniu ma pierwszeństwo i nie jest zapisywane.
             let password = password
                 .clone()
@@ -89,14 +90,24 @@ pub async fn connect_rdp(
     let (host, port) = (params.host.clone(), params.port);
     state.log(format!("RDP: łączenie z {host}:{port}"));
 
-    let worker = rdp::find_worker().ok_or(
-        "Nie znaleziono procesu RDP (multiremotemanager-rdp-worker). Zbuduj go: cargo build --manifest-path tools/rdp/Cargo.toml, albo ustaw MRM_RDP_WORKER.",
-    )?;
+    let worker = rdp::find_worker().ok_or_else(|| {
+        let msg = if cfg!(debug_assertions) {
+            "Nie znaleziono procesu RDP (multiremotemanager-rdp-worker). Zbuduj go: cargo build --manifest-path tools/rdp/Cargo.toml, albo ustaw MRM_RDP_WORKER."
+        } else {
+            "Nie znaleziono procesu RDP (multiremotemanager-rdp-worker) obok aplikacji. Zainstaluj aplikację ponownie, a przy budowie ze źródeł skopiuj proces obok pliku aplikacji albo wskaż go zmienną MRM_RDP_WORKER."
+        };
+        state.log(format!("RDP: {host}:{port}: {msg}"));
+        msg.to_string()
+    })?;
     // Ścieżka procesu w dzienniku pozwala od razu zobaczyć, która binarka obsługuje sesję.
     state.log(format!("RDP: proces {}", worker.display()));
     let (tx, mut rx) = channel(rdp::EVENT_QUEUE);
-    let client = RdpClient::spawn(&worker, params, tx)
-        .map_err(|e| format!("Nie można uruchomić procesu RDP: {e}"))?;
+    let client = RdpClient::spawn(&worker, params, tx).map_err(|e| {
+        state.log(format!(
+            "RDP: {host}:{port}: nie można uruchomić procesu: {e}"
+        ));
+        format!("Nie można uruchomić procesu RDP: {e}")
+    })?;
     let id = Uuid::new_v4();
     state.rdp.lock().expect("rdp").insert(id, client.clone());
     let sync = Arc::new(ClipSync::new(
@@ -285,6 +296,13 @@ pub async fn connect_rdp(
                 Event::Worker(other) => {
                     let done =
                         matches!(other, FromWorker::Closed { .. } | FromWorker::Error { .. });
+                    if let FromWorker::Error { message } = &other {
+                        app.state::<AppState>()
+                            .log(format!("RDP {host}: zakończono sesję: {message}"));
+                    } else if done {
+                        app.state::<AppState>()
+                            .log(format!("RDP {host}: zakończono sesję"));
+                    }
                     let json = serde_json::to_string(&other).unwrap_or_default();
                     if on_event.send(InvokeResponseBody::Json(json)).is_err() || done {
                         break;

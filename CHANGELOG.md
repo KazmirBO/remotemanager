@@ -2,7 +2,29 @@
 
 Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `wydanie`).
 
-## 0.1.5 - 2026-11-17
+## 0.1.0 - 2026-11-20
+
+Pierwsze zwykłe wydanie. Pakiety nadal są niepodpisane. Wcześniejsze wydania wstępne zostały przenumerowane z 0.1.0-0.1.5 na 0.0.0-0.0.5 (tagi, tytuły, opisy i nazwy plików); same ich instalatory nadal zgłaszają dawne numery. Na systemie z zainstalowanym wydaniem wstępnym o dawnym numerze wyższym niż 0.1.0 (np. 0.1.5) menedżer pakietów potraktuje instalację jako cofnięcie wersji.
+
+### Zmiany
+
+- SSH: logowanie kluczem prywatnym. Klucz można wkleić albo wczytać z pliku do pliku hostów (wtedy jest odszyfrowywany przy imporcie, więc hasło klucza podajesz raz i nie jest zapisywane) albo wskazać ścieżką do pliku czytanego przy łączeniu (zaszyfrowany klucz wymaga wtedy hasła przy każdym połączeniu). Obie możliwości dziedziczą się z katalogu na host; obsługiwane formaty to OpenSSH, PKCS#8, PEM i PuTTY .ppk, limit 64 KiB. Kolejność prób: klucz z pliku hostów, plik klucza, agent SSH, zapisane hasło, na końcu pytanie o hasło; liczba prób na przystanek jest ograniczona do 5.
+- Budowa ze źródeł na Windows nie wymaga już asemblera NASM (`.cargo/config.toml`).
+- Zależności zaktualizowane do najnowszych zgodnych wersji.
+- SSH dla starych serwerów (zgłoszenie #12): pole "Typ terminala (SSH)" ustawia nazwę wysyłaną serwerowi jako TERM (np. `vt100`, `vt220`, `aixterm` zamiast domyślnego `xterm-256color`), a pole "Starsze algorytmy SSH" dopuszcza wymianę kluczy i skróty oparte na SHA-1 oraz szyfry CBC dla serwerów, które nie znają nowych algorytmów. Oba pola są dla hosta albo katalogu, dziedziczone i domyślnie niczego nie zmieniają. Bez Telnetu i bez emulacji terminali innych niż zgodne z xterm.
+- Bezpieczeństwo RDP: aplikacja sprawdza podpis w uzgadnianiu TLS. Wcześniej zapamiętany odcisk certyfikatu nie dowodził, że serwer ma klucz prywatny z tego certyfikatu, więc pośrednik w sieci mógł przedstawić cudzy certyfikat i zostać przyjęty bez pytania. Serwer, który nie przejdzie tej kontroli, jest odrzucany z komunikatem o możliwym podsłuchu.
+- Konserwacja: plik z hostami, jego kopie i plik w folderze synchronizacji są zapisywane przez plik tymczasowy o unikalnej nazwie i z uprawnieniami tylko dla właściciela (Unix: 0600); wcześniej stała nazwa pliku tymczasowego pozwalała dowiązaniu w folderze synchronizacji przekierować zapis. Zdalny plik z niepoprawnymi parametrami KDF nie jest już pobierany.
+- Konserwacja: linki `ssh://` i `rdp://` odrzucają znaki formatujące Unicode i zakodowane znaki struktury adresu; pytanie o klucz hosta nie przechodzi do interfejsu po jego przeładowaniu ani po zablokowaniu pliku; zamknięcie sesji RDP nie zawiesza się na procesie, który przestał czytać; drobne poprawki tekstów interfejsu.
+- Nowy układ ustawień: okno Ustawienia ma listę kategorii (Wygląd, Terminal, RDP, Sesje, Bezpieczeństwo, Synchronizacja, Skróty, Narzędzia) i jeden przycisk Zapisz, a synchronizacja i skróty są kategoriami zamiast osobnych okien. Okna hosta i katalogu mają zakładki Ogólne, Logowanie, Połączenie, Terminal i Przekierowania, a błąd zapisu jest widoczny w każdej zakładce i wskazuje tę, w której leży pole. Zakładki i lista kategorii obsługują strzałki.
+- Nowe opcje: krój czcionki, kształt i miganie kursora, historia przewijania, kopiowanie po zaznaczeniu, wklejanie prawym przyciskiem i domyślny TERM (terminal); pytanie przed zamknięciem karty i programu oraz odstęp podtrzymywania SSH (sesje); automatyczna blokada po bezczynności i liczba kopii zapasowych (bezpieczeństwo); dla hosta i katalogu rozmiar czcionki terminala i polecenie po zalogowaniu (SSH, tylko cel połączenia). Domyślnie program działa jak dotąd, a stare pliki z hostami czytają się bez zmian.
+- Karty sesji można przestawiać: przeciąganiem na pasku kart (kreska przy krawędzi karty pokazuje miejsce wstawienia, upuszczenie na wolnym miejscu paska przenosi na koniec), pozycjami Przesuń w lewo i Przesuń w prawo w menu karty oraz dwiema nowymi akcjami skrótów (bez domyślnych kombinacji, do przypisania w Ustawieniach). Przestawienie nie przerywa sesji.
+
+### Pakiety
+
+- `multiremotemanager_0.1.0_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.1.0_amd64.deb` - pakiet dla Debiana i Ubuntu.
+
+## 0.0.5 - 2026-11-17
 
 Wydanie nadal wstępne: pakiety są niepodpisane.
 
@@ -15,17 +37,17 @@ Wydanie nadal wstępne: pakiety są niepodpisane.
 
 ### Pakiety
 
-- `multiremotemanager_0.1.5_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
-- `multiremotemanager_0.1.5_amd64.deb` - pakiet dla Debiana i Ubuntu.
+- `multiremotemanager_0.0.5_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.0.5_amd64.deb` - pakiet dla Debiana i Ubuntu.
 
-## 0.1.4 - 2026-11-17
+## 0.0.4 - 2026-11-17
 
 Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane.
 
 ### Zmiany
 
 - Terminal SSH: po zakończeniu sesji (np. po `exit`) przyciski "Połącz ponownie" i "Zamknij kartę" znowu reagują na kliknięcia; wcześniej kliknięcie trafiało w terminal pod spodem.
-- Windows: przechwytywanie klawiszy w sesji RDP (Alt+Tab, klawisz Windows) działa od wersji 0.1.3, co potwierdził test na prawdziwej maszynie.
+- Windows: przechwytywanie klawiszy w sesji RDP (Alt+Tab, klawisz Windows) działa od wersji 0.0.3, co potwierdził test na prawdziwej maszynie.
 - Windows: w trybie przechwytywania klawiszy prawy Shift działa w sesji RDP; wcześniej trafiał do sesji jako inny klawisz, więc np. prawy Shift+1 dawał 1.
 - Prawy przycisk myszy nie pokazuje już menu przeglądarki (Wstecz, Odśwież, Drukuj); zostaje ono w polach tekstowych i w terminalu, gdzie daje kopiowanie i wklejanie.
 - Karty sesji mają własne menu pod prawym przyciskiem myszy: połącz ponownie, duplikuj kartę, zamknij kartę, zamknij pozostałe, zamknij wszystkie.
@@ -35,25 +57,25 @@ Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane.
 
 ### Pakiety
 
-- `multiremotemanager_0.1.4_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
-- `multiremotemanager_0.1.4_amd64.deb` - pakiet dla Debiana i Ubuntu.
+- `multiremotemanager_0.0.4_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.0.4_amd64.deb` - pakiet dla Debiana i Ubuntu.
 
-## 0.1.3 - 2026-11-17
+## 0.0.3 - 2026-11-17
 
 Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane.
 
 ### Zmiany
 
-- Windows: aplikacja nie rejestruje już surowego wejścia klawiatury i myszy. Liczniki z wersji 0.1.2 pokazały, że system w ogóle nie wołał haka klawiatury w trybie przechwytywania; przyczyną jest ta rejestracja, którą biblioteka okna robi domyślnie i przy której system pomija hak własnego procesu, gdy jego okno jest aktywne.
+- Windows: aplikacja nie rejestruje już surowego wejścia klawiatury i myszy. Liczniki z wersji 0.0.2 pokazały, że system w ogóle nie wołał haka klawiatury w trybie przechwytywania; przyczyną jest ta rejestracja, którą biblioteka okna robi domyślnie i przy której system pomija hak własnego procesu, gdy jego okno jest aktywne.
 
 ### Pakiety
 
-- `multiremotemanager_0.1.3_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
-- `multiremotemanager_0.1.3_amd64.deb` - pakiet dla Debiana i Ubuntu.
+- `multiremotemanager_0.0.3_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.0.3_amd64.deb` - pakiet dla Debiana i Ubuntu.
 
-## 0.1.2 - 2026-11-17
+## 0.0.2 - 2026-11-17
 
-Wydanie diagnostyczne, nadal wstępne: pakiety są niepodpisane. Poprawka haka z wersji 0.1.1 nie pomogła: na Windows w trybie przechwytywania Alt+Tab dalej działa lokalnie, a przyczyna nie jest jeszcze znana.
+Wydanie diagnostyczne, nadal wstępne: pakiety są niepodpisane. Poprawka haka z wersji 0.0.1 nie pomogła: na Windows w trybie przechwytywania Alt+Tab dalej działa lokalnie, a przyczyna nie jest jeszcze znana.
 
 ### Zmiany
 
@@ -62,12 +84,12 @@ Wydanie diagnostyczne, nadal wstępne: pakiety są niepodpisane. Poprawka haka z
 
 ### Pakiety
 
-- `multiremotemanager_0.1.2_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
-- `multiremotemanager_0.1.2_amd64.deb` - pakiet dla Debiana i Ubuntu.
+- `multiremotemanager_0.0.2_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.0.2_amd64.deb` - pakiet dla Debiana i Ubuntu.
 
-## 0.1.1 - 2026-11-17
+## 0.0.1 - 2026-11-17
 
-Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane. Lista rzeczy niesprawdzonych w działaniu z wersji 0.1.0 pozostaje aktualna.
+Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane. Lista rzeczy niesprawdzonych w działaniu z wersji 0.0.0 pozostaje aktualna.
 
 ### Zmiany
 
@@ -77,17 +99,17 @@ Wydanie poprawkowe, nadal wstępne: pakiety są niepodpisane. Lista rzeczy niesp
 
 ### Pakiety
 
-- `multiremotemanager_0.1.1_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
-- `multiremotemanager_0.1.1_amd64.deb` - pakiet dla Debiana i Ubuntu.
+- `multiremotemanager_0.0.1_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.0.1_amd64.deb` - pakiet dla Debiana i Ubuntu.
 
-## 0.1.0 - 2026-11-16
+## 0.0.0 - 2026-11-16
 
 Pierwsze wydanie wstępne. Wczesna wersja rozwojowa: pakiety są niepodpisane i nie były dotąd uruchamiane poza środowiskiem budowania, a część funkcji czeka na sprawdzenie w działaniu (lista niżej).
 
 ### Pakiety
 
-- `multiremotemanager_0.1.0_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity). Windows SmartScreen pokaże ostrzeżenie, bo plik nie jest podpisany. Wymaga WebView2 (wbudowany w Windows 10 od wersji 1803 i w Windows 11).
-- `multiremotemanager_0.1.0_amd64.deb` - pakiet dla Debiana i Ubuntu, zbudowany na Ubuntu 24.04.
+- `multiremotemanager_0.0.0_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity). Windows SmartScreen pokaże ostrzeżenie, bo plik nie jest podpisany. Wymaga WebView2 (wbudowany w Windows 10 od wersji 1803 i w Windows 11).
+- `multiremotemanager_0.0.0_amd64.deb` - pakiet dla Debiana i Ubuntu, zbudowany na Ubuntu 24.04.
 
 Oba pakiety zawierają proces RDP jako osobny plik obok aplikacji.
 

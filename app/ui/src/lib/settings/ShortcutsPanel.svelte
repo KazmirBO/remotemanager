@@ -1,16 +1,11 @@
 <script lang="ts">
-  import { api, type Settings } from './api';
-  import Icon from './Icon.svelte';
-  import Modal from './Modal.svelte';
-  import { ACTIONS, OFF, REQUIRED_ACTIONS, binding, comboFromEvent, findConflict, hasScancode, validCombo } from './shortcuts';
-  import { applyTheme, notify, refresh, ui } from './store.svelte';
+  import type { Settings } from '../api';
+  import Icon from '../Icon.svelte';
+  import { ACTIONS, OFF, REQUIRED_ACTIONS, binding, comboFromEvent, findConflict, hasScancode, validCombo } from '../shortcuts';
 
-  let { onclose }: { onclose: () => void } = $props();
-  // svelte-ignore state_referenced_locally
-  let settings = $state<Settings>(structuredClone($state.snapshot(ui.doc!.settings)));
+  let { settings = $bindable() }: { settings: Settings } = $props();
   let capturing = $state<string | null>(null);
   let error = $state('');
-  let busy = $state(false);
 
   const label = (id: string) => ACTIONS.find((a) => a.id === id)!.label;
 
@@ -53,38 +48,22 @@
     else delete settings.shortcuts[id];
     error = '';
   }
-
-  async function save() {
-    busy = true;
-    try {
-      await api.saveSettings($state.snapshot(settings));
-      await refresh();
-      applyTheme(settings);
-      notify('Zapisano skróty klawiszowe.');
-      onclose();
-    } catch (e) {
-      error = String(e);
-    } finally {
-      busy = false;
-    }
-  }
 </script>
 
 <svelte:window onkeydowncapture={capture} />
 
-<Modal title="Skróty klawiszowe" {onclose} width={520}>
-  <p class="muted note">Kliknij „Zmień” i naciśnij nową kombinację. Esc anuluje. Przypisany skrót działa także w sesjach, więc ta kombinacja przestaje docierać do zdalnej powłoki i pulpitu (poza trybem przechwytywania klawiszy RDP).</p>
+<p class="muted note">Kliknij „Zmień” i naciśnij nową kombinację. Esc anuluje. Przypisany skrót działa także w sesjach, więc ta kombinacja przestaje docierać do zdalnej powłoki i pulpitu (poza trybem przechwytywania klawiszy RDP). Zmiany zapisuje przycisk Zapisz.</p>
   <ul>
     {#each ACTIONS as a (a.id)}
       <li>
         <span>{a.label}</span>
         <span class="right">
           <kbd class:capturing={capturing === a.id} class:none={capturing !== a.id && !binding(settings, a.id)}>{capturing === a.id ? 'Naciśnij skrót...' : binding(settings, a.id) || 'brak'}</kbd>
-          <button class="btn compact" onclick={() => { capturing = a.id; error = ''; }}>Zmień</button>
-          <button class="icon-btn" aria-label="Wyłącz skrót: {a.label}" title="Wyłącz skrót" disabled={REQUIRED_ACTIONS.has(a.id) || !binding(settings, a.id)} onclick={() => disable(a.id)}>
+          <button type="button" class="btn compact" onclick={() => { capturing = a.id; error = ''; }}>Zmień</button>
+          <button type="button" class="icon-btn" aria-label="Wyłącz skrót: {a.label}" title="Wyłącz skrót" disabled={REQUIRED_ACTIONS.has(a.id) || !binding(settings, a.id)} onclick={() => disable(a.id)}>
             <Icon name="close" size={14} />
           </button>
-          <button class="icon-btn" aria-label="Przywróć domyślny skrót: {a.label}" title={a.default ? `Przywróć domyślny (${a.default})` : 'Przywróć domyślny (brak)'} disabled={!settings.shortcuts[a.id]} onclick={() => reset(a.id)}>
+          <button type="button" class="icon-btn" aria-label="Przywróć domyślny skrót: {a.label}" title={a.default ? `Przywróć domyślny (${a.default})` : 'Przywróć domyślny (brak)'} disabled={!settings.shortcuts[a.id]} onclick={() => reset(a.id)}>
             <Icon name="refresh" size={14} />
           </button>
         </span>
@@ -92,16 +71,11 @@
     {/each}
   </ul>
   {#if error}<div class="error" role="alert"><Icon name="alert" size={14} /> {error}</div>{/if}
-  {#snippet footer()}
-    <button class="btn" onclick={onclose}>Anuluj</button>
-    <button class="btn primary" onclick={save} disabled={busy}>Zapisz</button>
-  {/snippet}
-</Modal>
 
 <style>
   .note { font-size: 12px; margin: 0 0 12px; }
-  /* Lista akcji jest długa: przewija się w oknie, a stopka z przyciskami zostaje widoczna. */
-  ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-control); max-height: min(56vh, 520px); overflow-y: auto; }
+  /* Lista przewija się razem z panelem kategorii. */
+  ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-control); }
   li { display: flex; justify-content: space-between; align-items: center; min-height: 48px; padding: 0 12px; gap: 12px; }
   li + li { border-top: 1px solid var(--border); }
   .right { display: flex; align-items: center; gap: 8px; }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTree, descendantIds, inherited, inheritsPassword, matches, EDGE_SCROLL_MAX, edgeScrollSpeed } from './tree';
+import { buildTree, descendantIds, inherited, inheritsPassword, inheritsSshKey, matches, plural, EDGE_SCROLL_MAX, edgeScrollSpeed } from './tree';
 import { emptyFields, type FolderView, type HostView } from './api';
 
 const folder = (id: string, name: string, parent: string | null, patch: Partial<ReturnType<typeof emptyFields>> = {}): FolderView => ({
@@ -46,6 +46,12 @@ describe('inherited', () => {
     expect(inherited(f, 'a', 'port', 2222)).toBeNull();
     expect(inherited(f, 'b', 'username', 'ktoś-inny')).toEqual({ value: 'admin', from: 'Firma' });
   });
+  it('dziedziczy rozmiar czcionki i polecenie po zalogowaniu z katalogu nadrzędnego', () => {
+    const p = [folder('a', 'Firma', null, { terminal_font_size: 16, ssh_login_command: 'tmux new -A -s main' }), folder('b', 'Sub', 'a')];
+    expect(inherited(p, 'b', 'terminal_font_size')).toEqual({ value: 16, from: 'Firma' });
+    expect(inherited(p, 'b', 'ssh_login_command')).toEqual({ value: 'tmux new -A -s main', from: 'Firma' });
+    expect(inherited(p, null, 'terminal_font_size')).toBeNull();
+  });
   it('dziedziczy profil łącza RDP z najbliższego katalogu, który go ustawia', () => {
     const p = [folder('a', 'Firma', null, { rdp_profile: 'slow' }), folder('b', 'Sub', 'a'), folder('c', 'Biuro', 'b', { rdp_profile: 'fast' })];
     expect(inherited(p, 'b', 'rdp_profile')).toEqual({ value: 'slow', from: 'Firma' });
@@ -56,6 +62,22 @@ describe('inherited', () => {
   it('nie zapętla się przy cyklu', () => {
     const cyc = [folder('a', 'A', 'b'), folder('b', 'B', 'a')];
     expect(inherited(cyc, 'a', 'port')).toBeNull();
+  });
+  it('wykrywa odziedziczony klucz SSH w pliku hostów', () => {
+    const k = { has_ssh_key: true, ssh_key_algorithm: 'ssh-ed25519', ssh_key_fingerprint: 'SHA256:abc' };
+    const p = [folder('a', 'A', null, k), folder('b', 'B', 'a'), folder('c', 'C', 'b', { has_ssh_key: true, ssh_key_algorithm: 'ssh-rsa', ssh_key_fingerprint: 'SHA256:xyz' })];
+    expect(inheritsSshKey(p, 'b')).toEqual({ from: 'A', algorithm: 'ssh-ed25519', fingerprint: 'SHA256:abc' });
+    expect(inheritsSshKey(p, 'c')?.from).toBe('C');
+    expect(inheritsSshKey(p, 'a')?.from).toBe('A');
+    expect(inheritsSshKey([folder('x', 'X', null)], 'x')).toBeNull();
+    expect(inheritsSshKey(p, null)).toBeNull();
+    const cyc = [folder('a', 'A', 'b'), folder('b', 'B', 'a')];
+    expect(inheritsSshKey(cyc, 'a')).toBeNull();
+  });
+  it('dziedziczy ścieżkę klucza SSH', () => {
+    const p = [folder('a', 'Firma', null, { ssh_key_path: '~/.ssh/id' }), folder('b', 'Sub', 'a')];
+    expect(inherited(p, 'b', 'ssh_key_path')).toEqual({ value: '~/.ssh/id', from: 'Firma' });
+    expect(inherited([folder('x', 'X', null)], 'x', 'ssh_key_path')).toBeNull();
   });
   it('wykrywa odziedziczone hasło', () => {
     const p = [folder('a', 'A', null, { has_password: true }), folder('b', 'B', 'a')];
@@ -95,5 +117,12 @@ describe('edgeScrollSpeed', () => {
   it('w niskiej liście każda połowa przewija w swoją stronę', () => {
     expect(edgeScrollSpeed(110, 100, 140)).toBeLessThan(0);
     expect(edgeScrollSpeed(130, 100, 140)).toBeGreaterThan(0);
+  });
+});
+
+describe('plural', () => {
+  it('odmienia po liczbie', () => {
+    const f = (n: number) => plural(n, 'host', 'hosty', 'hostów');
+    expect([1, 2, 4, 5, 12, 14, 22, 25, 0].map(f)).toEqual(['host', 'hosty', 'hosty', 'hostów', 'hostów', 'hostów', 'hosty', 'hostów', 'hostów']);
   });
 });

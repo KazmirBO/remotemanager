@@ -1,6 +1,6 @@
 // Atrapa backendu Tauri do oglądania interfejsu w zwykłej przeglądarce (`pnpm dev`, /mock.html).
 // Dane żyją w pamięci strony. Parametr ?seed=1 wypełnia przykładowe hosty, ?state=locked zaczyna od blokady.
-import type { DocView, FieldsIo, FolderView, HostView } from '../lib/api';
+import { defaultSettings, emptyFields, type DocView, type FieldsIo, type FolderView, type HostView, type Settings } from '../lib/api';
 
 type Handler = (args: Record<string, any>, ctx: { headers?: Record<string, string>; raw?: Uint8Array }) => unknown;
 
@@ -11,11 +11,55 @@ let nextId = 1;
 let password: string | null = params.get('state') === 'locked' || params.get('seed') ? 'haslo-testowe' : null;
 let unlocked = params.has('seed');
 
-const emptyFields = (): FieldsIo => ({
-  port: null, username: null, domain: null, jump_host: null, terminal_scheme: null, rdp_multimon: null, rdp_kerberos: null, rdp_kdc: null, rdp_profile: null, rdp_webauthn: null, rdp_smartcard: null, has_password: false,
-});
 const secrets = new Map<string, string>();
-const doc: DocView = { folders: [], hosts: [], settings: { theme: 'dark', terminal_font_size: 13, terminal_scheme: 'domyslny', shortcuts: {}, rdp_profile: 'fast', rdp_keys: 'never' }, trusted_count: 0 };
+
+/** Jak backend: import klucza przy zapisie (hasło klucza w atrapie to `haslo-klucza`). */
+function importKey(input: any, existing: FieldsIo | undefined) {
+  const text: string = (input.ssh_key ?? '').trim();
+  let imported = false;
+  if (text) {
+    if (!text.includes('PRIVATE KEY')) throw 'KEY_INVALID:Nie można odczytać klucza: brak nagłówka';
+    if (text.includes('ENCRYPTED')) {
+      const pass = input.ssh_key_passphrase ?? '';
+      if (!pass) throw 'KEY_NEEDS_PASSPHRASE:Klucz jest zaszyfrowany. Podaj hasło klucza, aby go zaimportować.';
+      if (pass !== 'haslo-klucza') throw 'KEY_BAD_PASSPHRASE:Nieprawidłowe hasło klucza.';
+    }
+    imported = true;
+  }
+  const keep = !input.clear_ssh_key && (imported || !!existing?.has_ssh_key);
+  return {
+    has_ssh_key: keep,
+    ssh_key_algorithm: keep ? 'ssh-ed25519' : null,
+    ssh_key_fingerprint: keep ? 'SHA256:mockkey000000000000000000000000000000000000' : null,
+  };
+}
+const FONT_ERROR = 'Rozmiar czcionki terminala musi być liczbą od 9 do 32.';
+const COMMAND_ERROR = 'Polecenie po zalogowaniu może mieć najwyżej 1024 znaki i nie może zawierać znaków sterujących poza tabulatorem.';
+/** Jak `FieldsIo::prepare` w backendzie: zakresy i przycięcie polecenia (RDP zeruje pola terminala). */
+function checkTerminalFields(f: any, rdp: boolean) {
+  if (rdp) { f.terminal_font_size = null; f.ssh_login_command = null; return; }
+  const size = f.terminal_font_size;
+  if (size !== null && size !== undefined && !(Number.isInteger(size) && size >= 9 && size <= 32)) throw FONT_ERROR;
+  const cmd = typeof f.ssh_login_command === 'string' ? f.ssh_login_command.trim() : '';
+  if (!cmd) f.ssh_login_command = null;
+  else {
+    // eslint-disable-next-line no-control-regex
+    if ([...cmd].length > 1024 || /[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/.test(cmd)) throw COMMAND_ERROR;
+    f.ssh_login_command = cmd;
+  }
+}
+/** Jak `validate_settings` w backendzie (teksty błędów identyczne). */
+function checkSettings(s: Settings) {
+  if (!(s.terminal_font_size >= 9 && s.terminal_font_size <= 32)) throw FONT_ERROR;
+  if (!/^[A-Za-z0-9_.+-]{1,64}$/.test(s.ssh_term)) throw 'Domyślny typ terminala może mieć najwyżej 64 znaki: litery, cyfry oraz - _ . + (np. xterm-256color).';
+  if (!(s.terminal_scrollback >= 0 && s.terminal_scrollback <= 100_000)) throw 'Historia przewijania musi być liczbą od 0 do 100000 wierszy.';
+  if (!(s.ssh_keepalive_secs >= 0 && s.ssh_keepalive_secs <= 3600)) throw 'Odstęp podtrzymywania połączenia SSH musi być liczbą od 0 do 3600 sekund.';
+  if (!(s.auto_lock_minutes >= 0 && s.auto_lock_minutes <= 1440)) throw 'Czas automatycznej blokady musi być liczbą od 0 do 1440 minut.';
+}
+const stripInputs = (f: any) => {
+  delete f.password; delete f.clear_password; delete f.ssh_key; delete f.ssh_key_passphrase; delete f.clear_ssh_key;
+};
+const doc: DocView = { folders: [], hosts: [], settings: { ...defaultSettings(), theme: 'dark' }, trusted_count: 0 };
 const trusted = new Set<string>();
 
 function seed() {
@@ -70,21 +114,26 @@ const handlers: Record<string, Handler> = {
   },
   get_doc: () => structuredClone({ ...doc, trusted_count: trusted.size }),
   save_folder: ({ input }) => {
+    if (!input.name.trim()) throw 'Nazwa katalogu nie może być pusta.';
+    checkTerminalFields(input.fields, false);
     const id = input.id ?? `f${Date.now()}`;
-    const fields = { ...emptyFields(), ...input.fields, has_password: !!input.fields.password || (input.fields.has_password && !input.fields.clear_password) };
-    delete (fields as any).password; delete (fields as any).clear_password;
     const existing = doc.folders.find((x) => x.id === id);
+    const key = importKey(input.fields, existing?.fields);
+    const fields = { ...emptyFields(), ...input.fields, ...key, has_password: !!input.fields.password || (input.fields.has_password && !input.fields.clear_password) };
+    stripInputs(fields);
     if (existing) Object.assign(existing, { name: input.name, parent: input.parent, fields });
     else doc.folders.push({ id, name: input.name, parent: input.parent, fields });
     return id;
   },
   save_host: ({ input }) => {
     if (!input.name.trim() || !input.address.trim()) throw 'Nazwa i adres hosta są wymagane.';
+    checkTerminalFields(input.fields, input.protocol === 'rdp');
     const id = input.id ?? `h${Date.now()}`;
-    const fields = { ...emptyFields(), ...input.fields, has_password: !!input.fields.password || (input.fields.has_password && !input.fields.clear_password) };
-    if (input.fields.password) secrets.set(id, input.fields.password);
-    delete (fields as any).password; delete (fields as any).clear_password;
     const existing = doc.hosts.find((x) => x.id === id);
+    const key = importKey(input.fields, existing?.fields);
+    const fields = { ...emptyFields(), ...input.fields, ...key, has_password: !!input.fields.password || (input.fields.has_password && !input.fields.clear_password) };
+    if (input.fields.password) secrets.set(id, input.fields.password);
+    stripInputs(fields);
     const body = { name: input.name, address: input.address, protocol: input.protocol, folder: input.folder, notes: input.notes, fields };
     if (existing) Object.assign(existing, body);
     else doc.hosts.push({ id, favorite: false, ...body });
@@ -111,15 +160,21 @@ const handlers: Record<string, Handler> = {
     doc.folders.find((f) => f.id === id)!.parent = parent;
   },
   set_favorite: ({ id, favorite }) => { doc.hosts.find((h) => h.id === id)!.favorite = favorite; },
-  save_settings: ({ settings }) => { doc.settings = settings; },
+  save_settings: ({ settings }) => { checkSettings(settings); doc.settings = settings; },
   answer_trust: ({ accept, remember, id }) => {
     const resolve = pendingTrust.get(id);
     if (resolve) { pendingTrust.delete(id); if (accept && remember) trusted.add('x'); resolve(accept); }
   },
-  connect_ssh: async ({ onEvent, hostId, password }) => {
+  connect_ssh: async ({ onEvent, hostId, password, keyPassphrase }) => {
     const host = doc.hosts.find((h) => h.id === hostId)!;
-    // Host bez zapisanego hasła i bez agenta: backend prosi o hasło na tę sesję.
-    if (host.id === 'h4' && !password) throw 'NEEDS_PASSWORD:Agent SSH jest niedostępny: brak gniazda agenta';
+    // Klucz ze ścieżki zakończonej na `_enc` jest zaszyfrowany (hasło: haslo-klucza).
+    const path = host.fields.ssh_key_path;
+    if (path?.endsWith('_enc')) {
+      if (!keyPassphrase) throw `NEEDS_KEY_PASSPHRASE:Klucz ${path} jest zaszyfrowany. Podaj jego hasło.`;
+      if (keyPassphrase !== 'haslo-klucza') throw `NEEDS_KEY_PASSPHRASE:Nieprawidłowe hasło klucza ${path}. Spróbuj ponownie.`;
+    }
+    // Host bez zapisanego hasła, klucza i agenta: backend prosi o hasło na tę sesję.
+    if (host.id === 'h4' && !password && !secrets.has(host.id) && !path && !host.fields.has_ssh_key) throw 'NEEDS_PASSWORD:Agent SSH jest niedostępny: brak gniazda agenta';
     const send = nextIndexSender(onEvent.id);
     if (!trusted.has(host.address)) {
       const ok = await askTrust({ protocol: 'ssh', host: host.address, port: 22, algorithm: 'ssh-ed25519', fingerprint: 'SHA256:mock0000000000000000000000000000000000000000' });
@@ -184,7 +239,15 @@ const handlers: Record<string, Handler> = {
   restore_backup: ({ password: pw }) => { if (pw !== password) throw 'Nieprawidłowe hasło dla tej kopii albo uszkodzona kopia.'; },
   get_diagnostics: () => [...diag],
   clear_diagnostics: () => { diag.length = 0; },
-  get_local_config: () => ({ log_sessions: logSessions, rdp_clipboard: true, logs_dir: '/home/użytkownik/.local/share/dev.multiremotemanager.app/logs' }),
+  get_local_config: () => ({ log_sessions: logSessions, rdp_clipboard: true, logs_dir: '/home/użytkownik/.local/share/dev.multiremotemanager.app/logs', backup_count: backupCount }),
+  set_backup_count: ({ count }) => {
+    if (!Number.isInteger(count) || count < 1 || count > 20) throw 'Liczba kopii zapasowych musi być liczbą od 1 do 20.';
+    backupCount = count;
+    diag.push(`${Math.floor(Date.now() / 1000)} kopie zapasowe: limit ${count} (atrapa)`);
+  },
+  user_activity: () => {},
+  answer_quit: ({ quit }) => { if (quit) diag.push(`${Math.floor(Date.now() / 1000)} zakończenie programu (atrapa)`); },
+  read_clipboard_text: () => 'tekst ze schowka (atrapa)',
   set_rdp_clipboard: () => {},
   set_log_sessions: ({ enabled }) => { logSessions = enabled; },
   resolve_link: ({ url }) => {
@@ -209,6 +272,7 @@ const handlers: Record<string, Handler> = {
 let syncFolder: string | null = null;
 let syncStatus = 'aktualny';
 let logSessions = false;
+let backupCount = 5;
 const diag: string[] = [`${Math.floor(Date.now() / 1000)} odblokowano plik z hostami (atrapa)`];
 const syncView = () => ({ folder: syncFolder, status: syncFolder ? syncStatus : null, error: null });
 
@@ -220,6 +284,9 @@ function askTrust(info: { protocol: string; host: string; port: number; algorith
     emitEvent('trust-request', { id, previous: null, ...info });
   });
 }
+
+/** Ręczna próba pytania o zamknięcie programu: w konsoli `mockQuit()`. */
+(globalThis as any).mockQuit = () => emitEvent('quit-requested', { sessions: sessions.size });
 
 (window as any).__TAURI_INTERNALS__ = {
   transformCallback(cb: (m: unknown) => void) {
