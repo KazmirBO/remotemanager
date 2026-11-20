@@ -13,6 +13,7 @@ mod rdp_sessions;
 mod session_log;
 mod sessions;
 mod state;
+mod transfer;
 mod tray;
 
 /// Link `ssh://` albo `rdp://` z listy argumentów.
@@ -126,6 +127,10 @@ fn main() {
             maintenance::set_rdp_clipboard,
             maintenance::resolve_link,
             maintenance::take_pending_link,
+            transfer::export_default_path,
+            transfer::export_hosts,
+            transfer::import_preview,
+            transfer::import_hosts,
             sessions::answer_trust,
             rdp_sessions::connect_rdp,
             rdp_sessions::rdp_send,

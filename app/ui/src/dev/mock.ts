@@ -97,6 +97,16 @@ function emitEvent(event: string, payload: unknown) {
   for (const id of listeners.get(event) ?? []) callbacks.get(id)?.({ event, id, payload });
 }
 
+const IMPORT_PARTS = {
+  usernames: true, passwords: false, ssh_keys: false, key_paths: false, options: true, login_command: false, notes: true, trusted_keys: true,
+};
+/** Jak `open_package` w backendzie: limit rozmiaru, znacznik pliku, hasło. */
+function openImport(data: number[], pw: string) {
+  if (data.length > 4 * 1024 * 1024) throw 'Plik jest za duży na plik eksportu hostów (limit 4 MiB).';
+  if (String.fromCharCode(...data.slice(0, 4)) !== 'MRMX') throw 'To nie jest plik eksportu hostów.';
+  if (pw !== 'haslo-pliku') throw 'Nieprawidłowe hasło pliku eksportu albo plik jest uszkodzony.';
+}
+
 const handlers: Record<string, Handler> = {
   vault_state: () => (unlocked ? 'unlocked' : password ? 'locked' : 'missing'),
   create_vault: (a) => {
@@ -237,6 +247,62 @@ const handlers: Record<string, Handler> = {
   },
   list_backups: () => [1, 2, 3].map((n) => ({ n, modified: Math.floor(Date.now() / 1000) - n * 3600, size: 2048 + n * 100 })),
   restore_backup: ({ password: pw }) => { if (pw !== password) throw 'Nieprawidłowe hasło dla tej kopii albo uszkodzona kopia.'; },
+  // Eksport i import: atrapa nie szyfruje. Eksport tylko liczy elementy, a import przyjmuje każdy
+  // plik zaczynający się od "MRMX" z hasłem `haslo-pliku` i zwraca stałą paczkę: jeden istniejący
+  // host (h2) z nową nazwą oraz nowy katalog z dwoma hostami.
+  export_default_path: () => '/home/użytkownik/Pobrane/hosty-2026-11-20.mrmx',
+  export_hosts: ({ path, password: pw, parts, folder }) => {
+    if ([...(pw as string)].length < 8) throw 'Hasło pliku eksportu musi mieć co najmniej 8 znaków.';
+    const target = (path as string).trim();
+    if (!target.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(target)) throw 'Ścieżka pliku eksportu musi być bezwzględna.';
+    if (target.includes('istnieje')) throw 'Plik o tej nazwie już istnieje. Podaj inną nazwę.';
+    let inside: Set<string> | null = null;
+    if (folder) {
+      inside = new Set<string>([folder]);
+      for (let grew = true; grew;) {
+        grew = false;
+        for (const f of doc.folders) if (f.parent && inside.has(f.parent) && !inside.has(f.id)) { inside.add(f.id); grew = true; }
+      }
+    }
+    const folders = doc.folders.filter((f) => !inside || inside.has(f.id)).length;
+    const hosts = doc.hosts.filter((h) => !inside || (h.folder !== null && inside.has(h.folder))).length;
+    if (!folders && !hosts) throw 'Nie ma czego eksportować: lista hostów jest pusta.';
+    diag.push(`${Math.floor(Date.now() / 1000)} eksport: zapisano ${hosts} hostów i ${folders} katalogów (atrapa)`);
+    return { path: /\.mrmx$/i.test(target) ? target : `${target}.mrmx`, folders, hosts, trusted_keys: parts.trusted_keys ? trusted.size : 0 };
+  },
+  import_preview: ({ data, password: pw }) => {
+    openImport(data, pw);
+    const existing = doc.hosts.some((h) => h.id === 'h2') ? 1 : 0;
+    const added = doc.hosts.some((h) => h.id === 'imp-h1');
+    return {
+      parts: IMPORT_PARTS,
+      folders_new: added ? 0 : 1, folders_existing: added ? 1 : 0,
+      hosts_new: added ? 0 : 2 + (1 - existing), hosts_existing: added ? 3 : existing,
+      trusted_new: trusted.has('import') ? 0 : 1,
+    };
+  },
+  import_hosts: ({ data, password: pw, parts, existing }) => {
+    openImport(data, pw);
+    const report = { folders_added: 0, folders_updated: 0, hosts_added: 0, hosts_updated: 0, unchanged: 0, trusted_added: 0, trusted_conflicts: 0, jumps_dropped: 0 };
+    if (doc.folders.some((f) => f.id === 'imp-f1')) report.unchanged += 1;
+    else { doc.folders.push({ id: 'imp-f1', name: 'Z importu', parent: null, fields: emptyFields() }); report.folders_added += 1; }
+    for (const [id, name, address] of [['imp-h1', 'web-01', '10.0.7.11'], ['imp-h2', 'web-02', '10.0.7.12']]) {
+      if (doc.hosts.some((h) => h.id === id)) { report.unchanged += 1; continue; }
+      doc.hosts.push({
+        id, name, address, protocol: 'ssh', folder: 'imp-f1', favorite: false, notes: parts.notes ? 'z pliku' : '',
+        fields: { ...emptyFields(), username: parts.usernames ? 'deploy' : null },
+      });
+      report.hosts_added += 1;
+    }
+    const h2 = doc.hosts.find((h) => h.id === 'h2');
+    if (h2 && existing === 'update' && h2.name !== 'db-01 (z pliku)') {
+      h2.name = 'db-01 (z pliku)';
+      if (parts.usernames) h2.fields.username = 'postgres';
+      report.hosts_updated += 1;
+    } else if (h2) report.unchanged += 1;
+    if (parts.trusted_keys && !trusted.has('import')) { trusted.add('import'); report.trusted_added += 1; }
+    return report;
+  },
   get_diagnostics: () => [...diag],
   clear_diagnostics: () => { diag.length = 0; },
   get_local_config: () => ({ log_sessions: logSessions, rdp_clipboard: true, logs_dir: '/home/użytkownik/.local/share/dev.multiremotemanager.app/logs', backup_count: backupCount }),

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type LocalConfig, type Settings } from './api';
+  import { api, type Id, type LocalConfig, type Settings } from './api';
   import Modal from './Modal.svelte';
   import Icon from './Icon.svelte';
   import Tabs, { type TabItem } from './Tabs.svelte';
@@ -9,13 +9,19 @@
   import AboutDialog from './AboutDialog.svelte';
   import SyncPanel from './settings/SyncPanel.svelte';
   import ShortcutsPanel from './settings/ShortcutsPanel.svelte';
+  import TransferPanel from './settings/TransferPanel.svelte';
   import { CATEGORIES, type SettingsCategory } from './settings/categories';
   import { SCHEMES } from './terminalThemes';
   import { binding } from './shortcuts';
   import { applyTheme, notify, refresh, ui } from './store.svelte';
   import { backupCountError, passwordChangeError, settingsError } from './validation';
 
-  let { onclose, initial = 'appearance' }: { onclose: () => void; initial?: SettingsCategory } = $props();
+  let { onclose, initial = 'appearance', exportFolder = null }: {
+    onclose: () => void;
+    initial?: SettingsCategory;
+    /** Katalog podpowiedziany jako zakres eksportu (z menu drzewa hostów). */
+    exportFolder?: Id | null;
+  } = $props();
   // svelte-ignore state_referenced_locally
   let settings = $state<Settings>(structuredClone($state.snapshot(ui.doc!.settings)));
   // svelte-ignore state_referenced_locally
@@ -226,6 +232,8 @@
     <p class="form-note">Zaufane klucze i certyfikaty: {ui.doc?.trusted_count ?? 0}.</p>
   {:else if id === 'sync'}
     <SyncPanel {onclose} />
+  {:else if id === 'transfer'}
+    <TransferPanel folder={exportFolder} />
   {:else if id === 'shortcuts'}
     <ShortcutsPanel bind:settings />
   {:else if id === 'tools'}

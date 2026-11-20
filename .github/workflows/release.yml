@@ -84,8 +84,10 @@ jobs:
         run: |
           version="$(sed -n 's/^ *"version": "\(.*\)",$/\1/p' crates/app/tauri.conf.json | head -n 1)"
           test -n "$version"
-          # Opis wydania to sekcja tej wersji z CHANGELOG.md (od nagłówka "## <wersja>" do następnego "## ").
-          awk -v v="$version" 'index($0, "## " v) == 1 { p = 1; next } /^## / { p = 0 } p' CHANGELOG.md > notes.md
+          # Opis wydania to sekcja tej wersji z CHANGELOG.md (od nagłówka "## <wersja> - <data>" do
+          # następnego "## "). Spacja po numerze jest częścią wzorca, żeby wersja 0.1.1 nie zabrała
+          # także sekcji 0.1.1-rc1.
+          awk -v v="$version" 'index($0, "## " v " ") == 1 { p = 1; next } /^## / { p = 0 } p' CHANGELOG.md > notes.md
           if ! grep -q '[^[:space:]]' notes.md; then
             echo "Brak sekcji $version w CHANGELOG.md" >&2
             exit 1

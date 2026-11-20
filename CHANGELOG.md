@@ -2,6 +2,19 @@
 
 Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `wydanie`).
 
+## 0.1.1-rc1 - 2026-11-20
+
+Wydanie wstępne, kandydat do wersji 0.1.1: pakiety są niepodpisane.
+
+### Zmiany
+
+- Eksport i import hostów (Ustawienia, kategoria "Import i eksport"; eksport jednego katalogu także z jego menu). Eksport zapisuje katalogi i hosty do osobnego pliku `.mrmx`, zaszyfrowanego hasłem podanym przy eksporcie (ten sam szyfr co plik z hostami). Przy eksporcie wybierasz, które dane trafiają do pliku, a przy imporcie, które z niego bierzesz: nazwy użytkowników i domeny, hasła, klucze prywatne SSH, ścieżki plików kluczy, opcje połączenia, polecenie po zalogowaniu, notatki, zaufane klucze hostów. Hasła, klucze i ścieżki kluczy są domyślnie odznaczone, a przy imporcie także polecenie po zalogowaniu i zaufane klucze. Import pokazuje najpierw podgląd (ile hostów i katalogów jest nowych, a ile już masz) i scala po identyfikatorach: nowe elementy dodaje w tej samej strukturze katalogów, istniejące pomija albo aktualizuje, zmieniając tylko zaznaczone dane, więc własne loginy i hasła zostają. Ponowny import tego samego pliku nie tworzy duplikatów. Ustawienia programu nie są przenoszone.
+
+### Pakiety
+
+- `multiremotemanager_0.1.1-rc1_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.1.1-rc1_amd64.deb` - pakiet dla Debiana i Ubuntu.
+
 ## 0.1.0 - 2026-11-20
 
 Pierwsze zwykłe wydanie. Pakiety nadal są niepodpisane. Wcześniejsze wydania wstępne zostały przenumerowane z 0.1.0-0.1.5 na 0.0.0-0.0.5 (tagi, tytuły, opisy i nazwy plików); same ich instalatory nadal zgłaszają dawne numery. Na systemie z zainstalowanym wydaniem wstępnym o dawnym numerze wyższym niż 0.1.0 (np. 0.1.5) menedżer pakietów potraktuje instalację jako cofnięcie wersji.

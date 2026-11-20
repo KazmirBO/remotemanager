@@ -7,12 +7,13 @@
   import { buildTree, descendantIds, edgeScrollSpeed, matches, plural, type FolderNode } from './tree';
 
   let {
-    onNewHost, onNewFolder, onEditHost, onEditFolder, onSettings, onSync, onLock,
+    onNewHost, onNewFolder, onEditHost, onEditFolder, onExportFolder, onSettings, onSync, onLock,
   }: {
     onNewHost: (folder: Id | null) => void;
     onNewFolder: (parent: Id | null) => void;
     onEditHost: (h: HostView) => void;
     onEditFolder: (f: FolderView) => void;
+    onExportFolder: (folder: Id) => void;
     onSettings: () => void;
     onSync: () => void;
     onLock: () => void;
@@ -312,6 +313,7 @@
       <button role="menuitem" onclick={() => onNewHost(menuFolder.id)}><Icon name="plus" /> Nowy host tutaj</button>
       <button role="menuitem" onclick={() => onNewFolder(menuFolder.id)}><Icon name="folder" /> Nowy podkatalog</button>
       <button role="menuitem" onclick={() => onEditFolder(menuFolder)}><Icon name="sliders" /> Właściwości</button>
+      <button role="menuitem" onclick={() => onExportFolder(menuFolder.id)}><Icon name="upload" /> Eksportuj...</button>
       <hr />
       <button role="menuitem" class="danger" onclick={() => askDelete('folder', menuFolder.id)}><Icon name="trash" /> Usuń</button>
     {:else}

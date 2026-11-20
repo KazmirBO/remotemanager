@@ -1,5 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { createAcker } from './sshAck';
+import type { ExportDone, ImportReport, ImportSummary, Parts } from './transfer';
 
 export type Protocol = 'ssh' | 'rdp';
 export type Id = string;
@@ -163,6 +164,14 @@ export const api = {
   setLogSessions: (enabled: boolean) => call<void>('set_log_sessions', { enabled }),
   resolveLink: (url: string) => call<LinkView>('resolve_link', { url }),
   takePendingLink: () => call<string | null>('take_pending_link'),
+  exportDefaultPath: () => call<string>('export_default_path'),
+  exportHosts: (path: string, password: string, parts: Parts, folder: Id | null) =>
+    call<ExportDone>('export_hosts', { path, password, parts, folder }),
+  // Plik importu idzie do backendu jako zaszyfrowane bajty; interfejs nie widzi jego treści.
+  importPreview: (data: Uint8Array, password: string) =>
+    call<ImportSummary>('import_preview', { data: Array.from(data), password }),
+  importHosts: (data: Uint8Array, password: string, parts: Parts, existing: 'skip' | 'update') =>
+    call<ImportReport>('import_hosts', { data: Array.from(data), password, parts, existing }),
   answerTrust: (id: string, accept: boolean, remember: boolean) =>
     call<void>('answer_trust', { id, accept, remember }),
   sshResize: (id: string, cols: number, rows: number) => call<void>('ssh_resize', { id, cols, rows }),

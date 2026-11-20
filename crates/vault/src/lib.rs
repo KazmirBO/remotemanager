@@ -17,6 +17,10 @@ use serde::de::DeserializeOwned;
 use zeroize::Zeroizing;
 
 const MAGIC: &[u8; 4] = b"MRMV";
+/// Znacznik pakietu eksportu hostów. Układ nagłówka i szyfr są takie same jak w pliku z hostami,
+/// ale inny znacznik sprawia, że pakietu nie da się otworzyć, przywrócić ani zsynchronizować jako
+/// pliku z hostami, a pliku z hostami nie da się zaimportować jako pakietu.
+const EXPORT_MAGIC: &[u8; 4] = b"MRMX";
 /// Aktualna wersja formatu pliku.
 pub const FORMAT_VERSION: u8 = 1;
 const SALT_LEN: usize = 16;
@@ -35,6 +39,8 @@ pub enum Error {
     Io(#[from] io::Error),
     #[error("to nie jest plik z hostami (zły nagłówek)")]
     BadMagic,
+    #[error("to nie jest plik eksportu hostów")]
+    NotExport,
     #[error("plik jest uszkodzony lub obcięty")]
     Truncated,
     #[error("nieobsługiwana wersja formatu: {0}")]
@@ -111,9 +117,14 @@ fn derive_key(password: &[u8], salt: &[u8], kdf: KdfParams) -> Result<Zeroizing<
     Ok(key)
 }
 
-fn encode_header(kdf: KdfParams, salt: &[u8; SALT_LEN], nonce: &[u8; NONCE_LEN]) -> Vec<u8> {
+fn encode_header(
+    magic: &[u8; 4],
+    kdf: KdfParams,
+    salt: &[u8; SALT_LEN],
+    nonce: &[u8; NONCE_LEN],
+) -> Vec<u8> {
     let mut h = Vec::with_capacity(HEADER_LEN);
-    h.extend_from_slice(MAGIC);
+    h.extend_from_slice(magic);
     h.push(FORMAT_VERSION);
     h.extend_from_slice(&kdf.m_cost.to_le_bytes());
     h.extend_from_slice(&kdf.t_cost.to_le_bytes());
@@ -121,6 +132,37 @@ fn encode_header(kdf: KdfParams, salt: &[u8; SALT_LEN], nonce: &[u8; NONCE_LEN])
     h.extend_from_slice(salt);
     h.extend_from_slice(nonce);
     h
+}
+
+/// Szyfruje dokument do postaci pliku: nagłówek ze znacznikiem `magic` i szyfrogram.
+fn encrypt<T: Serialize>(
+    magic: &[u8; 4],
+    key: &[u8; 32],
+    kdf: KdfParams,
+    salt: &[u8; SALT_LEN],
+    doc: &T,
+) -> Result<Vec<u8>> {
+    // Bufor jawnego JSON-a o z góry znanej pojemności: `to_vec` rosłoby przez realokacje,
+    // a porzucone porcje z hasłami nie byłyby zerowane.
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, doc)?;
+    let mut plain = Zeroizing::new(Vec::with_capacity(counter.0));
+    serde_json::to_writer(&mut *plain, doc)?;
+    let nonce = random::<NONCE_LEN>()?;
+    let header = encode_header(magic, kdf, salt, &nonce);
+    let cipher = XChaCha20Poly1305::new_from_slice(key).map_err(|_| Error::Encrypt)?;
+    let ct = cipher
+        .encrypt(
+            &XNonce::from(nonce),
+            Payload {
+                msg: &plain,
+                aad: &header,
+            },
+        )
+        .map_err(|_| Error::Encrypt)?;
+    let mut out = header;
+    out.extend_from_slice(&ct);
+    Ok(out)
 }
 
 /// Licznik bajtów udający `Write`: pozwala poznać długość serializacji przed właściwym zapisem.
@@ -314,26 +356,7 @@ impl Vault {
         doc: &T,
         rotate: bool,
     ) -> Result<()> {
-        // Bufor jawnego JSON-a o z góry znanej pojemności: `to_vec` rosłoby przez realokacje,
-        // a porzucone porcje z hasłami nie byłyby zerowane.
-        let mut counter = Counter(0);
-        serde_json::to_writer(&mut counter, doc)?;
-        let mut plain = Zeroizing::new(Vec::with_capacity(counter.0));
-        serde_json::to_writer(&mut *plain, doc)?;
-        let nonce = random::<NONCE_LEN>()?;
-        let header = encode_header(self.kdf, salt, &nonce);
-        let cipher = XChaCha20Poly1305::new_from_slice(key).map_err(|_| Error::Encrypt)?;
-        let ct = cipher
-            .encrypt(
-                &XNonce::from(nonce),
-                Payload {
-                    msg: &plain,
-                    aad: &header,
-                },
-            )
-            .map_err(|_| Error::Encrypt)?;
-        let mut out = header;
-        out.extend_from_slice(&ct);
+        let out = encrypt(MAGIC, key, self.kdf, salt, doc)?;
         let tmp = write_tmp(&self.path, &out)?;
         let committed = (|| -> io::Result<()> {
             if rotate && self.backups > 0 && self.path.exists() {
@@ -374,7 +397,14 @@ pub fn validate_file(path: &Path) -> Result<()> {
 }
 
 fn parse_header(data: &[u8]) -> Result<(KdfParams, [u8; SALT_LEN], [u8; NONCE_LEN])> {
-    if data.len() < 4 || &data[..4] != MAGIC {
+    parse_header_as(MAGIC, data)
+}
+
+fn parse_header_as(
+    magic: &[u8; 4],
+    data: &[u8],
+) -> Result<(KdfParams, [u8; SALT_LEN], [u8; NONCE_LEN])> {
+    if data.len() < 4 || &data[..4] != magic {
         return Err(Error::BadMagic);
     }
     if data.len() < HEADER_LEN + 16 {
@@ -425,6 +455,31 @@ pub fn open_backup<T: DeserializeOwned>(backup: &Path, password: &str) -> Result
     let (kdf, salt, nonce) = parse_header(&data)?;
     let key = derive_key(password.as_bytes(), &salt, kdf)?;
     decrypt(&key, &data, &nonce)
+}
+
+/// Szyfruje pakiet eksportu hasłem podanym przy eksporcie (własna sól, Argon2id jak w pliku
+/// z hostami). Zwraca gotową zawartość pliku; zapis należy do wywołującego.
+pub fn seal_export<T: Serialize>(password: &str, kdf: KdfParams, doc: &T) -> Result<Vec<u8>> {
+    let salt = random::<SALT_LEN>()?;
+    let key = derive_key(password.as_bytes(), &salt, kdf)?;
+    encrypt(EXPORT_MAGIC, &key, kdf, &salt, doc)
+}
+
+/// Odszyfrowuje pakiet eksportu. Dane bez znacznika pakietu (także plik z hostami) dają
+/// `NotExport`, złe hasło albo uszkodzenie `Decrypt`. Parametry KDF z nagłówka przechodzą te same
+/// granice co przy pliku z hostami, bo pakiet pochodzi z zewnątrz.
+pub fn open_export<T: DeserializeOwned>(data: &[u8], password: &str) -> Result<T> {
+    let (kdf, salt, nonce) = parse_header_as(EXPORT_MAGIC, data).map_err(|e| match e {
+        Error::BadMagic => Error::NotExport,
+        e => e,
+    })?;
+    let key = derive_key(password.as_bytes(), &salt, kdf)?;
+    decrypt(&key, data, &nonce)
+}
+
+/// Czy dane zaczynają się jak plik z hostami (do czytelnego komunikatu przy pomyłce plików).
+pub fn looks_like_vault(data: &[u8]) -> bool {
+    data.len() >= 4 && &data[..4] == MAGIC
 }
 
 /// Ścieżka kopii o numerze `n` (1 = najnowsza).
@@ -745,6 +800,57 @@ mod tests {
             let mode = fs::metadata(&f).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "{}", f.display());
         }
+    }
+
+    #[test]
+    fn export_round_trip_and_separation_from_vault_files() {
+        let doc = doc(2);
+        let sealed = seal_export("haslo-eksportu", KdfParams::FAST_FOR_TESTS, &doc).unwrap();
+        assert_eq!(&sealed[..4], b"MRMX");
+        assert!(!looks_like_vault(&sealed));
+        let back: Doc = open_export(&sealed, "haslo-eksportu").unwrap();
+        assert_eq!(back, doc);
+        // Każdy eksport ma własną sól i nonce.
+        let again = seal_export("haslo-eksportu", KdfParams::FAST_FOR_TESTS, &doc).unwrap();
+        assert_ne!(sealed, again);
+        // Złe hasło, uszkodzony bajt treści i nagłówka.
+        assert!(matches!(
+            open_export::<Doc>(&sealed, "inne"),
+            Err(Error::Decrypt)
+        ));
+        let mut bad = sealed.clone();
+        *bad.last_mut().unwrap() ^= 1;
+        assert!(matches!(
+            open_export::<Doc>(&bad, "haslo-eksportu"),
+            Err(Error::Decrypt)
+        ));
+        let mut bad = sealed.clone();
+        bad[20] ^= 1;
+        assert!(matches!(
+            open_export::<Doc>(&bad, "haslo-eksportu"),
+            Err(Error::Decrypt)
+        ));
+        assert!(matches!(
+            open_export::<Doc>(&sealed[..30], "haslo-eksportu"),
+            Err(Error::Truncated)
+        ));
+        // Pakiet nie jest plikiem z hostami: nie otworzy się ani nie przejdzie walidacji.
+        let path = tmp("eksport-jako-sejf");
+        fs::write(&path, &sealed).unwrap();
+        assert!(matches!(validate_file(&path), Err(Error::BadMagic)));
+        assert!(matches!(
+            Vault::open::<Doc>(&path, "haslo-eksportu"),
+            Err(Error::BadMagic)
+        ));
+        // A plik z hostami nie jest pakietem, nawet z tym samym hasłem.
+        let path = tmp("sejf-jako-eksport");
+        Vault::create(&path, "haslo-eksportu", KdfParams::FAST_FOR_TESTS, &doc).unwrap();
+        let data = fs::read(&*path).unwrap();
+        assert!(looks_like_vault(&data));
+        assert!(matches!(
+            open_export::<Doc>(&data, "haslo-eksportu"),
+            Err(Error::NotExport)
+        ));
     }
 
     #[test]
