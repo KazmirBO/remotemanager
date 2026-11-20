@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+pub mod diff;
 pub mod link;
 pub mod transfer;
 

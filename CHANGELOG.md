@@ -2,6 +2,12 @@
 
 Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `wydanie`).
 
+## Niewydane
+
+Zmiany na gałęzi roboczej, które wejdą do następnego wydania.
+
+- Synchronizacja: przycisk "Pokaż różnice" w Ustawieniach (kategoria Synchronizacja) przy zmianach lokalnych, zmianach zdalnych i konflikcie. Lista pokazuje hosty i katalogi, które są tylko u Ciebie, tylko w folderze albo różnią się po obu stronach, a dla różniących się wymienia, co się zmieniło: nazwę, adres, protokół i położenie z obiema wartościami, pozostałe dane jako nazwy (np. hasło, opcje połączenia, notatki), bez ich treści. Osobno podaje różnice w ustawieniach domyślnych drzewa, zaufanych kluczach i ustawieniach programu. Lista jest tylko do oglądania: synchronizacja nadal dotyczy całego pliku. Gdy plik w folderze ma inne hasło główne, porównanie nie jest możliwe i program to mówi.
+
 ## 0.1.1-rc1 - 2026-11-20
 
 Wydanie wstępne, kandydat do wersji 0.1.1: pakiety są niepodpisane.
