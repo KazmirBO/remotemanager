@@ -1,5 +1,6 @@
 import { api, type DocView, type QuitRequest, type SyncView, type HostView, type Id, type Protocol, type Settings, type VaultState } from './api';
 import { loadBarPos, saveBarPos, type BarPos } from './rdpBar';
+import { dropIndex, moveItem } from './tabOrder';
 
 export interface Tab {
   id: string;
@@ -10,6 +11,10 @@ export interface Tab {
   generation: number;
   /** Sesja połączona. */
   live: boolean;
+  /** Numer kolejny otwarcia karty. Widoki sesji są ułożone według niego, a nie według kolejności
+   * kart, więc przestawienie karty nie rusza widoku w dokumencie (przeniesienie węzła odbierałoby
+   * fokus terminalowi albo pulpitowi). */
+  seq: number;
 }
 
 export interface PasswordPrompt {
@@ -113,12 +118,14 @@ export function host(id: Id): HostView | undefined {
   return ui.doc?.hosts.find((h) => h.id === id);
 }
 
+let tabSeq = 0;
+
 export function openHost(h: HostView) {
   const titles = new Set(ui.tabs.filter((t) => t.hostId === h.id).map((t) => t.title));
   let title = h.name;
   for (let n = 2; titles.has(title); n++) title = `${h.name} (${n})`;
   const id = crypto.randomUUID();
-  ui.tabs.push({ id, hostId: h.id, protocol: h.protocol, title, generation: 0, live: false });
+  ui.tabs.push({ id, hostId: h.id, protocol: h.protocol, title, generation: 0, live: false, seq: ++tabSeq });
   ui.activeTab = id;
 }
 
@@ -127,6 +134,21 @@ export function closeTab(id: string) {
   if (i < 0) return;
   ui.tabs.splice(i, 1);
   if (ui.activeTab === id) ui.activeTab = ui.tabs[Math.min(i, ui.tabs.length - 1)]?.id ?? null;
+}
+
+/** Przesuwa kartę o jedno miejsce w lewo (`-1`) albo w prawo (`1`); na skraju nic nie robi. */
+export function moveTab(id: string, delta: -1 | 1) {
+  const i = ui.tabs.findIndex((t) => t.id === id);
+  if (i < 0) return;
+  ui.tabs = moveItem(ui.tabs, i, i + delta);
+}
+
+/** Przenosi kartę `id` przed albo za kartę `targetId` (upuszczenie przy przeciąganiu). */
+export function moveTabNextTo(id: string, targetId: string, after: boolean) {
+  const from = ui.tabs.findIndex((t) => t.id === id);
+  const target = ui.tabs.findIndex((t) => t.id === targetId);
+  if (from < 0 || target < 0) return;
+  ui.tabs = moveItem(ui.tabs, from, dropIndex(from, target, after));
 }
 
 export function setTabLive(id: string, live: boolean) {

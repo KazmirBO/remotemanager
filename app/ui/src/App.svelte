@@ -18,8 +18,8 @@
   import Unlock from './lib/Unlock.svelte';
   import { allowedWithModal, binding, matchAppAction, tabNumber } from './lib/shortcuts';
   import { api } from './lib/api';
-  import { plural } from './lib/tree';
-  import { answerCloseTabs, applyTheme, host as hostById, init, lockVault, modalOpen, notify, onLocked, openHost, reconnect, refreshSync, reportActivity, requestCloseTabs, ui } from './lib/store.svelte';
+  import { edgeScrollSpeed, plural } from './lib/tree';
+  import { answerCloseTabs, applyTheme, host as hostById, init, lockVault, modalOpen, moveTab, moveTabNextTo, notify, onLocked, openHost, reconnect, refreshSync, reportActivity, requestCloseTabs, ui } from './lib/store.svelte';
 
   type Dialog =
     | { kind: 'host'; host: HostView | null; folder: Id | null; prefill?: Prefill | null }
@@ -129,6 +129,8 @@
         if (host) openHost(host);
         break;
       }
+      case 'move_tab_left': if (ui.activeTab) moveTab(ui.activeTab, -1); break;
+      case 'move_tab_right': if (ui.activeTab) moveTab(ui.activeTab, 1); break;
       case 'focus_search': {
         const search = document.getElementById('host-search');
         if (search instanceof HTMLInputElement) {
@@ -178,10 +180,80 @@
     tabsEl.scrollLeft += e.deltaY;
   }
 
-  // Aktywna karta ma być widoczna także po przełączeniu skrótem albo otwarciu nowej sesji.
+  // Widoki sesji w kolejności otwarcia, niezależnie od kolejności kart: przestawienie karty nie
+  // przenosi wtedy widoku w dokumencie, więc terminal ani pulpit nie tracą fokusu.
+  const stageTabs = $derived([...ui.tabs].sort((a, b) => a.seq - b.seq));
+
+  // Przeciąganie kart na pasku. Własny typ danych sprawia, że drzewo hostów nie bierze karty za hosta.
+  const TAB_DRAG = 'application/x-mrm-tab';
+  let dragTab = $state<string | null>(null);
+  let dropMark = $state<{ id: string; after: boolean } | null>(null);
+  let tabScrollSpeed = 0;
+  let tabScrollFrame = 0;
+
+  function tabDragStart(e: DragEvent, id: string) {
+    e.dataTransfer?.setData(TAB_DRAG, id);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    dragTab = id;
+    tabMenu = null;
+  }
+
+  function tabDragEnd() {
+    dragTab = null;
+    dropMark = null;
+    tabScrollSpeed = 0;
+  }
+
+  /** Karta, nad którą jest wskaźnik: lewa połowa oznacza wstawienie przed nią, prawa za nią. */
+  function tabDragOver(e: DragEvent, id: string) {
+    if (!dragTab) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    dropMark = id === dragTab ? null : { id, after: e.clientX > r.left + r.width / 2 };
+    tabDragScroll(e);
+  }
+
+  /** Wolne miejsce paska za ostatnią kartą: wstawienie na koniec. */
+  function tabsDragOver(e: DragEvent) {
+    if (!dragTab) return;
+    e.preventDefault();
+    const last = ui.tabs[ui.tabs.length - 1];
+    dropMark = last && last.id !== dragTab ? { id: last.id, after: true } : null;
+    tabDragScroll(e);
+  }
+
+  function tabDrop(e: DragEvent) {
+    if (!dragTab) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (dropMark) moveTabNextTo(dragTab, dropMark.id, dropMark.after);
+    tabDragEnd();
+  }
+
+  // Podczas przeciągania przeglądarka nie dostarcza zdarzeń kółka, więc pasek przewija się sam,
+  // gdy wskaźnik jest przy jego lewej albo prawej krawędzi (jak lista hostów w pionie).
+  function tabDragScroll(e: DragEvent) {
+    if (!tabsEl) return;
+    const r = tabsEl.getBoundingClientRect();
+    tabScrollSpeed = edgeScrollSpeed(e.clientX, r.left, r.right);
+    if (tabScrollSpeed && !tabScrollFrame) tabScrollFrame = requestAnimationFrame(tabScrollStep);
+  }
+
+  function tabScrollStep() {
+    tabScrollFrame = 0;
+    if (!dragTab || !tabScrollSpeed || !tabsEl) return;
+    tabsEl.scrollLeft += tabScrollSpeed;
+    tabScrollFrame = requestAnimationFrame(tabScrollStep);
+  }
+
+  // Aktywna karta ma być widoczna także po przełączeniu skrótem, otwarciu nowej sesji albo
+  // przestawieniu kart.
   $effect(() => {
     const id = ui.activeTab;
     void ui.tabs.length;
+    void ui.tabs.map((t) => t.id).join();
     if (!id) return;
     queueMicrotask(() => {
       const el = Array.from(tabsEl?.children ?? []).find((c) => (c as HTMLElement).dataset.tab === id);
@@ -221,9 +293,15 @@
       onLock={lockVault}
     />
     <main>
-      <div class="tabs" role="tablist" aria-label="Sesje" bind:this={tabsEl} onwheel={tabsWheel}>
+      <div class="tabs" role="tablist" aria-label="Sesje" tabindex="-1" bind:this={tabsEl} onwheel={tabsWheel}
+        ondragenter={tabsDragOver} ondragover={tabsDragOver} ondrop={tabDrop}>
         {#each ui.tabs as t (t.id)}
-          <div class="tab" class:active={ui.activeTab === t.id} role="presentation" data-tab={t.id} oncontextmenu={(e) => openTabMenu(e, t.id)}>
+          <div class="tab" class:active={ui.activeTab === t.id} class:dragged={dragTab === t.id}
+            class:drop-before={dropMark?.id === t.id && !dropMark.after} class:drop-after={dropMark?.id === t.id && dropMark.after}
+            role="presentation" data-tab={t.id} draggable="true"
+            ondragstart={(e) => tabDragStart(e, t.id)} ondragend={tabDragEnd}
+            ondragenter={(e) => tabDragOver(e, t.id)} ondragover={(e) => tabDragOver(e, t.id)} ondrop={tabDrop}
+            oncontextmenu={(e) => openTabMenu(e, t.id)}>
             <button role="tab" aria-selected={ui.activeTab === t.id} title={t.title} onclick={() => (ui.activeTab = t.id)}>
               <span class="badge {t.protocol}">{t.protocol.toUpperCase()}</span> <span class="tab-title">{t.title}</span>
             </button>
@@ -238,7 +316,7 @@
         </div>
       </div>
       <div class="stage">
-        {#each ui.tabs as t (t.id)}
+        {#each stageTabs as t (t.id)}
           {#key t.generation}
             {#if t.protocol === 'rdp'}
               <RdpView tabId={t.id} hostId={t.hostId} active={ui.activeTab === t.id} />
@@ -328,6 +406,9 @@
     <button role="menuitem" onclick={() => reconnect(tab.id)}><Icon name="refresh" /> Połącz ponownie</button>
     <button role="menuitem" disabled={!menuTabHost} onclick={() => menuTabHost && openHost(menuTabHost)}><Icon name="copy" /> Duplikuj kartę</button>
     <hr />
+    <button role="menuitem" disabled={ui.tabs[0]?.id === tab.id} onclick={() => moveTab(tab.id, -1)}><Icon name="chevron-left" /> Przesuń w lewo</button>
+    <button role="menuitem" disabled={ui.tabs[ui.tabs.length - 1]?.id === tab.id} onclick={() => moveTab(tab.id, 1)}><Icon name="chevron-right" /> Przesuń w prawo</button>
+    <hr />
     <button role="menuitem" onclick={() => requestCloseTabs([tab.id])}><Icon name="close" /> Zamknij kartę</button>
     <button role="menuitem" disabled={ui.tabs.length < 2} onclick={() => closeTabsExcept(tab.id)}><Icon name="close" /> Zamknij pozostałe</button>
     <button role="menuitem" onclick={() => closeTabsExcept(null)}><Icon name="close" /> Zamknij wszystkie</button>
@@ -358,6 +439,16 @@
   .tab > .x { flex-shrink: 0; }
   .tab.active { background: var(--terminal); box-shadow: inset 0 -2px 0 var(--accent); }
   .tab:not(.active):hover { background: var(--hover); }
+  /* Przeciąganie: przenoszona karta blednie, a kreska przy krawędzi karty pod wskaźnikiem pokazuje,
+     gdzie trafi upuszczona (znaczenie niesie położenie kreski, nie kolor). */
+  /* Pasek ma tabindex tylko ze względu na obsługę upuszczania; fokus po kliknięciu wolnego miejsca
+     nie ma nic pokazywać. */
+  .tabs:focus { outline: none; }
+  .tab.dragged { opacity: 0.5; }
+  .tab.drop-before { box-shadow: inset 3px 0 0 var(--text); }
+  .tab.drop-after { box-shadow: inset -3px 0 0 var(--text); }
+  .tab.active.drop-before { box-shadow: inset 3px 0 0 var(--text), inset 0 -2px 0 var(--accent); }
+  .tab.active.drop-after { box-shadow: inset -3px 0 0 var(--text), inset 0 -2px 0 var(--accent); }
   .add { position: sticky; right: 0; flex-shrink: 0; display: flex; align-items: center; padding: 0 6px; background: var(--panel); }
   .stage { flex: 1; position: relative; background: var(--terminal); min-height: 0; }
   .welcome { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center; text-align: center; padding: 16px; }
