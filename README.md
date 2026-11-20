@@ -6,7 +6,7 @@ Nazwa "Menedżer sesji" i polecenie `multiremotemanager` są robocze.
 
 ## Stan projektu
 
-Wczesna wersja rozwojowa. Bieżące wydanie to 0.1.0; pakiety są niepodpisane: instalator dla Windows i deb; opis zmian jest w [CHANGELOG.md](CHANGELOG.md). Wcześniejsze wydania wstępne mają numery 0.0.0-0.0.5 (do 20.11.2026 nosiły numery 0.1.0-0.1.5 i ich instalatory nadal je zgłaszają). Rozwijana i używana na Linuksie (Gentoo, KDE na Waylandzie). Kod jest pisany także pod Windows: instalator był uruchamiany na Windows, a sesje RDP i przechwytywanie klawiszy (hak klawiatury, od 0.0.3) potwierdzono tam w 0.0.4, ale większość funkcji nie ma na Windows pełnego sprawdzenia.
+Wczesna wersja rozwojowa. Bieżące wydanie to 0.1.0, a wydanie wstępne 0.1.1-rc1 dodaje eksport i import hostów; pakiety są niepodpisane: instalator dla Windows i deb; opis zmian jest w [CHANGELOG.md](CHANGELOG.md). Wcześniejsze wydania wstępne mają numery 0.0.0-0.0.5 (do 20.11.2026 nosiły numery 0.1.0-0.1.5 i ich instalatory nadal je zgłaszają). Rozwijana i używana na Linuksie (Gentoo, KDE na Waylandzie). Kod jest pisany także pod Windows: instalator był uruchamiany na Windows, a sesje RDP i przechwytywanie klawiszy (hak klawiatury, od 0.0.3) potwierdzono tam w 0.0.4, ale większość funkcji nie ma na Windows pełnego sprawdzenia.
 
 Sprawdzone w działaniu: sesje SSH (także przez bastion), sesje RDP z NLA, zmiana rozdzielczości pulpitu razem z oknem i schowek w obie strony. Niesprawdzone: Kerberos z prawdziwym KDC oraz dodane 16.11.2026 lokalny kursor RDP, profil łącza, przechwytywanie klawiszy na Linuksie (na Windows potwierdzone w 0.0.4) i renderer WebGL terminala. Szczegóły i lista rzeczy niezweryfikowanych są w [PROJECT.md](PROJECT.md).
 
