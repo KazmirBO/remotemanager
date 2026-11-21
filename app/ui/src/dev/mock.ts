@@ -245,6 +245,42 @@ const handlers: Record<string, Handler> = {
     diag.push(`${Math.floor(Date.now() / 1000)} synchronizacja (atrapa)`);
     return { view: syncView(), locked };
   },
+  // Różnice do oglądania: stała próbka; `?sync_diff=other` udaje plik z innym hasłem głównym.
+  sync_diff: () => {
+    if (!syncFolder) throw 'Synchronizacja nie jest skonfigurowana.';
+    if (syncStatus === 'brak_pliku') throw 'W folderze synchronizacji nie ma jeszcze pliku z hostami.';
+    if (params.get('sync_diff') === 'other') return { readable: false, diff: null };
+    const empty = { folders: [], hosts: [], defaults: [], trusted_local_only: 0, trusted_remote_only: 0, settings_differ: false };
+    if (syncStatus === 'aktualny') return { readable: true, diff: empty };
+    const item = (id: string, name: string, path: string, address: string | null, protocol: string | null, side: string, changes: unknown[] = []) =>
+      ({ id, name, path, address, protocol, side, changes });
+    return {
+      readable: true,
+      diff: {
+        ...empty,
+        folders: [item('d-f1', 'Test', 'Firma', null, null, 'remote_only')],
+        hosts: [
+          item('h4', 'raspberry', '', '192.168.1.50', 'ssh', 'local_only'),
+          item('d-h1', 'web-03', 'Firma / Test', '10.0.7.13', 'ssh', 'remote_only'),
+          item('d-h2', 'term-01', 'Firma / Test', 'term-01.firma.example', 'rdp', 'remote_only'),
+          item('h2', 'db-01', 'Firma / Produkcja', '10.0.5.21', 'ssh', 'changed', [
+            { kind: 'address', local: '10.0.5.21', remote: '10.0.5.121' },
+            { kind: 'location', local: 'Firma / Produkcja', remote: '' },
+            { kind: 'part', part: 'passwords' },
+            { kind: 'part', part: 'options' },
+          ]),
+          item('h3', 'dc01', 'Firma / Produkcja', 'dc01.firma.example', 'rdp', 'changed', [
+            { kind: 'name', local: 'dc01', remote: 'dc01-stary' },
+            { kind: 'notes' },
+          ]),
+        ],
+        defaults: ['options'],
+        trusted_local_only: 1,
+        trusted_remote_only: 2,
+        settings_differ: true,
+      },
+    };
+  },
   list_backups: () => [1, 2, 3].map((n) => ({ n, modified: Math.floor(Date.now() / 1000) - n * 3600, size: 2048 + n * 100 })),
   restore_backup: ({ password: pw }) => { if (pw !== password) throw 'Nieprawidłowe hasło dla tej kopii albo uszkodzona kopia.'; },
   // Eksport i import: atrapa nie szyfruje. Eksport tylko liczy elementy, a import przyjmuje każdy
@@ -335,8 +371,9 @@ const handlers: Record<string, Handler> = {
   rdp_clipboard_focus: () => {},
 };
 
-let syncFolder: string | null = null;
-let syncStatus = 'aktualny';
+// `?sync=konflikt` (albo zdalne_zmiany, lokalne_zmiany) zaczyna od skonfigurowanej synchronizacji w tym stanie.
+let syncFolder: string | null = params.get('sync') ? '/home/użytkownik/Synchronizacja' : null;
+let syncStatus = params.get('sync') ?? 'aktualny';
 let logSessions = false;
 let backupCount = 5;
 const diag: string[] = [`${Math.floor(Date.now() / 1000)} odblokowano plik z hostami (atrapa)`];

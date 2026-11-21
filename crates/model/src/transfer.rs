@@ -157,6 +157,51 @@ fn keep(fields: &Fields, parts: Parts) -> Fields {
     mix(&Fields::default(), fields, parts)
 }
 
+/// Kategoria pól dziedziczonych (bez notatek i zaufanych kluczy, które polami nie są). Służy do
+/// nazywania różnic między dwiema wersjami hosta bez ujawniania wartości.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldPart {
+    Usernames,
+    Passwords,
+    SshKeys,
+    KeyPaths,
+    Options,
+    LoginCommand,
+}
+
+impl FieldPart {
+    pub const ALL: [Self; 6] = [
+        Self::Usernames,
+        Self::Passwords,
+        Self::SshKeys,
+        Self::KeyPaths,
+        Self::Options,
+        Self::LoginCommand,
+    ];
+
+    fn parts(self) -> Parts {
+        let mut p = Parts::default();
+        match self {
+            Self::Usernames => p.usernames = true,
+            Self::Passwords => p.passwords = true,
+            Self::SshKeys => p.ssh_keys = true,
+            Self::KeyPaths => p.key_paths = true,
+            Self::Options => p.options = true,
+            Self::LoginCommand => p.login_command = true,
+        }
+        p
+    }
+}
+
+/// Kategorie, w których dwa zestawy pól się różnią.
+pub fn differing(a: &Fields, b: &Fields) -> Vec<FieldPart> {
+    FieldPart::ALL
+        .into_iter()
+        .filter(|part| keep(a, part.parts()) != keep(b, part.parts()))
+        .collect()
+}
+
 /// Zawartość pliku eksportu. Celowo bez `Debug`: pakiet niesie hasła, klucze i polecenia, których
 /// nie wolno logować.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -649,6 +694,28 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(keep(&all, other), Fields::default());
+    }
+
+    #[test]
+    fn differing_names_exactly_the_changed_categories() {
+        let all = Fields::all_set();
+        assert!(differing(&all, &all).is_empty());
+        // Każda kategoria z osobna, a razem wszystkie pola: zmiana dowolnego pola jest widoczna.
+        assert_eq!(differing(&all, &Fields::default()), FieldPart::ALL.to_vec());
+        let mut b = all.clone();
+        b.password = Some("inne".into());
+        b.port = Some(1);
+        assert_eq!(
+            differing(&all, &b),
+            vec![FieldPart::Passwords, FieldPart::Options]
+        );
+        let mut b = all.clone();
+        b.domain = None;
+        assert_eq!(differing(&all, &b), vec![FieldPart::Usernames]);
+        assert_eq!(
+            serde_json::to_string(&FieldPart::ALL).unwrap(),
+            r#"["usernames","passwords","ssh_keys","key_paths","options","login_command"]"#
+        );
     }
 
     #[test]

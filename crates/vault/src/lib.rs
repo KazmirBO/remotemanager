@@ -320,6 +320,19 @@ impl Vault {
         Ok(Verified::SameKey)
     }
 
+    /// Odszyfrowuje inny plik kluczem z pamięci, bez pytania o hasło (np. plik z folderu
+    /// synchronizacji, żeby pokazać różnice). Ta sama sól to ten sam klucz: wynik to
+    /// `Some(dokument)`, a uszkodzenie albo inne parametry KDF dają błąd, jak w `verify_file`.
+    /// Inna sól (hasło główne zmienione gdzie indziej) daje `None`, bo nie ma czym odszyfrować.
+    pub fn read_file<T: DeserializeOwned>(&self, path: &Path) -> Result<Option<T>> {
+        let data = fs::read(path)?;
+        let (_, salt, nonce) = parse_header(&data)?;
+        if salt != self.salt {
+            return Ok(None);
+        }
+        decrypt(&self.key, &data, &nonce).map(Some)
+    }
+
     pub fn set_backup_count(&mut self, n: usize) {
         self.backups = n;
     }
@@ -800,6 +813,36 @@ mod tests {
             let mode = fs::metadata(&f).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "{}", f.display());
         }
+    }
+
+    #[test]
+    fn read_file_decrypts_same_key_and_declines_other_key() {
+        let p = tmp("read-file");
+        let v = Vault::create(&p, "haslo", KdfParams::FAST_FOR_TESTS, &doc(1)).unwrap();
+        // Kopia pliku z późniejszą zawartością (ten sam klucz, jak plik z folderu synchronizacji).
+        let other = p.dir.join("zdalny.mrm");
+        v.save(&doc(3)).unwrap();
+        fs::copy(&*p, &other).unwrap();
+        v.save(&doc(1)).unwrap();
+        assert_eq!(v.read_file::<Doc>(&other).unwrap(), Some(doc(3)));
+        // Uszkodzony bajt treści: błąd, nie pusty wynik.
+        let mut bytes = fs::read(&other).unwrap();
+        *bytes.last_mut().unwrap() ^= 1;
+        let broken = p.dir.join("uszkodzony.mrm");
+        fs::write(&broken, &bytes).unwrap();
+        assert!(matches!(v.read_file::<Doc>(&broken), Err(Error::Decrypt)));
+        // Plik z innym hasłem (inna sól): nie da się odczytać bez hasła.
+        let foreign = p.dir.join("obcy.mrm");
+        Vault::create(&foreign, "inne", KdfParams::FAST_FOR_TESTS, &doc(2)).unwrap();
+        assert_eq!(v.read_file::<Doc>(&foreign).unwrap(), None);
+        // To nie plik z hostami.
+        let junk = p.dir.join("smieci.mrm");
+        fs::write(&junk, b"cokolwiek").unwrap();
+        assert!(matches!(v.read_file::<Doc>(&junk), Err(Error::BadMagic)));
+        assert!(matches!(
+            v.read_file::<Doc>(&p.dir.join("brak.mrm")),
+            Err(Error::Io(_))
+        ));
     }
 
     #[test]
