@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptyFields, type FolderView } from './api';
-import { PARTS, defaultParts, exportPasswordError, exportText, folderChoices, reportText, summaryText, type ImportReport, type Parts } from './transfer';
+import { PARTS, defaultParts, exportPasswordError, exportText, folderChoices, importFormat, reportText, summaryText, type ImportReport, type Parts } from './transfer';
 
 const all = (v: boolean): Parts => Object.fromEntries(PARTS.map((p) => [p.id, v])) as Parts;
 const folder = (id: string, name: string, parent: string | null): FolderView => ({ id, name, parent, fields: emptyFields() });
@@ -36,6 +36,16 @@ describe('folderChoices', () => {
   it('nie zapętla się na cyklu katalogów', () => {
     const out = folderChoices([folder('a', 'A', 'b'), folder('b', 'B', 'a')]);
     expect(out.map((o) => o.label).sort()).toEqual(['A / B', 'B / A']);
+  });
+});
+
+describe('importFormat', () => {
+  it('rozpoznaje listę CSV po rozszerzeniu, bez względu na wielkość liter', () => {
+    expect(importFormat('serwery.csv')).toBe('csv');
+    expect(importFormat('SERWERY.CSV ')).toBe('csv');
+    expect(importFormat('hosty.mrmx')).toBe('mrmx');
+    expect(importFormat('lista.csv.mrmx')).toBe('mrmx');
+    expect(importFormat('bez-rozszerzenia')).toBe('mrmx');
   });
 });
 

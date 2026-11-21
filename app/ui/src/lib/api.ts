@@ -1,6 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { createAcker } from './sshAck';
-import type { ExportDone, ImportReport, ImportSummary, Parts } from './transfer';
+import type { ExportDone, ImportFormat, ImportReport, ImportSummary, Parts } from './transfer';
 import type { SyncDiff } from './syncDiff';
 
 export type Protocol = 'ssh' | 'rdp';
@@ -170,10 +170,10 @@ export const api = {
   exportHosts: (path: string, password: string, parts: Parts, folder: Id | null) =>
     call<ExportDone>('export_hosts', { path, password, parts, folder }),
   // Plik importu idzie do backendu jako zaszyfrowane bajty; interfejs nie widzi jego treści.
-  importPreview: (data: Uint8Array, password: string) =>
-    call<ImportSummary>('import_preview', { data: Array.from(data), password }),
-  importHosts: (data: Uint8Array, password: string, parts: Parts, existing: 'skip' | 'update') =>
-    call<ImportReport>('import_hosts', { data: Array.from(data), password, parts, existing }),
+  importPreview: (data: Uint8Array, password: string, format: ImportFormat) =>
+    call<ImportSummary>('import_preview', { data: Array.from(data), password, format }),
+  importHosts: (data: Uint8Array, password: string, format: ImportFormat, parts: Parts, existing: 'skip' | 'update') =>
+    call<ImportReport>('import_hosts', { data: Array.from(data), password, format, parts, existing }),
   answerTrust: (id: string, accept: boolean, remember: boolean) =>
     call<void>('answer_trust', { id, accept, remember }),
   sshResize: (id: string, cols: number, rows: number) => call<void>('ssh_resize', { id, cols, rows }),

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use model::transfer::{self, Existing, Package, Parts, Report, Summary};
 use model::{Fields, Id, StoredKey};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 use vault::KdfParams;
 use zeroize::Zeroizing;
@@ -258,11 +258,37 @@ fn import_err(e: transfer::Error) -> String {
     format!("Nie można zaimportować: {e}.")
 }
 
-/// Odszyfrowuje i sprawdza plik importu. Komunikaty nie zawierają treści pliku (błąd odczytu
-/// struktury mógłby przytoczyć wartość pola).
-fn open_package(data: &[u8], password: &str) -> Result<Package, String> {
+/// Rodzaj pliku importu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileFormat {
+    /// Zaszyfrowany plik eksportu.
+    #[default]
+    Mrmx,
+    /// Jawna lista hostów (nazwa, adres, protokół, katalog), bez haseł i opcji.
+    Csv,
+}
+
+/// Lista hostów z pliku CSV jako pakiet importu. Hasło nie jest używane.
+fn csv_package(data: &[u8]) -> Result<Package, String> {
+    let text = std::str::from_utf8(data).map_err(|_| {
+        "Plik CSV nie jest zapisany w kodowaniu UTF-8. Zapisz go jako UTF-8 i spróbuj ponownie."
+            .to_string()
+    })?;
+    model::csv::package_from_csv(text).map_err(|e| format!("Nie można odczytać pliku CSV: {e}."))
+}
+
+/// Odszyfrowuje (plik eksportu) albo czyta (CSV) i sprawdza plik importu. Komunikaty nie zawierają
+/// treści pliku (błąd odczytu struktury mógłby przytoczyć wartość pola).
+fn open_package(data: &[u8], password: &str, format: FileFormat) -> Result<Package, String> {
     if data.len() > MAX_IMPORT_FILE {
-        return Err("Plik jest za duży na plik eksportu hostów (limit 4 MiB).".into());
+        return Err("Plik jest za duży na plik importu hostów (limit 4 MiB).".into());
+    }
+    if format == FileFormat::Csv {
+        let mut pkg = csv_package(data)?;
+        transfer::check(&pkg).map_err(import_err)?;
+        clean(&mut pkg)?;
+        return Ok(pkg);
     }
     let mut pkg: Package = vault::open_export(data, password).map_err(|e| match e {
         vault::Error::NotExport if vault::looks_like_vault(data) => {
@@ -284,18 +310,23 @@ fn open_package(data: &[u8], password: &str) -> Result<Package, String> {
     Ok(pkg)
 }
 
-async fn open_blocking(data: Vec<u8>, password: Zeroizing<String>) -> Result<Package, String> {
-    tokio::task::spawn_blocking(move || open_package(&data, &password))
+async fn open_blocking(
+    data: Vec<u8>,
+    password: Zeroizing<String>,
+    format: FileFormat,
+) -> Result<Package, String> {
+    tokio::task::spawn_blocking(move || open_package(&data, &password, format))
         .await
         .map_err(blocking_err)?
 }
 
-async fn preview(
+async fn preview_as(
     state: &AppState,
     data: Vec<u8>,
     password: Zeroizing<String>,
+    format: FileFormat,
 ) -> Result<Summary, String> {
-    let pkg = open_blocking(data, password).await?;
+    let pkg = open_blocking(data, password, format).await?;
     state.read(|doc| Ok(transfer::summarize(doc, &pkg))).await
 }
 
@@ -305,18 +336,26 @@ pub async fn import_preview(
     state: State<'_, AppState>,
     data: Vec<u8>,
     password: String,
+    format: Option<FileFormat>,
 ) -> Result<Summary, String> {
-    preview(&state, data, Zeroizing::new(password)).await
+    preview_as(
+        &state,
+        data,
+        Zeroizing::new(password),
+        format.unwrap_or_default(),
+    )
+    .await
 }
 
-async fn import_from(
+async fn import_as(
     state: &AppState,
     data: Vec<u8>,
     password: Zeroizing<String>,
+    format: FileFormat,
     parts: Parts,
     existing: Existing,
 ) -> Result<Report, String> {
-    let pkg = open_blocking(data, password).await?;
+    let pkg = open_blocking(data, password, format).await?;
     let report = state
         .mutate(|doc| {
             let before = doc.tree.clone();
@@ -338,17 +377,26 @@ async fn import_from(
     Ok(report)
 }
 
-/// Importuje plik eksportu: bierze kategorie wybrane w `parts` (i obecne w pliku), a elementy już
-/// istniejące pomija albo aktualizuje. Cały import to jedna mutacja dokumentu.
+/// Importuje plik eksportu albo listę CSV: bierze kategorie wybrane w `parts` (i obecne w pliku),
+/// a elementy już istniejące pomija albo aktualizuje. Cały import to jedna mutacja dokumentu.
 #[tauri::command]
 pub async fn import_hosts(
     state: State<'_, AppState>,
     data: Vec<u8>,
     password: String,
+    format: Option<FileFormat>,
     parts: Parts,
     existing: Existing,
 ) -> Result<Report, String> {
-    import_from(&state, data, Zeroizing::new(password), parts, existing).await
+    import_as(
+        &state,
+        data,
+        Zeroizing::new(password),
+        format.unwrap_or_default(),
+        parts,
+        existing,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -359,6 +407,25 @@ mod tests {
     use vault::Vault;
 
     const FAST: KdfParams = KdfParams::FAST_FOR_TESTS;
+
+    /// Podgląd i import zaszyfrowanego pliku eksportu (większość testów).
+    async fn preview(
+        state: &AppState,
+        data: Vec<u8>,
+        password: Zeroizing<String>,
+    ) -> Result<Summary, String> {
+        preview_as(state, data, password, FileFormat::Mrmx).await
+    }
+
+    async fn import_from(
+        state: &AppState,
+        data: Vec<u8>,
+        password: Zeroizing<String>,
+        parts: Parts,
+        existing: Existing,
+    ) -> Result<Report, String> {
+        import_as(state, data, password, FileFormat::Mrmx, parts, existing).await
+    }
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("mrm-transfer-{name}-{}", std::process::id()));
@@ -746,6 +813,99 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn csv_list_is_previewed_imported_and_refreshed_without_password() {
+        let d = dir("csv");
+        let state = state_with(&d, Document::default()).await;
+        let csv = "nazwa,adres,protokol,katalog\n\
+            SRV-DC01,srv-dc01.example.com,rdp,Serwery/Kontrolery\n\
+            jump,jump.example.com,ssh,Serwery\n";
+        let sum = preview_as(&state, csv.as_bytes().to_vec(), pass(""), FileFormat::Csv)
+            .await
+            .unwrap();
+        assert_eq!((sum.folders_new, sum.hosts_new), (2, 2));
+        assert_eq!(sum.parts, Parts::default());
+        // Zaznaczone kategorie nie mają znaczenia: lista ich nie zawiera.
+        let r = import_as(
+            &state,
+            csv.as_bytes().to_vec(),
+            pass(""),
+            FileFormat::Csv,
+            Parts::ALL,
+            Existing::Skip,
+        )
+        .await
+        .unwrap();
+        assert_eq!((r.folders_added, r.hosts_added), (2, 2));
+        let dc = model::csv::host_id("srv-dc01.example.com");
+        state
+            .mutate(|doc| {
+                let h = doc.tree.hosts.iter_mut().find(|h| h.id == dc).unwrap();
+                assert_eq!(h.protocol, Protocol::Rdp);
+                h.fields.password = Some("moje-haslo".into());
+                Ok(())
+            })
+            .await
+            .unwrap();
+        // Odświeżona lista: zmieniona nazwa i nowy host; hasło ustawione lokalnie zostaje.
+        let refreshed = "nazwa;adres;protokol;katalog\r\n\
+            DC-01;srv-dc01.example.com;rdp;Serwery/Kontrolery\r\n\
+            jump;jump.example.com;ssh;Serwery\r\n\
+            nowy;nowy.example.com;rdp;Serwery\r\n";
+        let sum = preview_as(
+            &state,
+            refreshed.as_bytes().to_vec(),
+            pass(""),
+            FileFormat::Csv,
+        )
+        .await
+        .unwrap();
+        assert_eq!((sum.hosts_new, sum.hosts_existing), (1, 2));
+        let r = import_as(
+            &state,
+            refreshed.as_bytes().to_vec(),
+            pass(""),
+            FileFormat::Csv,
+            Parts::default(),
+            Existing::Update,
+        )
+        .await
+        .unwrap();
+        assert_eq!((r.hosts_added, r.hosts_updated), (1, 1));
+        state
+            .read(|doc| {
+                let h = doc.tree.host(dc).unwrap();
+                assert_eq!(h.name, "DC-01");
+                assert_eq!(h.fields.password.as_deref(), Some("moje-haslo"));
+                assert_eq!(doc.tree.hosts.len(), 3);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        // Błędy: zły wiersz, brak kolumny, nie UTF-8, plik eksportu podany jako CSV.
+        let bad = |text: &'static [u8]| {
+            let state = &state;
+            async move {
+                preview_as(state, text.to_vec(), pass(""), FileFormat::Csv)
+                    .await
+                    .unwrap_err()
+            }
+        };
+        let e = bad(b"nazwa,adres,protokol\na,a.example,telnet\n").await;
+        assert!(e.contains("wiersz 2") && e.contains("ssh albo rdp"), "{e}");
+        let e = bad(b"nazwa,adres\na,a.example\n").await;
+        assert!(e.contains("brak kolumny protokol"), "{e}");
+        let e = bad(b"nazwa,adres,protokol\n\xff\xfe,a.example,ssh\n").await;
+        assert!(e.contains("UTF-8"), "{e}");
+        let e = bad(b"MRMX\x01\x00\x00binarne").await;
+        assert!(e.contains("Nie można odczytać pliku CSV"), "{e}");
+        // Lista CSV podana jako plik eksportu też jest odrzucana czytelnie.
+        let e = preview(&state, csv.as_bytes().to_vec(), pass("cokolwiek"))
+            .await
+            .unwrap_err();
+        assert!(e.contains("To nie jest plik eksportu"), "{e}");
     }
 
     /// Klucz generowany w locie przez `ssh-keygen` (bez kluczy w repozytorium); bez programu test

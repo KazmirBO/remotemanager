@@ -102,6 +102,8 @@ Rzeczy, których nie sprawdzają testy automatyczne: działanie w prawdziwym okn
 - [ ] Eksport całej listy i jednego katalogu (z menu katalogu) zapisuje plik pod wskazaną ścieżką; istniejący plik nie jest nadpisywany. Windows: ścieżka z literą dysku.
 - [ ] Eksport bez haseł, import u innej osoby: hasła nie przechodzą, a z zaznaczonymi hasłami przechodzą.
 - [ ] Złe hasło pliku, plik z hostami zamiast pliku eksportu i zwykły plik tekstowy dają czytelne błędy.
+- [ ] Import listy CSV (kolumny `nazwa`, `adres`, `protokol`, `katalog`): bez pytania o hasło, hosty trafiają do katalogów z listy; ponowny import odświeżonej listy z "Zaktualizuj" nie dubluje hostów.
+- [ ] Windows: komenda PowerShell z README zapisuje listę komputerów z jednostki Active Directory do CSV, który program importuje.
 
 ## Linki
 
