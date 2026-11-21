@@ -351,7 +351,14 @@ const handlers: Record<string, Handler> = {
   },
   get_diagnostics: () => [...diag],
   clear_diagnostics: () => { diag.length = 0; },
-  get_local_config: () => ({ log_sessions: logSessions, rdp_clipboard: true, logs_dir: '/home/użytkownik/.local/share/dev.multiremotemanager.app/logs', backup_count: backupCount }),
+  get_local_config: () => ({ log_sessions: logSessions, rdp_clipboard: true, logs_dir: '/home/użytkownik/.local/share/dev.multiremotemanager.app/logs', backup_count: backupCount, check_updates: checkUpdates }),
+  set_check_updates: ({ enabled }) => { checkUpdates = enabled; },
+  open_releases_page: () => {
+    if (params.get('update') === 'nobrowser') throw 'Nie udało się otworzyć przeglądarki. Adres strony wydań: https://github.com/KazmirBO/remotemanager/releases';
+    diag.push(`${Math.floor(Date.now() / 1000)} otwarto stronę wydań (atrapa)`);
+  },
+  // Wersja programu dla sprawdzania wydań; bez `?update=...` atrapa nie pyta sieci.
+  'plugin:app|version': () => params.get('version') ?? '0.1.0',
   set_backup_count: ({ count }) => {
     if (!Number.isInteger(count) || count < 1 || count > 20) throw 'Liczba kopii zapasowych musi być liczbą od 1 do 20.';
     backupCount = count;
@@ -386,6 +393,8 @@ let syncFolder: string | null = params.get('sync') ? '/home/użytkownik/Synchron
 let syncStatus = params.get('sync') ?? 'aktualny';
 let logSessions = false;
 let backupCount = 5;
+// `?update=1` włącza w atrapie sprawdzanie nowej wersji (odpowiedź GitHuba podstawia test).
+let checkUpdates = params.has('update');
 const diag: string[] = [`${Math.floor(Date.now() / 1000)} odblokowano plik z hostami (atrapa)`];
 const syncView = () => ({ folder: syncFolder, status: syncFolder ? syncStatus : null, error: null });
 

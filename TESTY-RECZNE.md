@@ -86,6 +86,7 @@ Rzeczy, których nie sprawdzają testy automatyczne: działanie w prawdziwym okn
 - [ ] Motyw jasny, ciemny i systemowy.
 - [ ] Błędna wartość (np. rozmiar czcionki 200) daje błąd i przenosi do właściwej kategorii.
 - [ ] Dziennik diagnostyczny pokazuje wpisy i nie zawiera haseł.
+- [ ] Nowa wersja: program starszy od najnowszego wydania pokazuje po uruchomieniu powiadomienie, a "O programie" podaje numer; przycisk "Strona wydań" otwiera przeglądarkę. Po wyłączeniu w Ustawieniach (Narzędzia) powiadomienia nie ma.
 
 ## Synchronizacja
 

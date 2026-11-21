@@ -17,6 +17,7 @@ Sprawdzone w działaniu: sesje SSH (także przez bastion), sesje RDP z NLA, zmia
 - **SSH**: terminal w karcie z rendererem WebGL, uwierzytelnianie kluczem prywatnym (zapisanym w pliku hostów albo wskazanym ścieżką, także zaszyfrowanym), agentem SSH albo hasłem, bastiony (odpowiednik ProxyJump, także łańcuchy), typ terminala i starsze algorytmy SSH dla starych serwerów (np. AIX), zapamiętywanie kluczy hostów z ostrzeżeniem o zmianie, polecenie po zalogowaniu, podtrzymywanie połączenia, opcjonalny dziennik sesji.
 - **RDP**: pulpit w karcie z uwierzytelnianiem NLA (CredSSP), rozdzielczość podążająca za rozmiarem okna, pełny ekran, Ctrl+Alt+Del, lokalny kursor, profil łącza (szybkie albo wolne, także dla katalogu i hosta), przechwytywanie klawiszy z ustawieniem i przyciskiem (także klawiszy systemowych, np. Win i Alt+Tab), schowek w obie strony (tekst, HTML, obrazy, pliki i katalogi), zapamiętywanie certyfikatów. Na Windows także przekierowanie kluczy bezpieczeństwa FIDO2/WebAuthn (np. YubiKey) do zdalnego pulpitu, włączane dla hosta albo katalogu; niesprawdzone z prawdziwym kluczem. Tak samo włącza się przekierowanie czytników kart inteligentnych (PIV, klucz sprzętowy z interfejsem kart), też niesprawdzone z prawdziwym czytnikiem.
 - **Szybkie łączenie** (domyślnie Ctrl+Shift+K) i linki `ssh://` oraz `rdp://`. Link nigdy nie łączy sam: otwiera zapisany host z pytaniem albo formularz nowego.
+- **Powiadomienie o nowej wersji** po uruchomieniu, z linkiem do strony wydań (do wyłączenia w Ustawieniach).
 - **Synchronizacja** zaszyfrowanego pliku przez wskazany folder (np. Syncthing, Nextcloud, dysk sieciowy) z wykrywaniem konfliktów i podglądem różnic między wersją lokalną a tą z folderu.
 - **Eksport i import hostów**: osobny plik zaszyfrowany hasłem, z wyborem danych (np. bez haseł i kluczy) przy eksporcie i przy imporcie. Import scala po identyfikatorach: nowe hosty dodaje, a istniejące pomija albo aktualizuje, zostawiając niezaznaczone dane bez zmian. Importuje też zwykłą listę hostów w CSV, np. zrzuconą z Active Directory (opis niżej).
 - Ikona w zasobniku, blokada pliku (także automatyczna po bezczynności), ustawienia podzielone na kategorie z wyborem czcionki, kursora i historii terminala, edytowalne skróty, motyw jasny i ciemny, dziennik diagnostyczny bez sekretów.
@@ -88,6 +89,7 @@ Get-ADComputer -Filter * -SearchBase $ou | ForEach-Object {
 - Klucz prywatny SSH możesz zapisać w pliku hostów (jest odszyfrowywany przy imporcie i chroniony hasłem głównym) albo wskazać ścieżką do pliku; program korzysta też z agenta SSH.
 - Dziennik sesji, jeśli go włączysz, zapisuje wyjście terminala jawnym tekstem w katalogu `logs` (na Linuksie z dostępem tylko dla właściciela).
 - Schowek RDP działa tylko wtedy, gdy widok sesji ma fokus, i da się go wyłączyć w Ustawieniach.
+- Po uruchomieniu program pyta `api.github.com` o listę wydań i informuje, gdy jest nowsza wersja. To jedyne połączenie, którego nie zlecasz sam; nie wysyła żadnych danych z programu, niczego nie pobiera i da się je wyłączyć (Ustawienia, Narzędzia).
 
 ## Praca nad kodem
 

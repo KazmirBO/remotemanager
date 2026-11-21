@@ -345,6 +345,7 @@ pub struct LocalConfig {
     rdp_clipboard: bool,
     logs_dir: String,
     backup_count: usize,
+    check_updates: bool,
 }
 
 #[tauri::command]
@@ -355,14 +356,20 @@ pub async fn get_local_config(state: State<'_, AppState>) -> Result<LocalConfig,
 fn local_config(state: &AppState) -> LocalConfig {
     // Jedna blokada: dwa `lock()` w jednym wyrażeniu zakleszczały wątek, bo tymczasowa blokada
     // z pierwszego pola żyje do końca całego wyrażenia.
-    let (log_sessions, rdp_clipboard, backup_count) = {
+    let (log_sessions, rdp_clipboard, backup_count, check_updates) = {
         let c = state.config.lock().expect("config");
-        (c.log_sessions, c.rdp_clipboard, c.backup_count)
+        (
+            c.log_sessions,
+            c.rdp_clipboard,
+            c.backup_count,
+            c.check_updates,
+        )
     };
     LocalConfig {
         log_sessions,
         rdp_clipboard,
         backup_count,
+        check_updates,
         logs_dir: state.data_dir.join("logs").display().to_string(),
     }
 }
@@ -396,6 +403,47 @@ pub async fn set_log_sessions(state: State<'_, AppState>, enabled: bool) -> Resu
     state.config.lock().expect("config").log_sessions = enabled;
     state.save_config();
     Ok(())
+}
+
+/// Włącza albo wyłącza sprawdzanie nowej wersji przy starcie (pytanie do GitHuba wysyła interfejs).
+#[tauri::command]
+pub async fn set_check_updates(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    state.config.lock().expect("config").check_updates = enabled;
+    state.save_config();
+    Ok(())
+}
+
+/// Strona wydań programu. Stała: komenda otwierająca przeglądarkę nie przyjmuje adresu z interfejsu.
+pub const RELEASES_URL: &str = "https://github.com/KazmirBO/remotemanager/releases";
+
+/// Otwiera stronę wydań w domyślnej przeglądarce systemu. Adres jest stałą programu, więc do
+/// polecenia systemowego nie trafia nic, co pochodzi z interfejsu albo z sieci.
+#[tauri::command]
+pub fn open_releases_page(state: State<'_, AppState>) -> Result<(), String> {
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("explorer");
+        c.arg(RELEASES_URL);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(RELEASES_URL);
+        c
+    };
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    match cmd.spawn() {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            state.log(format!("nie udało się otworzyć strony wydań: {e}"));
+            Err(format!(
+                "Nie udało się otworzyć przeglądarki. Adres strony wydań: {RELEASES_URL}"
+            ))
+        }
+    }
 }
 
 #[tauri::command]

@@ -21,6 +21,9 @@ pub struct Config {
     /// Liczba kopii zapasowych pliku z hostami (`.bak1..N`) na tej maszynie.
     #[serde(default = "default_backup_count")]
     pub backup_count: usize,
+    /// Interfejs po uruchomieniu pyta GitHuba o najnowsze wydanie. Domyślnie włączone.
+    #[serde(default = "default_true")]
+    pub check_updates: bool,
 }
 
 fn default_backup_count() -> usize {
@@ -39,6 +42,7 @@ impl Default for Config {
             rdp_clipboard: true,
             log_sessions: false,
             backup_count: vault::DEFAULT_BACKUPS,
+            check_updates: true,
         }
     }
 }
@@ -110,6 +114,7 @@ mod tests {
             rdp_clipboard: false,
             log_sessions: true,
             backup_count: 12,
+            check_updates: false,
         };
         assert!(
             Config::default().rdp_clipboard,

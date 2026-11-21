@@ -121,7 +121,7 @@ const call = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 export type SyncStatus = 'brak_pliku' | 'aktualny' | 'lokalne_zmiany' | 'zdalne_zmiany' | 'konflikt';
 export interface SyncView { folder: string | null; status: SyncStatus | null; error: string | null }
 export interface BackupInfo { n: number; modified: number; size: number }
-export interface LocalConfig { log_sessions: boolean; rdp_clipboard: boolean; logs_dir: string; backup_count: number }
+export interface LocalConfig { log_sessions: boolean; rdp_clipboard: boolean; logs_dir: string; backup_count: number; check_updates: boolean }
 export interface QuitRequest { sessions: number }
 export interface LinkView {
   protocol: Protocol; host: string; port: number | null; username: string | null;
@@ -158,6 +158,8 @@ export const api = {
   getDiagnostics: () => call<string[]>('get_diagnostics'),
   clearDiagnostics: () => call<void>('clear_diagnostics'),
   getLocalConfig: () => call<LocalConfig>('get_local_config'),
+  setCheckUpdates: (enabled: boolean) => call<void>('set_check_updates', { enabled }),
+  openReleasesPage: () => call<void>('open_releases_page'),
   setRdpClipboard: (enabled: boolean) => call<void>('set_rdp_clipboard', { enabled }),
   setBackupCount: (count: number) => call<void>('set_backup_count', { count }),
   userActivity: () => call<void>('user_activity'),
