@@ -37,6 +37,11 @@ pub struct AppState {
     pub diag: Mutex<VecDeque<String>>,
     pub pending_link: Mutex<Option<String>>,
     pub inner: tokio::sync::Mutex<Option<Unlocked>>,
+    /// Plik odszyfrowany hasłem, który czeka na kod dodatkowego składnika. Żadna komenda poza
+    /// `unlock_totp` nie ma do niego dostępu.
+    pub pending_unlock: Mutex<Option<crate::mfa::PendingUnlock>>,
+    /// Sekret TOTP z rozpoczętego włączania, jeszcze niezapisany w dokumencie.
+    pub totp_enroll: Mutex<Option<crate::mfa::Enrollment>>,
     pub sessions: Mutex<HashMap<Uuid, Arc<Live>>>,
     pub trust: Mutex<HashMap<Uuid, oneshot::Sender<TrustAnswer>>>,
     pub rdp: Mutex<HashMap<Uuid, rdp::RdpClient>>,
@@ -68,6 +73,8 @@ impl AppState {
             diag: Mutex::new(VecDeque::new()),
             pending_link: Mutex::new(None),
             inner: tokio::sync::Mutex::new(None),
+            pending_unlock: Mutex::new(None),
+            totp_enroll: Mutex::new(None),
             sessions: Mutex::new(HashMap::new()),
             trust: Mutex::new(HashMap::new()),
             rdp: Mutex::new(HashMap::new()),
@@ -178,7 +185,14 @@ impl AppState {
             return Ok(out);
         }
         let pre = self.sync_pre();
-        u.vault.save(&next).map_err(|e| e.to_string())?;
+        // Dokument z dodatkowym składnikiem jest zapisywany w wersji 2 formatu, której starszy
+        // program nie otworzy (inaczej pominąłby ten wymóg i zgubił go przy zapisie).
+        let was_protected = u.vault.protected();
+        u.vault.set_protected(!next.mfa.is_empty());
+        if let Err(e) = u.vault.save(&next) {
+            u.vault.set_protected(was_protected);
+            return Err(e.to_string());
+        }
         u.doc = next;
         self.sync_post(pre);
         Ok(out)

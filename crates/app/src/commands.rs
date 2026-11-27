@@ -74,6 +74,12 @@ pub async fn unlock(state: State<'_, AppState>, password: String) -> Result<(), 
             .map_err(|e| unlock_err(e, &state.path))?;
     let mut vault = vault;
     vault.set_backup_count(state.config.lock().expect("config").backup_count);
+    // Plik z dodatkowym składnikiem: odszyfrowana zawartość czeka na kod i nie jest jeszcze
+    // dostępna dla żadnej komendy.
+    if doc.mfa.totp.is_some() {
+        crate::mfa::begin_second_step(&state, Unlocked { vault, doc });
+        return Err(crate::mfa::NEEDS_TOTP.into());
+    }
     *state.inner.lock().await = Some(Unlocked { vault, doc });
     state.touch_activity();
     state.log("odblokowano plik z hostami");
@@ -94,6 +100,8 @@ pub async fn lock_all(app: &tauri::AppHandle, state: &AppState, log: &str) {
     // Kolejność jest celowa: najpierw znika klucz w pamięci, potem anulowane są pytania o zaufanie
     // i zamykane sesje. Połączenie, które skończy się po opróżnieniu map, zobaczy już zablokowany plik.
     *state.inner.lock().await = None;
+    // Plik czekający na kod dodatkowego składnika i niedokończone włączanie też znikają.
+    crate::mfa::clear(state);
     // Pytanie o zakończenie programu przepada razem z interfejsem (`onLocked`), więc kolejna
     // prośba o zamknięcie musi znów zapytać, a nie kończyć program jako "druga prośba".
     state
@@ -192,6 +200,8 @@ pub async fn reset_after_reload(state: &AppState) {
     // Najpierw licznik, potem mapy: połączenie w toku widzi zmianę po wstawieniu sesji do mapy.
     state.reloads.fetch_add(1, Ordering::SeqCst);
     state.quit_pending.store(false, Ordering::SeqCst);
+    // Nowy interfejs nie pamięta, że czekał na kod: odblokowanie zaczyna się od hasła.
+    crate::mfa::clear(state);
     let closed = close_all_sessions(state).await;
     if closed > 0 {
         state.log(format!(
@@ -248,6 +258,7 @@ fn view(doc: &Document) -> DocView {
         hosts: doc.tree.hosts.iter().map(HostView::from).collect(),
         settings: doc.settings.clone(),
         trusted_count: doc.trusted_keys.len(),
+        mfa: (&doc.mfa).into(),
     }
 }
 

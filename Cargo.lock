@@ -2847,9 +2847,11 @@ dependencies = [
 name = "model"
 version = "0.1.1-rc1"
 dependencies = [
+ "hmac",
  "proptest",
  "serde",
  "serde_json",
+ "sha1",
  "sha2 0.11.1",
  "thiserror 2.0.21",
  "uuid",

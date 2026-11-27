@@ -4,6 +4,13 @@
 //! `magic "MRMV" | wersja u8 | m_cost u32 | t_cost u32 | p_cost u32 | sol[16] | nonce[24] | szyfrogram`.
 //! Nagłówek (bajty przed szyfrogramem) jest uwierzytelniany jako AAD, więc jego modyfikacja
 //! jest wykrywana. Klucz wynika z hasła głównego przez Argon2id, szyfr to XChaCha20-Poly1305.
+//!
+//! Wersja 2 ma ten sam początek, a po nonce jeszcze `flagi u8 | dlugosc_rozszerzenia u16 |
+//! rozszerzenie`. Zapisuje ją plik "chroniony" (`Vault::set_protected`), czyli taki, którego
+//! dokument wymaga dodatkowego składnika przy otwieraniu: program sprzed wersji 2 takiego pliku
+//! nie otworzy, więc nie pominie tego wymogu ani nie zapisze pliku bez niego. Flagi i rozszerzenie
+//! są miejscem na przyszłe składniki szyfrowania (np. klucz sprzętowy); na razie muszą być puste,
+//! a plik z nieznaną flagą albo niepustym rozszerzeniem jest odrzucany.
 
 use std::fs;
 use std::io::{self, Write};
@@ -21,11 +28,15 @@ const MAGIC: &[u8; 4] = b"MRMV";
 /// ale inny znacznik sprawia, że pakietu nie da się otworzyć, przywrócić ani zsynchronizować jako
 /// pliku z hostami, a pliku z hostami nie da się zaimportować jako pakietu.
 const EXPORT_MAGIC: &[u8; 4] = b"MRMX";
-/// Aktualna wersja formatu pliku.
+/// Podstawowa wersja formatu pliku (plik bez dodatkowego składnika).
 pub const FORMAT_VERSION: u8 = 1;
+/// Wersja formatu pliku chronionego dodatkowym składnikiem.
+pub const FORMAT_PROTECTED: u8 = 2;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const HEADER_LEN: usize = 4 + 1 + 12 + SALT_LEN + NONCE_LEN;
+/// Stała część nagłówka wersji 2 po nonce: flagi i długość rozszerzenia.
+const V2_TAIL: usize = 1 + 2;
 /// Górne limity parametrów Argon2id przyjmowanych z nagłówka (pamięć w KiB: 4 GiB).
 const MAX_M_COST: u32 = 4 * 1024 * 1024;
 const MAX_T_COST: u32 = 100;
@@ -45,6 +56,8 @@ pub enum Error {
     Truncated,
     #[error("nieobsługiwana wersja formatu: {0}")]
     UnsupportedVersion(u8),
+    #[error("plik używa zabezpieczeń, których ta wersja programu nie obsługuje")]
+    UnsupportedFeatures,
     #[error("nieprawidłowe hasło główne albo uszkodzony plik")]
     Decrypt,
     #[error("nieprawidłowe parametry KDF")]
@@ -99,12 +112,19 @@ pub struct Vault {
     salt: [u8; SALT_LEN],
     kdf: KdfParams,
     backups: usize,
+    /// Zapis w wersji 2 formatu (plik wymaga dodatkowego składnika przy otwieraniu).
+    protected: bool,
 }
 
 fn random<const N: usize>() -> Result<[u8; N]> {
     let mut buf = [0u8; N];
     getrandom::fill(&mut buf).map_err(|e| Error::Random(e.to_string()))?;
     Ok(buf)
+}
+
+/// Losowe bajty z generatora systemu (np. sekret TOTP i kody zapasowe w aplikacji).
+pub fn random_bytes<const N: usize>() -> Result<[u8; N]> {
+    random::<N>()
 }
 
 fn derive_key(password: &[u8], salt: &[u8], kdf: KdfParams) -> Result<Zeroizing<[u8; 32]>> {
@@ -119,24 +139,31 @@ fn derive_key(password: &[u8], salt: &[u8], kdf: KdfParams) -> Result<Zeroizing<
 
 fn encode_header(
     magic: &[u8; 4],
+    version: u8,
     kdf: KdfParams,
     salt: &[u8; SALT_LEN],
     nonce: &[u8; NONCE_LEN],
 ) -> Vec<u8> {
-    let mut h = Vec::with_capacity(HEADER_LEN);
+    let mut h = Vec::with_capacity(HEADER_LEN + V2_TAIL);
     h.extend_from_slice(magic);
-    h.push(FORMAT_VERSION);
+    h.push(version);
     h.extend_from_slice(&kdf.m_cost.to_le_bytes());
     h.extend_from_slice(&kdf.t_cost.to_le_bytes());
     h.extend_from_slice(&kdf.p_cost.to_le_bytes());
     h.extend_from_slice(salt);
     h.extend_from_slice(nonce);
+    if version == FORMAT_PROTECTED {
+        // Bez flag i z pustym rozszerzeniem.
+        h.push(0);
+        h.extend_from_slice(&0u16.to_le_bytes());
+    }
     h
 }
 
 /// Szyfruje dokument do postaci pliku: nagłówek ze znacznikiem `magic` i szyfrogram.
 fn encrypt<T: Serialize>(
     magic: &[u8; 4],
+    version: u8,
     key: &[u8; 32],
     kdf: KdfParams,
     salt: &[u8; SALT_LEN],
@@ -149,7 +176,7 @@ fn encrypt<T: Serialize>(
     let mut plain = Zeroizing::new(Vec::with_capacity(counter.0));
     serde_json::to_writer(&mut *plain, doc)?;
     let nonce = random::<NONCE_LEN>()?;
-    let header = encode_header(magic, kdf, salt, &nonce);
+    let header = encode_header(magic, version, kdf, salt, &nonce);
     let cipher = XChaCha20Poly1305::new_from_slice(key).map_err(|_| Error::Encrypt)?;
     let ct = cipher
         .encrypt(
@@ -262,6 +289,7 @@ impl Vault {
             salt,
             kdf,
             backups: DEFAULT_BACKUPS,
+            protected: false,
         };
         v.write(doc, false)?;
         Ok(v)
@@ -274,16 +302,17 @@ impl Vault {
     ) -> Result<(Self, T)> {
         let path = path.into();
         let data = fs::read(&path)?;
-        let (kdf, salt, nonce) = parse_header(&data)?;
-        let key = derive_key(password.as_bytes(), &salt, kdf)?;
-        let doc = decrypt(&key, &data, &nonce)?;
+        let h = parse_header(&data)?;
+        let key = derive_key(password.as_bytes(), &h.salt, h.kdf)?;
+        let doc = decrypt(&key, &data, &h)?;
         Ok((
             Self {
                 path,
                 key,
-                salt,
-                kdf,
+                salt: h.salt,
+                kdf: h.kdf,
                 backups: DEFAULT_BACKUPS,
+                protected: h.version == FORMAT_PROTECTED,
             },
             doc,
         ))
@@ -300,8 +329,8 @@ impl Vault {
     /// czym sprawdzić. Odszyfrowana treść jest zerowana i nie opuszcza funkcji.
     pub fn verify_file(&self, path: &Path) -> Result<Verified> {
         let data = fs::read(path)?;
-        let (_, salt, nonce) = parse_header(&data)?;
-        if salt != self.salt {
+        let h = parse_header(&data)?;
+        if h.salt != self.salt {
             return Ok(Verified::OtherKey);
         }
         let cipher =
@@ -309,10 +338,10 @@ impl Vault {
         let _plain = Zeroizing::new(
             cipher
                 .decrypt(
-                    &XNonce::from(nonce),
+                    &XNonce::from(h.nonce),
                     Payload {
-                        msg: &data[HEADER_LEN..],
-                        aad: &data[..HEADER_LEN],
+                        msg: &data[h.len..],
+                        aad: &data[..h.len],
                     },
                 )
                 .map_err(|_| Error::Decrypt)?,
@@ -326,11 +355,23 @@ impl Vault {
     /// Inna sól (hasło główne zmienione gdzie indziej) daje `None`, bo nie ma czym odszyfrować.
     pub fn read_file<T: DeserializeOwned>(&self, path: &Path) -> Result<Option<T>> {
         let data = fs::read(path)?;
-        let (_, salt, nonce) = parse_header(&data)?;
-        if salt != self.salt {
+        let h = parse_header(&data)?;
+        if h.salt != self.salt {
             return Ok(None);
         }
-        decrypt(&self.key, &data, &nonce).map(Some)
+        decrypt(&self.key, &data, &h).map(Some)
+    }
+
+    /// Czy plik jest zapisywany w wersji 2 formatu.
+    pub fn protected(&self) -> bool {
+        self.protected
+    }
+
+    /// Wybiera wersję formatu dla kolejnych zapisów: `true`, gdy dokument wymaga dodatkowego
+    /// składnika przy otwieraniu (wersja 2, której starszy program nie otworzy), `false` dla
+    /// zwykłego pliku (wersja 1, czytelna także dla starszego programu).
+    pub fn set_protected(&mut self, protected: bool) {
+        self.protected = protected;
     }
 
     pub fn set_backup_count(&mut self, n: usize) {
@@ -369,7 +410,12 @@ impl Vault {
         doc: &T,
         rotate: bool,
     ) -> Result<()> {
-        let out = encrypt(MAGIC, key, self.kdf, salt, doc)?;
+        let version = if self.protected {
+            FORMAT_PROTECTED
+        } else {
+            FORMAT_VERSION
+        };
+        let out = encrypt(MAGIC, version, key, self.kdf, salt, doc)?;
         let tmp = write_tmp(&self.path, &out)?;
         let committed = (|| -> io::Result<()> {
             if rotate && self.backups > 0 && self.path.exists() {
@@ -409,14 +455,21 @@ pub fn validate_file(path: &Path) -> Result<()> {
     parse_header(&data).map(|_| ())
 }
 
-fn parse_header(data: &[u8]) -> Result<(KdfParams, [u8; SALT_LEN], [u8; NONCE_LEN])> {
+/// Odczytany nagłówek pliku.
+struct Header {
+    version: u8,
+    kdf: KdfParams,
+    salt: [u8; SALT_LEN],
+    nonce: [u8; NONCE_LEN],
+    /// Długość całego nagłówka: tyle bajtów jest AAD, od tego miejsca zaczyna się szyfrogram.
+    len: usize,
+}
+
+fn parse_header(data: &[u8]) -> Result<Header> {
     parse_header_as(MAGIC, data)
 }
 
-fn parse_header_as(
-    magic: &[u8; 4],
-    data: &[u8],
-) -> Result<(KdfParams, [u8; SALT_LEN], [u8; NONCE_LEN])> {
+fn parse_header_as(magic: &[u8; 4], data: &[u8]) -> Result<Header> {
     if data.len() < 4 || &data[..4] != magic {
         return Err(Error::BadMagic);
     }
@@ -424,9 +477,23 @@ fn parse_header_as(
         return Err(Error::Truncated);
     }
     let version = data[4];
-    if version != FORMAT_VERSION {
-        return Err(Error::UnsupportedVersion(version));
-    }
+    let len = match version {
+        FORMAT_VERSION => HEADER_LEN,
+        FORMAT_PROTECTED => {
+            if data.len() < HEADER_LEN + V2_TAIL + 16 {
+                return Err(Error::Truncated);
+            }
+            let flags = data[HEADER_LEN];
+            let ext = u16::from_le_bytes([data[HEADER_LEN + 1], data[HEADER_LEN + 2]]);
+            // Flagi i rozszerzenie opisują składniki szyfrowania, których ta wersja nie zna:
+            // otwarcie takiego pliku samym hasłem byłoby błędne, a zapis zgubiłby te dane.
+            if flags != 0 || ext != 0 {
+                return Err(Error::UnsupportedFeatures);
+            }
+            HEADER_LEN + V2_TAIL
+        }
+        other => return Err(Error::UnsupportedVersion(other)),
+    };
     let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().expect("4 bajty"));
     let kdf = KdfParams {
         m_cost: u32_at(5),
@@ -443,18 +510,24 @@ fn parse_header_as(
     Params::new(kdf.m_cost, kdf.t_cost, kdf.p_cost, Some(32)).map_err(|_| Error::BadKdfParams)?;
     let salt = data[17..17 + SALT_LEN].try_into().expect("sól");
     let nonce = data[17 + SALT_LEN..HEADER_LEN].try_into().expect("nonce");
-    Ok((kdf, salt, nonce))
+    Ok(Header {
+        version,
+        kdf,
+        salt,
+        nonce,
+        len,
+    })
 }
 
-fn decrypt<T: DeserializeOwned>(key: &[u8; 32], data: &[u8], nonce: &[u8; NONCE_LEN]) -> Result<T> {
+fn decrypt<T: DeserializeOwned>(key: &[u8; 32], data: &[u8], header: &Header) -> Result<T> {
     let cipher = XChaCha20Poly1305::new_from_slice(key).map_err(|_| Error::Decrypt)?;
     let plain = Zeroizing::new(
         cipher
             .decrypt(
-                &XNonce::from(*nonce),
+                &XNonce::from(header.nonce),
                 Payload {
-                    msg: &data[HEADER_LEN..],
-                    aad: &data[..HEADER_LEN],
+                    msg: &data[header.len..],
+                    aad: &data[..header.len],
                 },
             )
             .map_err(|_| Error::Decrypt)?,
@@ -465,9 +538,9 @@ fn decrypt<T: DeserializeOwned>(key: &[u8; 32], data: &[u8], nonce: &[u8; NONCE_
 /// Odczyt dokumentu z kopii zapasowej (np. przy przywracaniu) tym samym hasłem.
 pub fn open_backup<T: DeserializeOwned>(backup: &Path, password: &str) -> Result<T> {
     let data = fs::read(backup)?;
-    let (kdf, salt, nonce) = parse_header(&data)?;
-    let key = derive_key(password.as_bytes(), &salt, kdf)?;
-    decrypt(&key, &data, &nonce)
+    let h = parse_header(&data)?;
+    let key = derive_key(password.as_bytes(), &h.salt, h.kdf)?;
+    decrypt(&key, &data, &h)
 }
 
 /// Szyfruje pakiet eksportu hasłem podanym przy eksporcie (własna sól, Argon2id jak w pliku
@@ -475,19 +548,19 @@ pub fn open_backup<T: DeserializeOwned>(backup: &Path, password: &str) -> Result
 pub fn seal_export<T: Serialize>(password: &str, kdf: KdfParams, doc: &T) -> Result<Vec<u8>> {
     let salt = random::<SALT_LEN>()?;
     let key = derive_key(password.as_bytes(), &salt, kdf)?;
-    encrypt(EXPORT_MAGIC, &key, kdf, &salt, doc)
+    encrypt(EXPORT_MAGIC, FORMAT_VERSION, &key, kdf, &salt, doc)
 }
 
 /// Odszyfrowuje pakiet eksportu. Dane bez znacznika pakietu (także plik z hostami) dają
 /// `NotExport`, złe hasło albo uszkodzenie `Decrypt`. Parametry KDF z nagłówka przechodzą te same
 /// granice co przy pliku z hostami, bo pakiet pochodzi z zewnątrz.
 pub fn open_export<T: DeserializeOwned>(data: &[u8], password: &str) -> Result<T> {
-    let (kdf, salt, nonce) = parse_header_as(EXPORT_MAGIC, data).map_err(|e| match e {
+    let h = parse_header_as(EXPORT_MAGIC, data).map_err(|e| match e {
         Error::BadMagic => Error::NotExport,
         e => e,
     })?;
-    let key = derive_key(password.as_bytes(), &salt, kdf)?;
-    decrypt(&key, data, &nonce)
+    let key = derive_key(password.as_bytes(), &h.salt, h.kdf)?;
+    decrypt(&key, data, &h)
 }
 
 /// Czy dane zaczynają się jak plik z hostami (do czytelnego komunikatu przy pomyłce plików).
@@ -813,6 +886,96 @@ mod tests {
             let mode = fs::metadata(&f).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "{}", f.display());
         }
+    }
+
+    #[test]
+    fn protected_file_uses_version_2_and_round_trips() {
+        let p = tmp("v2");
+        let mut v = Vault::create(&p, "haslo", KdfParams::FAST_FOR_TESTS, &doc(1)).unwrap();
+        assert!(!v.protected());
+        assert_eq!(fs::read(&p).unwrap()[4], FORMAT_VERSION);
+        // Plik chroniony: wersja 2, puste flagi i rozszerzenie, treść czytelna tym samym hasłem.
+        v.set_protected(true);
+        v.save(&doc(2)).unwrap();
+        let data = fs::read(&p).unwrap();
+        assert_eq!(data[4], FORMAT_PROTECTED);
+        assert_eq!(&data[HEADER_LEN..HEADER_LEN + V2_TAIL], &[0, 0, 0]);
+        validate_file(&p).unwrap();
+        assert_eq!(v.verify_file(&p).unwrap(), Verified::SameKey);
+        assert_eq!(v.read_file::<Doc>(&p).unwrap(), Some(doc(2)));
+        let (reopened, back) = Vault::open::<Doc>(&p, "haslo").unwrap();
+        assert_eq!(back, doc(2));
+        assert!(reopened.protected());
+        // Kopia zapasowa sprzed ochrony (wersja 1) nadal się czyta, nowa jest w wersji 2.
+        assert_eq!(
+            open_backup::<Doc>(&backup_file(&p, 1), "haslo").unwrap(),
+            doc(1)
+        );
+        v.save(&doc(3)).unwrap();
+        assert_eq!(fs::read(backup_file(&p, 1)).unwrap()[4], FORMAT_PROTECTED);
+        assert_eq!(
+            open_backup::<Doc>(&backup_file(&p, 1), "haslo").unwrap(),
+            doc(2)
+        );
+        // Zmiana hasła zachowuje ochronę, zdjęcie ochrony wraca do wersji 1.
+        v.change_password("nowe", &doc(3)).unwrap();
+        assert_eq!(fs::read(&p).unwrap()[4], FORMAT_PROTECTED);
+        assert_eq!(Vault::open::<Doc>(&p, "nowe").unwrap().1, doc(3));
+        v.set_protected(false);
+        v.save(&doc(4)).unwrap();
+        assert_eq!(fs::read(&p).unwrap()[4], FORMAT_VERSION);
+        assert!(!Vault::open::<Doc>(&p, "nowe").unwrap().0.protected());
+    }
+
+    #[test]
+    fn version_2_tail_is_authenticated_and_unknown_features_are_refused() {
+        let p = tmp("v2-tail");
+        let mut v = Vault::create(&p, "haslo", KdfParams::FAST_FOR_TESTS, &doc(1)).unwrap();
+        v.set_protected(true);
+        v.save(&doc(2)).unwrap();
+        let good = fs::read(&p).unwrap();
+        // Nieznana flaga i niepuste rozszerzenie: plik wymaga nowszego programu.
+        let mut flagged = good.clone();
+        flagged[HEADER_LEN] = 1;
+        fs::write(&p, &flagged).unwrap();
+        assert!(matches!(
+            Vault::open::<Doc>(&p, "haslo"),
+            Err(Error::UnsupportedFeatures)
+        ));
+        assert!(matches!(validate_file(&p), Err(Error::UnsupportedFeatures)));
+        let mut extended = good.clone();
+        extended[HEADER_LEN + 1] = 4;
+        fs::write(&p, &extended).unwrap();
+        assert!(matches!(
+            Vault::open::<Doc>(&p, "haslo"),
+            Err(Error::UnsupportedFeatures)
+        ));
+        // Zmiana samego numeru wersji (2 na 1 albo 1 na 2) psuje uwierzytelnienie: nie da się
+        // "zdjąć ochrony" z pliku bez hasła ani jej podrobić.
+        let mut downgraded = good.clone();
+        downgraded[4] = FORMAT_VERSION;
+        fs::write(&p, &downgraded).unwrap();
+        assert!(matches!(
+            Vault::open::<Doc>(&p, "haslo"),
+            Err(Error::Decrypt)
+        ));
+        // Obcięcie w obrębie końcówki nagłówka.
+        fs::write(&p, &good[..HEADER_LEN + V2_TAIL + 15]).unwrap();
+        assert!(matches!(
+            Vault::open::<Doc>(&p, "haslo"),
+            Err(Error::Truncated)
+        ));
+        // Wersja nieznana obu formatom.
+        let mut future = good.clone();
+        future[4] = 3;
+        fs::write(&p, &future).unwrap();
+        assert!(matches!(
+            Vault::open::<Doc>(&p, "haslo"),
+            Err(Error::UnsupportedVersion(3))
+        ));
+        // Pakiet eksportu zostaje w wersji 1.
+        let sealed = seal_export("haslo-eksportu", KdfParams::FAST_FOR_TESTS, &doc(1)).unwrap();
+        assert_eq!(sealed[4], FORMAT_VERSION);
     }
 
     #[test]

@@ -78,6 +78,8 @@ pub struct DocDiff {
     pub trusted_local_only: usize,
     pub trusted_remote_only: usize,
     pub settings_differ: bool,
+    /// Różni się wymóg dodatkowego składnika przy otwieraniu pliku (bez szczegółów).
+    pub mfa_differ: bool,
 }
 
 impl DocDiff {
@@ -88,6 +90,7 @@ impl DocDiff {
             && self.trusted_local_only == 0
             && self.trusted_remote_only == 0
             && !self.settings_differ
+            && !self.mfa_differ
     }
 }
 
@@ -257,6 +260,7 @@ pub fn diff(local: &Document, remote: &Document) -> DocDiff {
             .filter(|k| !local.trusted_keys.contains(k))
             .count(),
         settings_differ: local.settings != remote.settings,
+        mfa_differ: local.mfa != remote.mfa,
     }
 }
 
@@ -491,7 +495,16 @@ mod tests {
         assert_eq!(d.defaults, vec![FieldPart::Options]);
         assert_eq!((d.trusted_local_only, d.trusted_remote_only), (1, 1));
         assert!(d.settings_differ);
+        assert!(!d.mfa_differ);
         assert!(!d.is_empty());
+        // Sam wymóg dodatkowego składnika też jest różnicą, a jego sekret nie trafia do wyniku.
+        let mut with_totp = s.doc.clone();
+        with_totp.mfa.totp = Some(crate::mfa::Totp::new(b"sekret-totp-12345678".to_vec(), &[]));
+        let d = diff(&s.doc, &with_totp);
+        assert!(d.mfa_differ && !d.is_empty());
+        assert!(d.hosts.is_empty() && d.folders.is_empty());
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(!json.contains("sekret") && !json.contains("115"), "{json}");
     }
 
     #[test]

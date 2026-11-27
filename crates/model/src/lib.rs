@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashSet};
 pub mod csv;
 pub mod diff;
 pub mod link;
+pub mod mfa;
 pub mod transfer;
 
 use serde::{Deserialize, Serialize};
@@ -578,6 +579,10 @@ pub struct Document {
     pub trusted_keys: Vec<TrustedKey>,
     #[serde(default)]
     pub settings: Settings,
+    /// Dodatkowy składnik wymagany przy otwieraniu pliku. Pusty nie jest zapisywany, więc plik
+    /// bez niego wygląda dokładnie tak jak przed wprowadzeniem tego pola.
+    #[serde(default, skip_serializing_if = "mfa::Mfa::is_empty")]
+    pub mfa: mfa::Mfa,
 }
 
 impl Document {
