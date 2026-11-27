@@ -1,6 +1,7 @@
 import { api, type DocView, type QuitRequest, type SyncView, type HostView, type Id, type Protocol, type Settings, type VaultState } from './api';
 import { loadBarPos, saveBarPos, type BarPos } from './rdpBar';
 import { dropIndex, moveItem } from './tabOrder';
+import { checkForUpdate } from './updateCheck';
 
 export interface Tab {
   id: string;
@@ -34,6 +35,8 @@ export interface Notice {
 export const ui = $state({
   history: [] as Notice[],
   sync: null as SyncView | null,
+  /** Numer nowszego wydania znalezionego przy starcie albo null. */
+  update: null as string | null,
   /** Kolejka monitów o hasło; pokazywany jest pierwszy. */
   passwordQueue: [] as PasswordPrompt[],
   phase: 'loading' as 'loading' | VaultState,
@@ -85,6 +88,25 @@ export async function refresh() {
 export async function init() {
   ui.phase = await api.vaultState();
   if (ui.phase === 'unlocked') await refresh();
+  void checkUpdates();
+}
+
+/**
+ * Raz po uruchomieniu pyta GitHuba o nowsze wydanie, jeśli ustawienie na to pozwala. Niczego nie
+ * pobiera: zapamiętuje numer i pokazuje powiadomienie. Brak sieci i praca poza Tauri są ciche.
+ */
+async function checkUpdates() {
+  try {
+    if (!(await api.getLocalConfig()).check_updates) return;
+    const { getVersion } = await import('@tauri-apps/api/app');
+    const current = await getVersion();
+    const found = await checkForUpdate(current);
+    if (!found) return;
+    ui.update = found;
+    notify(`Dostępna jest nowa wersja ${found} (masz ${current}). Szczegóły: Ustawienia, Narzędzia, O programie.`);
+  } catch {
+    /* sprawdzanie wersji nie może przeszkadzać w pracy */
+  }
 }
 
 export async function afterUnlock() {

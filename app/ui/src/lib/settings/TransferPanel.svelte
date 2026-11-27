@@ -4,8 +4,8 @@
   import Icon from '../Icon.svelte';
   import { notify, refresh, ui } from '../store.svelte';
   import {
-    MAX_IMPORT_FILE, PARTS, defaultParts, exportPasswordError, exportText, folderChoices, reportText, summaryText,
-    type ImportSummary, type Parts,
+    MAX_IMPORT_FILE, PARTS, defaultParts, exportPasswordError, exportText, folderChoices, importFormat, reportText, summaryText,
+    type ImportFormat, type ImportSummary, type Parts,
   } from '../transfer';
 
   /** Katalog wybrany z menu drzewa hostów; bez niego eksport obejmuje całą listę. */
@@ -54,6 +54,8 @@
   // Zaszyfrowane bajty pliku; treść odszyfrowuje wyłącznie backend.
   let fileData: Uint8Array | null = null;
   let hasFile = $state(false);
+  // Lista CSV jest jawna i nie ma hasła; plik eksportu wymaga hasła pliku.
+  let format = $state<ImportFormat>('mrmx');
   let importPw = $state('');
   let summary = $state<ImportSummary | null>(null);
   let importParts = $state<Parts>(defaultParts());
@@ -77,8 +79,10 @@
     fileData = null;
     hasFile = false;
     fileName = file.name;
+    format = importFormat(file.name);
+    importPw = '';
     if (file.size > MAX_IMPORT_FILE) {
-      importError = 'Plik jest za duży na plik eksportu hostów (limit 4 MiB).';
+      importError = 'Plik jest za duży na plik importu hostów (limit 4 MiB).';
       return;
     }
     try {
@@ -90,13 +94,13 @@
   }
 
   async function check() {
-    if (!fileData || !importPw) return;
+    if (!fileData || (format === 'mrmx' && !importPw)) return;
     importError = '';
     importDone = '';
     summary = null;
     importing = true;
     try {
-      const s = await api.importPreview(fileData, importPw);
+      const s = await api.importPreview(fileData, importPw, format);
       importParts = defaultParts(s.parts);
       existing = 'skip';
       summary = s;
@@ -112,7 +116,7 @@
     importError = '';
     importing = true;
     try {
-      const report = await api.importHosts(fileData, importPw, $state.snapshot(importParts), existing);
+      const report = await api.importHosts(fileData, importPw, format, $state.snapshot(importParts), existing);
       importDone = reportText(report);
       summary = null;
       fileData = null;
@@ -183,14 +187,19 @@
 
 <h3 class="section-title">Import</h3>
 <div class="field">
-  <label for="tr-file">Plik eksportu</label>
+  <label for="tr-file">Plik eksportu albo lista CSV</label>
   <div class="row">
     <button id="tr-file" type="button" class="btn" disabled={importing} onclick={() => picker?.click()}>Wybierz plik...</button>
     <span class="file mono" class:muted={!fileName}>{fileName || 'nie wybrano pliku'}</span>
   </div>
-  <input bind:this={picker} type="file" accept=".mrmx" hidden onchange={pick} />
+  <input bind:this={picker} type="file" accept=".mrmx,.csv" hidden onchange={pick} />
+  <span class="hint muted">Plik .mrmx z eksportu albo lista hostów w .csv z kolumnami: nazwa, adres, protokol (ssh albo rdp), katalog.</span>
 </div>
-{#if hasFile}
+{#if hasFile && format === 'csv'}
+  <div class="actions csv-check">
+    <button type="button" class="btn" disabled={importing} onclick={check}>Sprawdź plik</button>
+  </div>
+{:else if hasFile}
   <div class="field">
     <label for="tr-ipw">Hasło pliku</label>
     <div class="row">
@@ -249,6 +258,7 @@
   .parts .check { margin-bottom: 10px; }
   .state { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border-strong); border-radius: var(--radius-control); padding: 12px; margin-bottom: 14px; font-size: 13px; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .csv-check { margin-bottom: 14px; }
   .result, .error { margin-top: 12px; font-size: 13px; display: flex; gap: 6px; align-items: flex-start; overflow-wrap: anywhere; }
   .result :global(svg), .error :global(svg) { flex: none; margin-top: 2px; }
   @media (max-width: 700px) { .two { grid-template-columns: 1fr; } }

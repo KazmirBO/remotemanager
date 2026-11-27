@@ -126,6 +126,8 @@ fn main() {
             maintenance::get_local_config,
             maintenance::set_log_sessions,
             maintenance::set_rdp_clipboard,
+            maintenance::set_check_updates,
+            maintenance::open_releases_page,
             maintenance::resolve_link,
             maintenance::take_pending_link,
             transfer::export_default_path,

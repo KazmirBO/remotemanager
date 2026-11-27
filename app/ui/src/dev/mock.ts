@@ -100,12 +100,21 @@ function emitEvent(event: string, payload: unknown) {
 const IMPORT_PARTS = {
   usernames: true, passwords: false, ssh_keys: false, key_paths: false, options: true, login_command: false, notes: true, trusted_keys: true,
 };
-/** Jak `open_package` w backendzie: limit rozmiaru, znacznik pliku, hasło. */
-function openImport(data: number[], pw: string) {
-  if (data.length > 4 * 1024 * 1024) throw 'Plik jest za duży na plik eksportu hostów (limit 4 MiB).';
+/** Jak `open_package` w backendzie: limit rozmiaru, a potem znacznik pliku i hasło albo nagłówek CSV. */
+function openImport(data: number[], pw: string, format: string | undefined) {
+  if (data.length > 4 * 1024 * 1024) throw 'Plik jest za duży na plik importu hostów (limit 4 MiB).';
+  if (format === 'csv') {
+    const header = new TextDecoder().decode(new Uint8Array(data)).split('\n')[0].toLowerCase();
+    for (const col of ['nazwa', 'adres', 'protokol']) {
+      if (!header.includes(col)) throw `Nie można odczytać pliku CSV: brak kolumny ${col} w nagłówku (wymagane: nazwa, adres, protokol; opcjonalnie: katalog).`;
+    }
+    return;
+  }
   if (String.fromCharCode(...data.slice(0, 4)) !== 'MRMX') throw 'To nie jest plik eksportu hostów.';
   if (pw !== 'haslo-pliku') throw 'Nieprawidłowe hasło pliku eksportu albo plik jest uszkodzony.';
 }
+/** Lista CSV nie niesie żadnej kategorii danych. */
+const NO_PARTS = Object.fromEntries(Object.keys(IMPORT_PARTS).map((k) => [k, false]));
 
 const handlers: Record<string, Handler> = {
   vault_state: () => (unlocked ? 'unlocked' : password ? 'locked' : 'missing'),
@@ -306,19 +315,20 @@ const handlers: Record<string, Handler> = {
     diag.push(`${Math.floor(Date.now() / 1000)} eksport: zapisano ${hosts} hostów i ${folders} katalogów (atrapa)`);
     return { path: /\.mrmx$/i.test(target) ? target : `${target}.mrmx`, folders, hosts, trusted_keys: parts.trusted_keys ? trusted.size : 0 };
   },
-  import_preview: ({ data, password: pw }) => {
-    openImport(data, pw);
+  import_preview: ({ data, password: pw, format }) => {
+    openImport(data, pw, format);
     const existing = doc.hosts.some((h) => h.id === 'h2') ? 1 : 0;
     const added = doc.hosts.some((h) => h.id === 'imp-h1');
     return {
-      parts: IMPORT_PARTS,
+      parts: format === 'csv' ? NO_PARTS : IMPORT_PARTS,
       folders_new: added ? 0 : 1, folders_existing: added ? 1 : 0,
       hosts_new: added ? 0 : 2 + (1 - existing), hosts_existing: added ? 3 : existing,
-      trusted_new: trusted.has('import') ? 0 : 1,
+      trusted_new: format === 'csv' || trusted.has('import') ? 0 : 1,
     };
   },
-  import_hosts: ({ data, password: pw, parts, existing }) => {
-    openImport(data, pw);
+  import_hosts: ({ data, password: pw, format, parts: chosen, existing }) => {
+    openImport(data, pw, format);
+    const parts = format === 'csv' ? NO_PARTS : chosen;
     const report = { folders_added: 0, folders_updated: 0, hosts_added: 0, hosts_updated: 0, unchanged: 0, trusted_added: 0, trusted_conflicts: 0, jumps_dropped: 0 };
     if (doc.folders.some((f) => f.id === 'imp-f1')) report.unchanged += 1;
     else { doc.folders.push({ id: 'imp-f1', name: 'Z importu', parent: null, fields: emptyFields() }); report.folders_added += 1; }
@@ -341,7 +351,14 @@ const handlers: Record<string, Handler> = {
   },
   get_diagnostics: () => [...diag],
   clear_diagnostics: () => { diag.length = 0; },
-  get_local_config: () => ({ log_sessions: logSessions, rdp_clipboard: true, logs_dir: '/home/użytkownik/.local/share/dev.multiremotemanager.app/logs', backup_count: backupCount }),
+  get_local_config: () => ({ log_sessions: logSessions, rdp_clipboard: true, logs_dir: '/home/użytkownik/.local/share/dev.multiremotemanager.app/logs', backup_count: backupCount, check_updates: checkUpdates }),
+  set_check_updates: ({ enabled }) => { checkUpdates = enabled; },
+  open_releases_page: () => {
+    if (params.get('update') === 'nobrowser') throw 'Nie udało się otworzyć przeglądarki. Adres strony wydań: https://github.com/KazmirBO/remotemanager/releases';
+    diag.push(`${Math.floor(Date.now() / 1000)} otwarto stronę wydań (atrapa)`);
+  },
+  // Wersja programu dla sprawdzania wydań; bez `?update=...` atrapa nie pyta sieci.
+  'plugin:app|version': () => params.get('version') ?? '0.1.0',
   set_backup_count: ({ count }) => {
     if (!Number.isInteger(count) || count < 1 || count > 20) throw 'Liczba kopii zapasowych musi być liczbą od 1 do 20.';
     backupCount = count;
@@ -376,6 +393,8 @@ let syncFolder: string | null = params.get('sync') ? '/home/użytkownik/Synchron
 let syncStatus = params.get('sync') ?? 'aktualny';
 let logSessions = false;
 let backupCount = 5;
+// `?update=1` włącza w atrapie sprawdzanie nowej wersji (odpowiedź GitHuba podstawia test).
+let checkUpdates = params.has('update');
 const diag: string[] = [`${Math.floor(Date.now() / 1000)} odblokowano plik z hostami (atrapa)`];
 const syncView = () => ({ folder: syncFolder, status: syncFolder ? syncStatus : null, error: null });
 

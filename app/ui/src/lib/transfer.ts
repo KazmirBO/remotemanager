@@ -23,6 +23,14 @@ export interface ImportReport {
 }
 export interface ExportDone { path: string; folders: number; hosts: number; trusted_keys: number }
 
+/** Rodzaj pliku importu: zaszyfrowany plik eksportu albo jawna lista hostów w CSV. */
+export type ImportFormat = 'mrmx' | 'csv';
+
+/** Rodzaj pliku z jego nazwy: `.csv` to lista hostów, wszystko inne to plik eksportu. */
+export function importFormat(fileName: string): ImportFormat {
+  return /\.csv$/i.test(fileName.trim()) ? 'csv' : 'mrmx';
+}
+
 /** Największy plik importu (jak `MAX_IMPORT_FILE` w backendzie). */
 export const MAX_IMPORT_FILE = 4 * 1024 * 1024;
 

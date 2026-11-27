@@ -1,6 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { createAcker } from './sshAck';
-import type { ExportDone, ImportReport, ImportSummary, Parts } from './transfer';
+import type { ExportDone, ImportFormat, ImportReport, ImportSummary, Parts } from './transfer';
 import type { SyncDiff } from './syncDiff';
 
 export type Protocol = 'ssh' | 'rdp';
@@ -121,7 +121,7 @@ const call = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 export type SyncStatus = 'brak_pliku' | 'aktualny' | 'lokalne_zmiany' | 'zdalne_zmiany' | 'konflikt';
 export interface SyncView { folder: string | null; status: SyncStatus | null; error: string | null }
 export interface BackupInfo { n: number; modified: number; size: number }
-export interface LocalConfig { log_sessions: boolean; rdp_clipboard: boolean; logs_dir: string; backup_count: number }
+export interface LocalConfig { log_sessions: boolean; rdp_clipboard: boolean; logs_dir: string; backup_count: number; check_updates: boolean }
 export interface QuitRequest { sessions: number }
 export interface LinkView {
   protocol: Protocol; host: string; port: number | null; username: string | null;
@@ -158,6 +158,8 @@ export const api = {
   getDiagnostics: () => call<string[]>('get_diagnostics'),
   clearDiagnostics: () => call<void>('clear_diagnostics'),
   getLocalConfig: () => call<LocalConfig>('get_local_config'),
+  setCheckUpdates: (enabled: boolean) => call<void>('set_check_updates', { enabled }),
+  openReleasesPage: () => call<void>('open_releases_page'),
   setRdpClipboard: (enabled: boolean) => call<void>('set_rdp_clipboard', { enabled }),
   setBackupCount: (count: number) => call<void>('set_backup_count', { count }),
   userActivity: () => call<void>('user_activity'),
@@ -170,10 +172,10 @@ export const api = {
   exportHosts: (path: string, password: string, parts: Parts, folder: Id | null) =>
     call<ExportDone>('export_hosts', { path, password, parts, folder }),
   // Plik importu idzie do backendu jako zaszyfrowane bajty; interfejs nie widzi jego treści.
-  importPreview: (data: Uint8Array, password: string) =>
-    call<ImportSummary>('import_preview', { data: Array.from(data), password }),
-  importHosts: (data: Uint8Array, password: string, parts: Parts, existing: 'skip' | 'update') =>
-    call<ImportReport>('import_hosts', { data: Array.from(data), password, parts, existing }),
+  importPreview: (data: Uint8Array, password: string, format: ImportFormat) =>
+    call<ImportSummary>('import_preview', { data: Array.from(data), password, format }),
+  importHosts: (data: Uint8Array, password: string, format: ImportFormat, parts: Parts, existing: 'skip' | 'update') =>
+    call<ImportReport>('import_hosts', { data: Array.from(data), password, format, parts, existing }),
   answerTrust: (id: string, accept: boolean, remember: boolean) =>
     call<void>('answer_trust', { id, accept, remember }),
   sshResize: (id: string, cols: number, rows: number) => call<void>('ssh_resize', { id, cols, rows }),

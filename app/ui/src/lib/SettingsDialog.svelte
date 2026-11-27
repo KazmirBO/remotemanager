@@ -78,6 +78,7 @@
         if (local.log_sessions !== localLoaded.log_sessions) await api.setLogSessions(local.log_sessions);
         if (local.rdp_clipboard !== localLoaded.rdp_clipboard) await api.setRdpClipboard(local.rdp_clipboard);
         if (local.backup_count !== localLoaded.backup_count) await api.setBackupCount(local.backup_count);
+        if (local.check_updates !== localLoaded.check_updates) await api.setCheckUpdates(local.check_updates);
       }
       await refresh();
       applyTheme(settings);
@@ -242,12 +243,20 @@
       <button type="button" class="btn compact" onclick={() => (tool = 'diagnostics')}><Icon name="file-text" size={14} /> Dziennik diagnostyczny</button>
       <button type="button" class="btn compact" onclick={() => (tool = 'about')}><Icon name="info" size={14} /> O programie</button>
     </div>
+    {#if local}
+      <label class="check updates">
+        <input type="checkbox" bind:checked={local.check_updates} />
+        <span>Sprawdzaj po uruchomieniu, czy jest nowa wersja <span class="muted">(program łączy się wtedy z api.github.com; tylko ta maszyna)</span></span>
+      </label>
+      <p class="form-note">Program tylko informuje o nowym wydaniu i niczego sam nie pobiera. Zmiana obowiązuje po zapisaniu ustawień.</p>
+    {/if}
   {/if}
 {/snippet}
 
 <style>
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .tools { display: flex; flex-wrap: wrap; gap: 8px; }
+  .updates { margin-top: 20px; }
   .section-title { margin-top: 8px; }
   @media (max-width: 700px) { .two { grid-template-columns: 1fr; } }
 </style>
