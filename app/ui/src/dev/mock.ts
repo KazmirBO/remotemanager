@@ -66,6 +66,32 @@ let recoveryCodes: string[] = totp ? ['AAAQE-AYEAU', 'BBBRF-BZFBV'] : [];
 let pendingCode = false;
 let codeFailures = 0;
 let enrolling = false;
+// Klucz sprzętowy: `?key=1` zaczyna z jednym kluczem, `?key=2` z dwoma, `?key=none` udaje system
+// bez obsługi kluczy, `?keypin=system` udaje PIN w oknie systemu. PIN klucza w atrapie to 1234,
+// a "dotknięcie" trwa chwilę. Każde dodanie rejestruje kolejny udawany klucz.
+const keyAvailable = params.get('key') !== 'none';
+const keyPinMode = params.get('keypin') === 'system' ? 'system' : 'app';
+let hwKeys: { id: string; name: string }[] = ['Niebieski', 'Zapasowy']
+  .slice(0, Number(params.get('key')) || 0)
+  .map((name, i) => ({ id: `0${i}aa`, name }));
+let nextKey = hwKeys.length;
+let keyRemoval: { id: string; waiting: string[] } | null = null;
+let pendingKey = false;
+let pendingPassword: string | null = null;
+const keyStatus = () => ({ available: keyAvailable, pin: keyAvailable ? keyPinMode : null, max: 4, keys: [...hwKeys], removal: keyRemoval && { ...keyRemoval, waiting: [...keyRemoval.waiting] } });
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Udaje operację na kluczu: sprawdza PIN i czeka na `touches` dotknięć. */
+async function useKey(pin: unknown, touches: number) {
+  if (!keyAvailable) throw 'Ta wersja programu nie obsługuje kluczy sprzętowych na tym systemie.';
+  if (keyPinMode === 'app') {
+    if (!pin) throw 'Podaj PIN klucza.';
+    if (pin !== '1234') throw 'Nieprawidłowy PIN klucza. Pozostało prób: 7.';
+  }
+  for (let step = 1; step <= touches; step++) {
+    emitEvent('key-touch', { step, of: touches });
+    await sleep(500);
+  }
+}
 const trusted = new Set<string>();
 
 function seed() {
@@ -129,9 +155,58 @@ const handlers: Record<string, Handler> = {
     password = a.password; unlocked = true;
   },
   unlock: (a) => {
+    // Plik z kluczem: hasła nie da się sprawdzić bez klucza, więc błąd wychodzi dopiero w `unlock_key`.
+    if (hwKeys.length) {
+      if (!keyAvailable) throw 'Ten plik jest zabezpieczony kluczem sprzętowym, a ta wersja programu nie obsługuje kluczy sprzętowych na tym systemie.';
+      pendingKey = true; pendingPassword = a.password;
+      throw `NEEDS_KEY:${keyPinMode}`;
+    }
     if (a.password !== password) throw 'Nieprawidłowe hasło główne albo uszkodzony plik.';
     if (totp) { pendingCode = true; codeFailures = 0; throw 'NEEDS_TOTP:Podaj kod z aplikacji uwierzytelniającej.'; }
     unlocked = true;
+  },
+  unlock_key: async ({ pin }) => {
+    if (!pendingKey) throw 'KEY_EXPIRED:Najpierw podaj hasło główne.';
+    try { await useKey(pin, 1); } catch (e) { throw `KEY_BAD:${e}`; }
+    pendingKey = false;
+    if (pendingPassword !== password) throw 'KEY_EXPIRED:Nieprawidłowe hasło główne albo uszkodzony plik.';
+    if (totp) { pendingCode = true; codeFailures = 0; throw 'NEEDS_TOTP:Podaj kod z aplikacji uwierzytelniającej.'; }
+    unlocked = true;
+  },
+  key_status: () => keyStatus(),
+  key_add: async ({ pin, name }) => {
+    const n = String(name).trim();
+    if (!n) throw 'Podaj nazwę klucza (najwyżej 64 bajty).';
+    if (hwKeys.length >= 4) throw 'Plik ma już 4 klucze, czyli tyle, ile najwyżej obsługuje.';
+    if (hwKeys.some((k) => k.name === n)) throw 'Klucz o tej nazwie już istnieje.';
+    await useKey(pin, 3);
+    hwKeys.push({ id: `0${nextKey++}aa`, name: n });
+    keyRemoval = null;
+    return keyStatus();
+  },
+  // Usuwanie: ostatni klucz jedno dotknięcie; gdy zostają inne, każde wywołanie "dotyka" jeden z nich.
+  key_remove: async ({ id, pin }) => {
+    const target = hwKeys.find((k) => k.id === id);
+    if (!target) throw 'Nie ma takiego klucza.';
+    const rest = hwKeys.filter((k) => k.id !== id);
+    if (!rest.length) {
+      await useKey(pin, 1);
+      hwKeys = [];
+      keyRemoval = null;
+      return keyStatus();
+    }
+    const removal: { id: string; waiting: string[] } = keyRemoval && keyRemoval.id === id ? keyRemoval : { id, waiting: rest.map((k) => k.name) };
+    keyRemoval = removal;
+    await useKey(pin, 2);
+    removal.waiting.shift();
+    if (!removal.waiting.length) { hwKeys = rest; keyRemoval = null; }
+    return keyStatus();
+  },
+  key_remove_cancel: () => { keyRemoval = null; },
+  key_check: async ({ pin }) => {
+    if (!hwKeys.length) throw 'Plik nie ma kluczy sprzętowych.';
+    await useKey(pin, 1);
+    return hwKeys[0].name;
   },
   // Kody jednorazowe: w atrapie dobry kod to zawsze 123456, a kody zapasowe są stałe.
   unlock_totp: ({ code }) => {
@@ -170,7 +245,7 @@ const handlers: Record<string, Handler> = {
     totp = false;
     recoveryCodes = [];
   },
-  lock: () => { unlocked = false; },
+  lock: () => { unlocked = false; pendingKey = false; keyRemoval = null; },
   change_password: (a) => {
     if (a.old !== password) throw 'Nieprawidłowe hasło główne albo uszkodzony plik.';
     password = a.new;

@@ -31,6 +31,14 @@ Rzeczy, których nie sprawdzają testy automatyczne: działanie w prawdziwym okn
 - [ ] Kod zapasowy odblokowuje plik raz; wyłączenie kodów wymaga kodu.
 - [ ] Plik z włączonymi kodami: starsza wersja programu (np. 0.1.1-rc1) odmawia otwarcia z błędem o wersji formatu; po wyłączeniu kodów znowu go otwiera.
 - [ ] Synchronizacja pliku z włączonymi kodami między dwoma komputerami z tą wersją programu działa; "Pokaż różnice" zgłasza różnicę w wymogu dodatkowego składnika.
+- [ ] Klucz sprzętowy (FIDO2), Linux: dodanie klucza z PIN-em (trzy dotknięcia), potem odblokowanie wymaga hasła, PIN-u i dotknięcia; zły PIN podaje liczbę pozostałych prób, a złe hasło wychodzi po użyciu klucza.
+- [ ] Klucz sprzętowy, Windows: to samo, o PIN i dotknięcie pyta okno systemu.
+- [ ] Klucz zarejestrowany na Linuksie otwiera ten sam plik na Windows i odwrotnie ("Sprawdź klucz" mówi, że pasuje).
+- [ ] Drugi klucz: po dodaniu każdy z dwóch otwiera plik; usunięcie jednego wymaga dwóch dotknięć drugiego, a usunięty klucz pliku już nie otwiera. Usunięcie ostatniego klucza (z jego dotknięciem) wraca do samego hasła.
+- [ ] Klucz bez ustawionego PIN-u i klucz bez hmac-secret są odrzucane z czytelnym komunikatem; brak klucza w gnieździe też.
+- [ ] Plik z kluczem: zmiana hasła głównego działa bez dotykania klucza; przywrócenie kopii zapasowej z tą samą listą kluczy działa; starsza wersja programu (np. 0.1.1-rc2) odmawia otwarcia.
+- [ ] Synchronizacja pliku z kluczem: po dodaniu klucza na jednym komputerze drugi pobiera plik i otwiera go hasłem z kluczem.
+- [ ] Klucz razem z kodami jednorazowymi: kolejność to hasło, klucz, kod.
 - [ ] Kopie zapasowe: lista pokazuje kopie, przywrócenie kopii (z jej hasłem) przywraca poprzedni stan.
 - [ ] Liczba kopii zapasowych: po zmniejszeniu starsze kopie znikają z dysku.
 

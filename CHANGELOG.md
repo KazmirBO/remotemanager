@@ -2,6 +2,24 @@
 
 Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `wydanie`).
 
+## 0.1.1-rc3 - 2026-11-27
+
+Wydanie wstępne, trzeci kandydat do wersji 0.1.1: pakiety są niepodpisane. Klucz sprzętowy nie był jeszcze sprawdzony z prawdziwym kluczem ani na Linuksie, ani na Windows (testy używają programowej atrapy klucza). Zanim włączysz go na właściwym pliku z hostami, przejdź punkty z `TESTY-RECZNE.md` na osobnym pliku testowym.
+
+### Zmiany
+
+- Klucz sprzętowy FIDO2 przy otwieraniu pliku z hostami (zgłoszenie #17; Ustawienia, Bezpieczeństwo). Po dodaniu klucza plik otwiera hasło główne razem z kluczem: sekret, który klucz zwraca (rozszerzenie hmac-secret), jest częścią szyfrowania, więc sam plik i hasło nie wystarczą, także w innym narzędziu. Można zarejestrować do 4 kluczy i każdy otwiera plik samodzielnie. Nie ma kodu odzyskiwania: drugi klucz jest jedyną drogą odzyskania dostępu po utracie pierwszego, a po utracie jedynego klucza pliku nie da się otworzyć.
+- Klucz zawsze sprawdza PIN, więc musi mieć go ustawionego. Na Linuksie program rozmawia z kluczem po USB i sam pyta o PIN (PIN nie jest zapisywany); na Windows o PIN i dotknięcie pyta okno systemu. Dodanie klucza wymaga trzech dotknięć (rejestracja i dwukrotny odczyt sekretu, który musi wyjść taki sam).
+- Usunięcie klucza: ostatni klucz trzeba przy tym dotknąć, a gdy zostają inne, plik dostaje nowy klucz szyfrujący i każdy pozostający klucz trzeba dotknąć dwa razy (program prowadzi po kolei przez kolejne klucze). Przycisk "Sprawdź klucz" mówi, czy podłączony klucz otworzy plik, niczego nie zmieniając; służy też do potwierdzenia, że klucz zarejestrowany na jednym systemie działa na drugim.
+- Kolejność przy otwieraniu: hasło główne, klucz sprzętowy, kod jednorazowy (jeśli włączony). Hasła nie da się sprawdzić bez klucza, więc błędne hasło wychodzi dopiero po użyciu klucza. Zmiana hasła głównego nie wymaga klucza.
+- Plik z kluczem ma wersję 2 formatu z listą kluczy w nagłówku; wersje programu starsze niż ta go nie otworzą. Przy synchronizacji wszystkie komputery muszą mieć tę wersję programu, zanim dodasz klucz, a po zmianie listy kluczy na jednym komputerze pozostałe po pobraniu pliku odblokowują go ponownie. Kopie zapasowe sprzed dodania klucza nadal otwiera samo hasło; kopię z tą samą listą kluczy co otwarty plik program przywraca bez dotykania klucza, a kopii z inną listą kluczy nie odczyta.
+- Budowa ze źródeł na Linuksie wymaga teraz nagłówków libudev (w Debianie i Ubuntu pakiet `libudev-dev`).
+
+### Pakiety
+
+- `multiremotemanager_0.1.1-rc3_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.1.1-rc3_amd64.deb` - pakiet dla Debiana i Ubuntu.
+
 ## 0.1.1-rc2 - 2026-11-27
 
 Wydanie wstępne, drugi kandydat do wersji 0.1.1: pakiety są niepodpisane. Nowe funkcje z tego wydania nie były jeszcze sprawdzone w działającym programie; lista rzeczy do przejścia ręcznie jest w `TESTY-RECZNE.md`.

@@ -97,8 +97,8 @@
       <section class="diff" aria-label="Różnice między wersją lokalną a plikiem z folderu">
         {#if !diff.readable || !diff.diff}
           <p class="diff-note">
-            Plik w folderze ma inne hasło główne (zmieniono je na innym komputerze), więc nie da się go porównać bez tego hasła.
-            Różnice zobaczysz dopiero po pobraniu i odblokowaniu nowym hasłem.
+            Plik w folderze ma inne hasło główne albo inną listę kluczy sprzętowych (zmieniono je na innym komputerze), więc nie
+            da się go porównać. Różnice zobaczysz dopiero po pobraniu i ponownym odblokowaniu.
           </p>
         {:else if diffIsEmpty(diff.diff)}
           <p class="diff-note">Zawartość jest taka sama po obu stronach; pliki różnią się tylko zapisem.</p>

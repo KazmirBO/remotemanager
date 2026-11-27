@@ -296,6 +296,44 @@ pub async fn list_backups(state: State<'_, AppState>) -> Result<Vec<BackupInfo>,
     Ok(out)
 }
 
+/// Odszyfrowuje kopię zapasową. Kopię bez kluczy sprzętowych otwiera samo hasło. Kopia z tą samą
+/// listą kluczy co otwarty plik korzysta z klucza danych z pamięci, więc klucza nie trzeba
+/// dotykać. Kopii z inną listą kluczy program nie odczyta.
+pub(crate) async fn read_backup(
+    state: &AppState,
+    n: usize,
+    password: String,
+) -> Result<Document, String> {
+    let bad_password = || "Nieprawidłowe hasło dla tej kopii albo uszkodzona kopia.".to_string();
+    let file = vault::backup_file(&state.path, n);
+    let password = zeroize::Zeroizing::new(password);
+    let (probe_file, probe) = (file.clone(), password.clone());
+    let plain =
+        tokio::task::spawn_blocking(move || vault::open_backup::<Document>(&probe_file, &probe))
+            .await
+            .map_err(err)?;
+    match plain {
+        Ok(doc) => Ok(doc),
+        Err(vault::Error::NeedsKey) => {
+            let guard = state.inner.lock().await;
+            let u = guard.as_ref().ok_or("Plik z hostami jest zablokowany")?;
+            // Argon2 liczy się długo: `block_in_place` nie zatrzymuje innych zadań tokio.
+            tokio::task::block_in_place(|| u.vault.open_sibling::<Document>(&file, &password))
+                .map_err(|e| match e {
+                    vault::Error::Decrypt => bad_password(),
+                    vault::Error::NeedsKey => {
+                        "Ta kopia ma inną listę kluczy sprzętowych niż otwarty plik, więc program \
+                         nie może jej odczytać."
+                            .to_string()
+                    }
+                    other => other.to_string(),
+                })
+        }
+        Err(vault::Error::Decrypt) => Err(bad_password()),
+        Err(other) => Err(other.to_string()),
+    }
+}
+
 /// Przywraca dokument z kopii. Hasło jest potrzebne, bo kopia mogła powstać przed zmianą hasła głównego.
 #[tauri::command]
 pub async fn restore_backup(
@@ -306,16 +344,7 @@ pub async fn restore_backup(
     if !(1..=20).contains(&n) {
         return Err("Nieprawidłowy numer kopii.".into());
     }
-    let file = vault::backup_file(&state.path, n);
-    let doc = tokio::task::spawn_blocking(move || vault::open_backup::<Document>(&file, &password))
-        .await
-        .map_err(err)?
-        .map_err(|e| match e {
-            vault::Error::Decrypt => {
-                "Nieprawidłowe hasło dla tej kopii albo uszkodzona kopia.".to_string()
-            }
-            other => other.to_string(),
-        })?;
+    let doc = read_backup(&state, n, password).await?;
     state
         .mutate(|d| {
             *d = doc;

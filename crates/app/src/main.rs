@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod dto;
 mod flow;
+mod hwkey;
 mod idle;
 mod keys;
 mod maintenance;
@@ -101,6 +102,12 @@ fn main() {
             mfa::totp_begin,
             mfa::totp_enable,
             mfa::totp_disable,
+            hwkey::unlock_key,
+            hwkey::key_status,
+            hwkey::key_add,
+            hwkey::key_remove,
+            hwkey::key_remove_cancel,
+            hwkey::key_check,
             commands::change_password,
             commands::get_doc,
             commands::save_folder,
