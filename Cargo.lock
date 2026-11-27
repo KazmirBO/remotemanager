@@ -86,7 +86,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "0.1.1-rc2"
+version = "0.1.1-rc3"
 dependencies = [
  "arboard",
  "fido",
@@ -1637,7 +1637,7 @@ checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "fido"
-version = "0.1.1-rc2"
+version = "0.1.1-rc3"
 dependencies = [
  "ctap-hid-fido2",
  "getrandom 0.4.3",
@@ -2792,7 +2792,7 @@ dependencies = [
 
 [[package]]
 name = "keygrab"
-version = "0.1.1-rc2"
+version = "0.1.1-rc3"
 dependencies = [
  "windows-sys 0.61.2",
 ]
@@ -2997,7 +2997,7 @@ dependencies = [
 
 [[package]]
 name = "model"
-version = "0.1.1-rc2"
+version = "0.1.1-rc3"
 dependencies = [
  "hmac",
  "proptest",
@@ -4116,7 +4116,7 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "rdp"
-version = "0.1.1-rc2"
+version = "0.1.1-rc3"
 dependencies = [
  "rdp-proto",
  "tokio",
@@ -4124,7 +4124,7 @@ dependencies = [
 
 [[package]]
 name = "rdp-proto"
-version = "0.1.1-rc2"
+version = "0.1.1-rc3"
 dependencies = [
  "serde",
  "serde_json",
@@ -4932,7 +4932,7 @@ checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 
 [[package]]
 name = "ssh"
-version = "0.1.1-rc2"
+version = "0.1.1-rc3"
 dependencies = [
  "russh",
  "thiserror 2.0.21",
@@ -5134,7 +5134,7 @@ dependencies = [
 
 [[package]]
 name = "sync"
-version = "0.1.1-rc2"
+version = "0.1.1-rc3"
 dependencies = [
  "sha2 0.11.1",
  "thiserror 2.0.21",
@@ -5967,7 +5967,7 @@ dependencies = [
 
 [[package]]
 name = "vault"
-version = "0.1.1-rc2"
+version = "0.1.1-rc3"
 dependencies = [
  "argon2",
  "chacha20poly1305",

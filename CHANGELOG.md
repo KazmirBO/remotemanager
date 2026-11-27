@@ -2,7 +2,9 @@
 
 Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `wydanie`).
 
-## Niewydane
+## 0.1.1-rc3 - 2026-11-27
+
+Wydanie wstępne, trzeci kandydat do wersji 0.1.1: pakiety są niepodpisane. Klucz sprzętowy nie był jeszcze sprawdzony z prawdziwym kluczem ani na Linuksie, ani na Windows (testy używają programowej atrapy klucza). Zanim włączysz go na właściwym pliku z hostami, przejdź punkty z `TESTY-RECZNE.md` na osobnym pliku testowym.
 
 ### Zmiany
 
@@ -12,6 +14,11 @@ Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `
 - Kolejność przy otwieraniu: hasło główne, klucz sprzętowy, kod jednorazowy (jeśli włączony). Hasła nie da się sprawdzić bez klucza, więc błędne hasło wychodzi dopiero po użyciu klucza. Zmiana hasła głównego nie wymaga klucza.
 - Plik z kluczem ma wersję 2 formatu z listą kluczy w nagłówku; wersje programu starsze niż ta go nie otworzą. Przy synchronizacji wszystkie komputery muszą mieć tę wersję programu, zanim dodasz klucz, a po zmianie listy kluczy na jednym komputerze pozostałe po pobraniu pliku odblokowują go ponownie. Kopie zapasowe sprzed dodania klucza nadal otwiera samo hasło; kopię z tą samą listą kluczy co otwarty plik program przywraca bez dotykania klucza, a kopii z inną listą kluczy nie odczyta.
 - Budowa ze źródeł na Linuksie wymaga teraz nagłówków libudev (w Debianie i Ubuntu pakiet `libudev-dev`).
+
+### Pakiety
+
+- `multiremotemanager_0.1.1-rc3_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.1.1-rc3_amd64.deb` - pakiet dla Debiana i Ubuntu.
 
 ## 0.1.1-rc2 - 2026-11-27
 
