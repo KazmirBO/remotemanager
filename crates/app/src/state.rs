@@ -42,6 +42,14 @@ pub struct AppState {
     pub pending_unlock: Mutex<Option<crate::mfa::PendingUnlock>>,
     /// Sekret TOTP z rozpoczętego włączania, jeszcze niezapisany w dokumencie.
     pub totp_enroll: Mutex<Option<crate::mfa::Enrollment>>,
+    /// Plik z kluczem sprzętowym po podaniu hasła: jeszcze zaszyfrowany, czeka na klucz.
+    pub pending_key: Mutex<Option<crate::hwkey::PendingKey>>,
+    /// Rozpoczęte usuwanie klucza sprzętowego (sekrety kluczy, które zostają).
+    pub key_removal: Mutex<Option<crate::hwkey::Removal>>,
+    /// Klucz sprzętowy tego systemu; `None`, gdy jeszcze nieutworzony albo nieobsługiwany.
+    pub authenticator: Mutex<Option<crate::hwkey::Key>>,
+    /// Jedna operacja na kluczu sprzętowym naraz (urządzenie jest jedno).
+    pub key_op: tokio::sync::Mutex<()>,
     pub sessions: Mutex<HashMap<Uuid, Arc<Live>>>,
     pub trust: Mutex<HashMap<Uuid, oneshot::Sender<TrustAnswer>>>,
     pub rdp: Mutex<HashMap<Uuid, rdp::RdpClient>>,
@@ -75,6 +83,10 @@ impl AppState {
             inner: tokio::sync::Mutex::new(None),
             pending_unlock: Mutex::new(None),
             totp_enroll: Mutex::new(None),
+            pending_key: Mutex::new(None),
+            key_removal: Mutex::new(None),
+            authenticator: Mutex::new(None),
+            key_op: tokio::sync::Mutex::new(()),
             sessions: Mutex::new(HashMap::new()),
             trust: Mutex::new(HashMap::new()),
             rdp: Mutex::new(HashMap::new()),

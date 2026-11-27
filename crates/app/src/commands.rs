@@ -1,6 +1,6 @@
 use model::{Document, Id, Protocol, Settings, StoredKey};
 use tauri::State;
-use vault::{KdfParams, Vault};
+use vault::{KdfParams, Opened, Vault};
 
 use crate::dto::{DocView, FieldsIo, FolderInput, FolderView, HostInput, HostView};
 use crate::state::{AppState, Unlocked};
@@ -19,7 +19,7 @@ fn vault_err(e: vault::Error) -> String {
 
 /// Błąd odblokowania; przy błędzie odszyfrowania, gdy obok pliku leży kopia sprzed ostatniego
 /// pobrania przy synchronizacji, komunikat wskazuje jej pełną ścieżkę.
-fn unlock_err(e: vault::Error, path: &std::path::Path) -> String {
+pub(crate) fn unlock_err(e: vault::Error, path: &std::path::Path) -> String {
     let decrypt = matches!(e, vault::Error::Decrypt);
     let msg = vault_err(e);
     let copy = sync::pre_pull_copy(path);
@@ -64,26 +64,54 @@ pub async fn create_vault(state: State<'_, AppState>, password: String) -> Resul
     Ok(())
 }
 
-#[tauri::command]
-pub async fn unlock(state: State<'_, AppState>, password: String) -> Result<(), String> {
+/// Pierwszy krok odblokowania: hasło główne. Plik z kluczem sprzętowym zostaje zaszyfrowany
+/// i czeka na klucz (`NEEDS_KEY:`), plik z kodami czeka odszyfrowany na kod (`NEEDS_TOTP:`).
+pub(crate) async fn unlock_with(
+    state: &AppState,
+    password: String,
+    key: Option<crate::hwkey::Key>,
+) -> Result<(), String> {
     let path = state.path.clone();
-    let (vault, doc) =
-        tokio::task::spawn_blocking(move || Vault::open::<Document>(path, &password))
-            .await
-            .map_err(err)?
-            .map_err(|e| unlock_err(e, &state.path))?;
-    let mut vault = vault;
+    let opened = tokio::task::spawn_blocking(move || Vault::open_step::<Document>(path, &password))
+        .await
+        .map_err(err)?
+        .map_err(|e| unlock_err(e, &state.path))?;
+    let (mut vault, doc) = match opened {
+        Opened::Ready(vault, doc) => (vault, doc),
+        Opened::NeedsKey(challenge) => {
+            let Some(key) = key else {
+                return Err(
+                    "Ten plik jest zabezpieczony kluczem sprzętowym, a ta wersja programu nie \
+                     obsługuje kluczy sprzętowych na tym systemie."
+                        .into(),
+                );
+            };
+            // Hasła nie da się jeszcze sprawdzić: bez sekretu klucza nie ma czym odszyfrować.
+            crate::hwkey::begin(state, challenge);
+            return Err(crate::hwkey::needs_key(key.as_ref()));
+        }
+    };
     vault.set_backup_count(state.config.lock().expect("config").backup_count);
     // Plik z dodatkowym składnikiem: odszyfrowana zawartość czeka na kod i nie jest jeszcze
     // dostępna dla żadnej komendy.
     if doc.mfa.totp.is_some() {
-        crate::mfa::begin_second_step(&state, Unlocked { vault, doc });
+        crate::mfa::begin_second_step(state, Unlocked { vault, doc });
         return Err(crate::mfa::NEEDS_TOTP.into());
     }
     *state.inner.lock().await = Some(Unlocked { vault, doc });
     state.touch_activity();
     state.log("odblokowano plik z hostami");
     Ok(())
+}
+
+#[tauri::command]
+pub async fn unlock(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    password: String,
+) -> Result<(), String> {
+    let key = crate::hwkey::authenticator(&app, &state);
+    unlock_with(&state, password, key).await
 }
 
 #[tauri::command]
@@ -100,8 +128,9 @@ pub async fn lock_all(app: &tauri::AppHandle, state: &AppState, log: &str) {
     // Kolejność jest celowa: najpierw znika klucz w pamięci, potem anulowane są pytania o zaufanie
     // i zamykane sesje. Połączenie, które skończy się po opróżnieniu map, zobaczy już zablokowany plik.
     *state.inner.lock().await = None;
-    // Plik czekający na kod dodatkowego składnika i niedokończone włączanie też znikają.
+    // Plik czekający na kod albo na klucz sprzętowy i niedokończone zmiany składników też znikają.
     crate::mfa::clear(state);
+    crate::hwkey::clear(state);
     // Pytanie o zakończenie programu przepada razem z interfejsem (`onLocked`), więc kolejna
     // prośba o zamknięcie musi znów zapytać, a nie kończyć program jako "druga prośba".
     state
@@ -200,8 +229,9 @@ pub async fn reset_after_reload(state: &AppState) {
     // Najpierw licznik, potem mapy: połączenie w toku widzi zmianę po wstawieniu sesji do mapy.
     state.reloads.fetch_add(1, Ordering::SeqCst);
     state.quit_pending.store(false, Ordering::SeqCst);
-    // Nowy interfejs nie pamięta, że czekał na kod: odblokowanie zaczyna się od hasła.
+    // Nowy interfejs nie pamięta, że czekał na kod albo klucz: odblokowanie zaczyna się od hasła.
     crate::mfa::clear(state);
+    crate::hwkey::clear(state);
     let closed = close_all_sessions(state).await;
     if closed > 0 {
         state.log(format!(
@@ -220,13 +250,26 @@ pub async fn change_password(
         return Err("Nowe hasło musi mieć co najmniej 8 znaków.".into());
     }
     // Sprawdzenie starego hasła osobnym otwarciem pliku, żeby nie zaufać samemu stanowi sesji.
+    // Pliku z kluczem sprzętowym samo hasło nie otwiera: wtedy stare hasło porównujemy niżej
+    // z kluczem z pamięci, bez pytania o klucz.
     let path = state.path.clone();
-    tokio::task::spawn_blocking(move || Vault::open::<Document>(path, &old).map(|_| ()))
-        .await
-        .map_err(err)?
-        .map_err(vault_err)?;
+    let old = zeroize::Zeroizing::new(old);
+    let probe = old.clone();
+    let keyed = match tokio::task::spawn_blocking(move || {
+        Vault::open::<Document>(path, &probe).map(|_| ())
+    })
+    .await
+    .map_err(err)?
+    {
+        Ok(()) => false,
+        Err(vault::Error::NeedsKey) => true,
+        Err(e) => return Err(vault_err(e)),
+    };
     let mut guard = state.inner.lock().await;
     let u = guard.as_mut().ok_or("Plik z hostami jest zablokowany")?;
+    if keyed && !tokio::task::block_in_place(|| u.vault.check_password(&old)).map_err(vault_err)? {
+        return Err(vault_err(vault::Error::Decrypt));
+    }
     let pre = state.sync_pre();
     // Argon2 (ok. 64 MiB) liczy się długo: `block_in_place` nie zatrzymuje innych zadań tokio.
     tokio::task::block_in_place(|| u.vault.change_password(&new, &u.doc)).map_err(vault_err)?;

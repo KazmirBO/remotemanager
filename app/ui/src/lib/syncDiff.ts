@@ -27,7 +27,7 @@ export interface DocDiff {
   /** Różni się wymóg dodatkowego składnika przy otwieraniu pliku. */
   mfa_differ: boolean;
 }
-/** `readable: false` oznacza plik z innym hasłem głównym: nie da się go odczytać bez tego hasła. */
+/** `readable: false` oznacza plik z innym hasłem głównym albo inną listą kluczy sprzętowych: nie da się go odczytać kluczem z pamięci. */
 export interface SyncDiff { readable: boolean; diff: DocDiff | null }
 
 const PART_LABELS: Record<FieldPart, string> = {

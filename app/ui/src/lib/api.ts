@@ -94,6 +94,18 @@ export const defaultSettings = (): Settings => ({
 });
 /** Stan dodatkowego składnika przy otwieraniu pliku; sekret i kody zapasowe zostają w backendzie. */
 export interface MfaView { totp: boolean; recovery_left: number }
+/** Zarejestrowany klucz sprzętowy; `id` służy tylko do wskazania klucza przy usuwaniu. */
+export interface KeyView { id: string; name: string }
+export interface KeyStatus {
+  /** Czy program obsługuje klucze sprzętowe na tym systemie. */
+  available: boolean;
+  /** Kto pyta o PIN klucza: `app` (pole w programie) albo `system` (okno systemu). */
+  pin: 'app' | 'system' | null;
+  max: number;
+  keys: KeyView[];
+  /** Rozpoczęte usuwanie: nazwy kluczy, które trzeba jeszcze dotknąć. */
+  removal: { id: string; waiting: string[] } | null;
+}
 export interface DocView { folders: FolderView[]; hosts: HostView[]; settings: Settings; trusted_count: number; mfa: MfaView }
 
 export type VaultState = 'missing' | 'locked' | 'unlocked';
@@ -142,6 +154,15 @@ export const api = {
   /** Włącza wymóg kodu; zwraca kody zapasowe do jednorazowego pokazania. */
   totpEnable: (code: string) => call<string[]>('totp_enable', { code }),
   totpDisable: (code: string) => call<void>('totp_disable', { code }),
+  /** Drugi krok odblokowania pliku z kluczem sprzętowym; `pin` tylko, gdy pyta o niego program. */
+  unlockKey: (pin: string | null) => call<void>('unlock_key', { pin }),
+  keyStatus: () => call<KeyStatus>('key_status'),
+  keyAdd: (pin: string | null, name: string) => call<KeyStatus>('key_add', { pin, name }),
+  /** Usuwa klucz; wynik z `removal` oznacza, że trzeba wywołać ponownie z kolejnym kluczem. */
+  keyRemove: (id: string, pin: string | null) => call<KeyStatus>('key_remove', { id, pin }),
+  keyRemoveCancel: () => call<void>('key_remove_cancel'),
+  /** Sprawdza podłączony klucz; zwraca nazwę, pod którą jest zarejestrowany. */
+  keyCheck: (pin: string | null) => call<string>('key_check', { pin }),
   lock: () => call<void>('lock'),
   changePassword: (old: string, nw: string) => call<void>('change_password', { old, new: nw }),
   getDoc: () => call<DocView>('get_doc'),

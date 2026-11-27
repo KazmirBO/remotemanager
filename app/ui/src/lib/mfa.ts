@@ -1,8 +1,12 @@
-// Dodatkowy składnik przy otwieraniu pliku (kody TOTP): rozpoznawanie odpowiedzi backendu i drobne
-// pomocniki do wyświetlania.
+// Dodatkowe składniki przy otwieraniu pliku (klucz sprzętowy, kody TOTP): rozpoznawanie odpowiedzi
+// backendu i drobne pomocniki do wyświetlania.
 
 /** Co backend odpowiedział na próbę odblokowania albo podanie kodu. */
 export type UnlockStep =
+  /** Plik wymaga klucza sprzętowego; `message` to tryb PIN-u (`app` albo `system`). */
+  | { kind: 'needs_key'; message: string }
+  /** Klucz albo PIN nie pasował, można próbować dalej. */
+  | { kind: 'bad_key'; message: string }
   /** Hasło było dobre, trzeba jeszcze podać kod. */
   | { kind: 'needs_code'; message: string }
   /** Kod był zły, można próbować dalej. */
@@ -13,12 +17,15 @@ export type UnlockStep =
   | { kind: 'error'; message: string };
 
 const PREFIXES: [string, UnlockStep['kind']][] = [
+  ['NEEDS_KEY:', 'needs_key'],
+  ['KEY_BAD:', 'bad_key'],
+  ['KEY_EXPIRED:', 'start_over'],
   ['NEEDS_TOTP:', 'needs_code'],
   ['TOTP_BAD:', 'bad_code'],
   ['TOTP_EXPIRED:', 'start_over'],
 ];
 
-/** Zamienia błąd komendy `unlock` albo `unlock_totp` na krok ekranu odblokowania. */
+/** Zamienia błąd komendy `unlock`, `unlock_key` albo `unlock_totp` na krok ekranu odblokowania. */
 export function unlockStep(err: unknown): UnlockStep {
   const text = String(err);
   for (const [prefix, kind] of PREFIXES) {
@@ -36,4 +43,23 @@ export function groupSecret(secret: string): string {
 export function looksLikeCode(text: string): boolean {
   const t = text.replace(/[\s-]/g, '');
   return /^\d{6}$/.test(t) || /^[A-Za-z2-7]{10}$/.test(t);
+}
+
+/** Kto pyta o PIN klucza: program (pole w oknie) albo system we własnym oknie. */
+export type PinMode = 'app' | 'system';
+
+/** Tryb PIN-u z odpowiedzi backendu; nieznana wartość oznacza pole w programie. */
+export function pinMode(text: string | null | undefined): PinMode {
+  return text === 'system' ? 'system' : 'app';
+}
+
+/** Czy można zacząć operację na kluczu: w trybie `app` potrzebny jest wpisany PIN. */
+export function pinReady(mode: PinMode, pin: string): boolean {
+  return mode === 'system' || pin.length > 0;
+}
+
+/** Napis na czas czekania na klucz, z numerem dotknięcia, gdy jest ich kilka. */
+export function touchLabel(touch: { step: number; of: number } | null): string {
+  if (!touch || touch.of <= 1) return 'Dotknij klucza...';
+  return `Dotknij klucza (${touch.step} z ${touch.of})...`;
 }

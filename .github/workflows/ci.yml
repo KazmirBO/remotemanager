@@ -21,7 +21,7 @@ jobs:
           node-version: 22
       - name: Zależności systemowe Tauri (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev openssh-server
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libudev-dev openssh-server
       - run: pnpm --dir app/ui install --frozen-lockfile
       - run: pnpm --dir app/ui build
       - run: pnpm --dir app/ui check
