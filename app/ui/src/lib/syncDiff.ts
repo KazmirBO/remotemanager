@@ -24,6 +24,8 @@ export interface DocDiff {
   defaults: FieldPart[];
   trusted_local_only: number; trusted_remote_only: number;
   settings_differ: boolean;
+  /** Różni się wymóg dodatkowego składnika przy otwieraniu pliku. */
+  mfa_differ: boolean;
 }
 /** `readable: false` oznacza plik z innym hasłem głównym: nie da się go odczytać bez tego hasła. */
 export interface SyncDiff { readable: boolean; diff: DocDiff | null }
@@ -81,6 +83,7 @@ export function extraLines(d: DocDiff): string[] {
     out.push(`Zaufane klucze i certyfikaty: ${d.trusted_local_only} tylko u Ciebie, ${d.trusted_remote_only} tylko w folderze.`);
   }
   if (d.settings_differ) out.push('Ustawienia programu różnią się.');
+  if (d.mfa_differ) out.push('Różni się wymóg dodatkowego składnika przy otwieraniu pliku.');
   return out;
 }
 

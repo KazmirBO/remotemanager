@@ -10,6 +10,7 @@
   import SyncPanel from './settings/SyncPanel.svelte';
   import ShortcutsPanel from './settings/ShortcutsPanel.svelte';
   import TransferPanel from './settings/TransferPanel.svelte';
+  import MfaPanel from './settings/MfaPanel.svelte';
   import { CATEGORIES, type SettingsCategory } from './settings/categories';
   import { SCHEMES } from './terminalThemes';
   import { binding } from './shortcuts';
@@ -231,6 +232,7 @@
     <div class="field"><label for="s-new">Nowe hasło</label><input id="s-new" type="password" bind:value={newPw} autocomplete="off" /></div>
     <div class="field"><label for="s-new2">Powtórz nowe hasło</label><input id="s-new2" type="password" bind:value={newPw2} autocomplete="off" /></div>
     <p class="form-note">Zaufane klucze i certyfikaty: {ui.doc?.trusted_count ?? 0}.</p>
+    <MfaPanel />
   {:else if id === 'sync'}
     <SyncPanel {onclose} />
   {:else if id === 'transfer'}

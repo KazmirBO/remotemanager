@@ -2,13 +2,22 @@
 
 Opis wydań. Sekcja danej wersji trafia do opisu wydania na GitHubie (workflow `wydanie`).
 
-## Niewydane
+## 0.1.1-rc2 - 2026-11-27
 
-Zmiany na gałęzi roboczej, które wejdą do następnego wydania.
+Wydanie wstępne, drugi kandydat do wersji 0.1.1: pakiety są niepodpisane. Nowe funkcje z tego wydania nie były jeszcze sprawdzone w działającym programie; lista rzeczy do przejścia ręcznie jest w `TESTY-RECZNE.md`.
 
+### Zmiany
+
+- Kody jednorazowe przy otwieraniu pliku z hostami (TOTP, zgłoszenie #17): po włączeniu w Ustawieniach (Bezpieczeństwo) program po haśle głównym pyta jeszcze o kod z aplikacji uwierzytelniającej. Włączenie wymaga potwierdzenia pierwszym kodem i daje 8 jednorazowych kodów zapasowych na wypadek braku telefonu; po 5 błędnych kodach trzeba ponownie podać hasło. To zabezpieczenie otwierania pliku w programie, a nie część szyfrowania: kto ma plik i hasło główne, odszyfruje go innym narzędziem. Składnikiem szyfrowania będzie dopiero klucz sprzętowy (w przygotowaniu).
+- Nowa wersja formatu pliku z hostami (2) dla plików z włączonym dodatkowym składnikiem. Starsze wersje programu takiego pliku nie otworzą i pokażą błąd o nieobsługiwanej wersji, więc nie pominą wymogu kodu. Pliki bez dodatkowego składnika zostają w wersji 1 i nic się dla nich nie zmienia. Przy synchronizacji wszystkie komputery muszą mieć wersję programu z tą zmianą, zanim włączysz kody.
 - Powiadomienie o nowej wersji: po uruchomieniu program pyta GitHuba o listę wydań i pokazuje powiadomienie, gdy jest nowsze wydanie; okno "O programie" podaje wtedy numer i ma przycisk otwierający stronę wydań. Program niczego sam nie pobiera ani nie instaluje. Wydania wstępne widzi tylko ten, kto sam używa wydania wstępnego. Sprawdzanie wyłącza się w Ustawieniach (Narzędzia); ustawienie dotyczy jednej maszyny.
 - Import listy hostów z pliku CSV (Ustawienia, "Import i eksport"): kolumny `nazwa`, `adres`, `protokol` (`ssh` albo `rdp`) i opcjonalnie `katalog` (ścieżka rozdzielona ukośnikiem); separator to przecinek, średnik albo tabulator. Lista nie ma hasła i niesie tylko nazwy, adresy, protokół i strukturę katalogów. Identyfikatory wynikają z adresu hosta i ścieżki katalogu, więc import odświeżonej listy aktualizuje te same hosty zamiast je dublować. README ma przykład zrzutu komputerów z jednostki Active Directory.
 - Synchronizacja: przycisk "Pokaż różnice" w Ustawieniach (kategoria Synchronizacja) przy zmianach lokalnych, zmianach zdalnych i konflikcie. Lista pokazuje hosty i katalogi, które są tylko u Ciebie, tylko w folderze albo różnią się po obu stronach, a dla różniących się wymienia, co się zmieniło: nazwę, adres, protokół i położenie z obiema wartościami, pozostałe dane jako nazwy (np. hasło, opcje połączenia, notatki), bez ich treści. Osobno podaje różnice w ustawieniach domyślnych drzewa, zaufanych kluczach i ustawieniach programu. Lista jest tylko do oglądania: synchronizacja nadal dotyczy całego pliku. Gdy plik w folderze ma inne hasło główne, porównanie nie jest możliwe i program to mówi.
+
+### Pakiety
+
+- `multiremotemanager_0.1.1-rc2_x64-setup.exe` - instalator dla Windows (NSIS, 64 bity).
+- `multiremotemanager_0.1.1-rc2_amd64.deb` - pakiet dla Debiana i Ubuntu.
 
 ## 0.1.1-rc1 - 2026-11-20
 

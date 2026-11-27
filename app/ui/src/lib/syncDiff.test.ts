@@ -4,7 +4,7 @@ import { changeText, diffCount, diffGroups, diffIntro, diffIsEmpty, extraLines, 
 const item = (over: Partial<DiffItem>): DiffItem => ({
   id: 'x', name: 'db', path: 'Firma', address: '10.0.0.5', protocol: 'ssh', side: 'changed', changes: [], ...over,
 });
-const empty: DocDiff = { folders: [], hosts: [], defaults: [], trusted_local_only: 0, trusted_remote_only: 0, settings_differ: false };
+const empty: DocDiff = { folders: [], hosts: [], defaults: [], trusted_local_only: 0, trusted_remote_only: 0, settings_differ: false, mfa_differ: false };
 
 describe('changeText', () => {
   it('podaje obie wartości tam, gdzie nie są sekretem', () => {
@@ -50,6 +50,8 @@ describe('podsumowania', () => {
   it('pusty wynik', () => {
     expect(diffIsEmpty(empty)).toBe(true);
     expect(diffIsEmpty({ ...empty, settings_differ: true })).toBe(false);
+    expect(diffIsEmpty({ ...empty, mfa_differ: true })).toBe(false);
+    expect(extraLines({ ...empty, mfa_differ: true })).toEqual(['Różni się wymóg dodatkowego składnika przy otwieraniu pliku.']);
     expect(diffIsEmpty({ ...empty, hosts: [item({})] })).toBe(false);
   });
   it('liczba pozycji z odmianą', () => {

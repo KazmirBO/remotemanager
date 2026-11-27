@@ -92,7 +92,9 @@ export const defaultSettings = (): Settings => ({
   terminal_paste_right_click: false, ssh_term: 'xterm-256color', confirm_close_tab: false,
   confirm_quit: false, ssh_keepalive_secs: 30, auto_lock_minutes: 0,
 });
-export interface DocView { folders: FolderView[]; hosts: HostView[]; settings: Settings; trusted_count: number }
+/** Stan dodatkowego składnika przy otwieraniu pliku; sekret i kody zapasowe zostają w backendzie. */
+export interface MfaView { totp: boolean; recovery_left: number }
+export interface DocView { folders: FolderView[]; hosts: HostView[]; settings: Settings; trusted_count: number; mfa: MfaView }
 
 export type VaultState = 'missing' | 'locked' | 'unlocked';
 
@@ -134,6 +136,12 @@ export const api = {
   vaultState: () => call<VaultState>('vault_state'),
   createVault: (password: string) => call<void>('create_vault', { password }),
   unlock: (password: string) => call<void>('unlock', { password }),
+  /** Drugi krok odblokowania pliku, który wymaga kodu TOTP albo kodu zapasowego. */
+  unlockTotp: (code: string) => call<void>('unlock_totp', { code }),
+  totpBegin: () => call<{ secret: string; uri: string }>('totp_begin'),
+  /** Włącza wymóg kodu; zwraca kody zapasowe do jednorazowego pokazania. */
+  totpEnable: (code: string) => call<string[]>('totp_enable', { code }),
+  totpDisable: (code: string) => call<void>('totp_disable', { code }),
   lock: () => call<void>('lock'),
   changePassword: (old: string, nw: string) => call<void>('change_password', { old, new: nw }),
   getDoc: () => call<DocView>('get_doc'),

@@ -9,6 +9,7 @@ mod flow;
 mod idle;
 mod keys;
 mod maintenance;
+mod mfa;
 mod rdp_sessions;
 mod session_log;
 mod sessions;
@@ -96,6 +97,10 @@ fn main() {
             commands::create_vault,
             commands::unlock,
             commands::lock,
+            mfa::unlock_totp,
+            mfa::totp_begin,
+            mfa::totp_enable,
+            mfa::totp_disable,
             commands::change_password,
             commands::get_doc,
             commands::save_folder,

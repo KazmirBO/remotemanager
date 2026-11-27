@@ -339,6 +339,25 @@ pub struct DocView {
     pub hosts: Vec<HostView>,
     pub settings: Settings,
     pub trusted_count: usize,
+    /// Stan dodatkowego składnika: bez sekretu i bez kodów zapasowych.
+    pub mfa: MfaView,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MfaView {
+    /// Czy otwarcie pliku wymaga kodu TOTP.
+    pub totp: bool,
+    /// Ile kodów zapasowych zostało.
+    pub recovery_left: usize,
+}
+
+impl From<&model::mfa::Mfa> for MfaView {
+    fn from(m: &model::mfa::Mfa) -> Self {
+        Self {
+            totp: m.totp.is_some(),
+            recovery_left: m.totp.as_ref().map_or(0, |t| t.recovery.len()),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

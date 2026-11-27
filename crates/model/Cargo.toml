@@ -12,6 +12,9 @@ workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 # Stałe identyfikatory hostów z listy CSV; ta sama wersja co w `sync`, więc bez nowych pakietów.
 sha2 = "0.11.1"
+# Kody TOTP (HMAC-SHA1); obie biblioteki są już w drzewie zależności (russh), bez nowych pakietów.
+hmac = "0.13.0"
+sha1 = "0.11.0"
 thiserror = "2.0.21"
 uuid = { version = "1.28.0", features = ["v4", "serde"] }
 

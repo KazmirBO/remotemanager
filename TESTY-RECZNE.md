@@ -27,6 +27,10 @@ Rzeczy, których nie sprawdzają testy automatyczne: działanie w prawdziwym okn
 - [ ] Blokada pliku (przycisk i skrót) zamyka sesje i chowa drzewo hostów.
 - [ ] Zmiana hasła głównego: stare hasło przestaje działać, nowe działa po ponownym uruchomieniu.
 - [ ] Automatyczna blokada po bezczynności blokuje po ustawionym czasie, także gdy fokus ma sesja.
+- [ ] Kody jednorazowe (TOTP): włączenie z prawdziwą aplikacją uwierzytelniającą (sekret wpisany ręcznie i przez adres konfiguracji), potem odblokowanie wymaga hasła i kodu; zły kod nie odblokowuje, a po 5 błędach program wraca do hasła.
+- [ ] Kod zapasowy odblokowuje plik raz; wyłączenie kodów wymaga kodu.
+- [ ] Plik z włączonymi kodami: starsza wersja programu (np. 0.1.1-rc1) odmawia otwarcia z błędem o wersji formatu; po wyłączeniu kodów znowu go otwiera.
+- [ ] Synchronizacja pliku z włączonymi kodami między dwoma komputerami z tą wersją programu działa; "Pokaż różnice" zgłasza różnicę w wymogu dodatkowego składnika.
 - [ ] Kopie zapasowe: lista pokazuje kopie, przywrócenie kopii (z jej hasłem) przywraca poprzedni stan.
 - [ ] Liczba kopii zapasowych: po zmniejszeniu starsze kopie znikają z dysku.
 

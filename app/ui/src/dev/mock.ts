@@ -59,7 +59,13 @@ function checkSettings(s: Settings) {
 const stripInputs = (f: any) => {
   delete f.password; delete f.clear_password; delete f.ssh_key; delete f.ssh_key_passphrase; delete f.clear_ssh_key;
 };
-const doc: DocView = { folders: [], hosts: [], settings: { ...defaultSettings(), theme: 'dark' }, trusted_count: 0 };
+const doc: DocView = { folders: [], hosts: [], settings: { ...defaultSettings(), theme: 'dark' }, trusted_count: 0, mfa: { totp: false, recovery_left: 0 } };
+// `?totp=1` zaczyna z włączonymi kodami jednorazowymi (dobry kod w atrapie to 123456).
+let totp = params.has('totp');
+let recoveryCodes: string[] = totp ? ['AAAQE-AYEAU', 'BBBRF-BZFBV'] : [];
+let pendingCode = false;
+let codeFailures = 0;
+let enrolling = false;
 const trusted = new Set<string>();
 
 function seed() {
@@ -124,14 +130,52 @@ const handlers: Record<string, Handler> = {
   },
   unlock: (a) => {
     if (a.password !== password) throw 'Nieprawidłowe hasło główne albo uszkodzony plik.';
+    if (totp) { pendingCode = true; codeFailures = 0; throw 'NEEDS_TOTP:Podaj kod z aplikacji uwierzytelniającej.'; }
     unlocked = true;
+  },
+  // Kody jednorazowe: w atrapie dobry kod to zawsze 123456, a kody zapasowe są stałe.
+  unlock_totp: ({ code }) => {
+    if (!pendingCode) throw 'Najpierw podaj hasło główne.';
+    const text = String(code).replace(/[\s-]/g, '').toUpperCase();
+    const backup = recoveryCodes.findIndex((c) => c.replace('-', '') === text);
+    if (text !== '123456' && backup < 0) {
+      codeFailures += 1;
+      if (codeFailures >= 5) { pendingCode = false; throw 'TOTP_EXPIRED:Za dużo błędnych kodów. Podaj hasło główne ponownie.'; }
+      throw 'TOTP_BAD:Nieprawidłowy kod. Sprawdź, czy zegar telefonu jest dobrze ustawiony.';
+    }
+    if (backup >= 0) recoveryCodes.splice(backup, 1);
+    pendingCode = false;
+    unlocked = true;
+  },
+  totp_begin: () => {
+    if (totp) throw 'Kody jednorazowe są już włączone.';
+    enrolling = true;
+    return {
+      secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ',
+      uri: 'otpauth://totp/Mened%C5%BCer%20sesji:plik%20z%20hostami?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Mened%C5%BCer%20sesji&algorithm=SHA1&digits=6&period=30',
+    };
+  },
+  totp_enable: ({ code }) => {
+    if (!enrolling) throw 'Zacznij włączanie od nowa: sekret wygasł.';
+    if (String(code).replace(/\s/g, '') !== '123456') throw 'Nieprawidłowy kod. Wpisz bieżący kod z aplikacji uwierzytelniającej.';
+    enrolling = false;
+    totp = true;
+    recoveryCodes = ['AAAQE-AYEAU', 'BBBRF-BZFBV', 'CCCSG-CAGCW', 'DDDTH-DBHDX', 'EEEUI-ECIEY', 'FFFVJ-FDJFZ', 'GGGWK-GEKG2', 'HHHXL-HFLH3'];
+    return [...recoveryCodes];
+  },
+  totp_disable: ({ code }) => {
+    if (!totp) throw 'Kody jednorazowe nie są włączone.';
+    const text = String(code).replace(/[\s-]/g, '').toUpperCase();
+    if (text !== '123456' && !recoveryCodes.some((c) => c.replace('-', '') === text)) throw 'Nieprawidłowy kod.';
+    totp = false;
+    recoveryCodes = [];
   },
   lock: () => { unlocked = false; },
   change_password: (a) => {
     if (a.old !== password) throw 'Nieprawidłowe hasło główne albo uszkodzony plik.';
     password = a.new;
   },
-  get_doc: () => structuredClone({ ...doc, trusted_count: trusted.size }),
+  get_doc: () => structuredClone({ ...doc, trusted_count: trusted.size, mfa: { totp, recovery_left: recoveryCodes.length } }),
   save_folder: ({ input }) => {
     if (!input.name.trim()) throw 'Nazwa katalogu nie może być pusta.';
     checkTerminalFields(input.fields, false);
@@ -259,7 +303,7 @@ const handlers: Record<string, Handler> = {
     if (!syncFolder) throw 'Synchronizacja nie jest skonfigurowana.';
     if (syncStatus === 'brak_pliku') throw 'W folderze synchronizacji nie ma jeszcze pliku z hostami.';
     if (params.get('sync_diff') === 'other') return { readable: false, diff: null };
-    const empty = { folders: [], hosts: [], defaults: [], trusted_local_only: 0, trusted_remote_only: 0, settings_differ: false };
+    const empty = { folders: [], hosts: [], defaults: [], trusted_local_only: 0, trusted_remote_only: 0, settings_differ: false, mfa_differ: false };
     if (syncStatus === 'aktualny') return { readable: true, diff: empty };
     const item = (id: string, name: string, path: string, address: string | null, protocol: string | null, side: string, changes: unknown[] = []) =>
       ({ id, name, path, address, protocol, side, changes });
